@@ -92,6 +92,11 @@ A feature is not done until:
   (`.xcodeproj` генерируется, в git не трекается — источник `project.yml`)
 - macOS tests: `xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -configuration Debug test CODE_SIGNING_ALLOWED=NO`
 - Lint Swift: `cd apps/macos && swiftformat Sources Tests --lint`
+- Pre-commit (локально, зеркало быстрых CI-линтов): `brew install pre-commit`
+  (или `pipx install pre-commit`), затем из корня репо `pre-commit install`;
+  разовый прогон `pre-commit run --all-files`. Хуки: `cargo fmt --check`,
+  `swiftformat Sources Tests --lint`, `ruff` для `backend/`. Clippy / полный
+  `cargo test` / `xcodebuild` — только в CI.
 - CI: `.github/workflows/ci.yml` — fmt, clippy, cargo test, xcodebuild build+test
 - UniFFI + Xcode project (из корня репо): `apps/macos/Scripts/generate-ffi.sh`
   (dylib → `rust/target/debug`, биндинги → `apps/macos/Generated/`, затем

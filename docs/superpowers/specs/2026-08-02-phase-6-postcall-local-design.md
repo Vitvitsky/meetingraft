@@ -1,8 +1,8 @@
 # Phase 6 MVP — Local Post-call Design
 
-**Date:** 2026-08-02  
-**Status:** Draft for implementation planning  
-**Maps to:** Roadmap Phase 6 (subset), Epics 8 (partial), ADR-002 / ADR-003 / ADR-006  
+**Date:** 2026-08-02
+**Status:** Draft for implementation planning
+**Maps to:** Roadmap Phase 6 (subset), Epics 8 (partial), ADR-002 / ADR-003 / ADR-006
 **Explicitly deferred:** ADR-007 backend (next PR); speakers/diarization (Epic 9); live LLM generation
 
 ## Goal

@@ -27,7 +27,7 @@ The product uses a two-stage flow:
 
 ## High-level architecture
 
-Актуальные **mermaid-схемы и пошаговая установка**:  
+Актуальные **mermaid-схемы и пошаговая установка**:
 [`docs/architecture-and-install.md`](architecture-and-install.md).
 
 ```text

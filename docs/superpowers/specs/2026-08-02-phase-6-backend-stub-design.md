@@ -1,7 +1,7 @@
 # Phase 6 follow-up — Backend stub (ADR-007 slice A)
 
-**Date:** 2026-08-02  
-**Status:** Approved for implementation  
+**Date:** 2026-08-02
+**Status:** Approved for implementation
 **Maps to:** ADR-007, Phase 6 follow-up, Epic 8 (HTTP path)
 
 ## Goal

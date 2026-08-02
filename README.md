@@ -52,5 +52,5 @@ docker compose up --build   # :8080, token dev-token
 
 ## Milestones
 
-Phases 0–6 local MVP are on `main` (see [`docs/roadmap.md`](docs/roadmap.md)).  
+Phases 0–6 local MVP are on `main` (see [`docs/roadmap.md`](docs/roadmap.md)).
 Next: full ADR-007 workers (WhisperX / LLM), speakers (Epic 9), Phase 7 hardening.

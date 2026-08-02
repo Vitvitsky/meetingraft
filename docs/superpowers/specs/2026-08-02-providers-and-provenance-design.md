@@ -1,8 +1,8 @@
 # Providers map & Meetings provenance — Design
 
-**Date:** 2026-08-02  
-**Status:** Draft for implementation planning; LLM `backend` wired on `feat/artifacts-via-backend-jobs`  
-**Maps to:** ADR-003, ADR-005, ADR-007, ADR-008; Phase 6 local post-call  
+**Date:** 2026-08-02
+**Status:** Draft for implementation planning; LLM `backend` wired on `feat/artifacts-via-backend-jobs`
+**Maps to:** ADR-003, ADR-005, ADR-007, ADR-008; Phase 6 local post-call
 **Approved approach:** B — full provider map in Settings «на вырост» + provenance on Meetings tabs
 
 ## Goal

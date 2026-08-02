@@ -1,8 +1,8 @@
 # Phase 6 / Epic 9 — Speakers skeleton (manual labels)
 
-**Date:** 2026-08-03  
-**Status:** Approved for implementation  
-**Maps to:** Epic 9 (partial), ADR-002 (no live speaker attribution), ADR-006 (`speakers` table)  
+**Date:** 2026-08-03
+**Status:** Approved for implementation
+**Maps to:** Epic 9 (partial), ADR-002 (no live speaker attribution), ADR-006 (`speakers` table)
 **Depends on:** Meetings detail UI (Live | Final | Artifacts)
 
 ## Goal
@@ -105,4 +105,5 @@ exists; orphans acceptable for MVP.
 - [ ] Add / Rename / Delete speaker for a meeting; survives app reopen
 - [ ] Live captions unchanged (no speaker labels)
 - [ ] `cargo test` + `xcodebuild test` + swiftformat clean
+- [ ] `pre-commit` hooks в репо (fmt / SwiftFormat / ruff) — см. `.pre-commit-config.yaml`
 - [ ] No pyannote / Final assignment

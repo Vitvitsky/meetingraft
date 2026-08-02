@@ -155,7 +155,7 @@ xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 
-Данные приложения:  
+Данные приложения:
 `~/Library/Application Support/meetingraft/`
 
 ### 2.4 Модель Whisper (live STT)
@@ -189,9 +189,9 @@ uv sync --extra dev
 MEETINGRAFT_API_TOKEN=dev-token uv run uvicorn app.main:app --port 8080
 ```
 
-В приложении: **Settings → Backend API**  
-- Base URL: `http://127.0.0.1:8080`  
-- Bearer: `dev-token`  
+В приложении: **Settings → Backend API**
+- Base URL: `http://127.0.0.1:8080`
+- Bearer: `dev-token`
 - кнопка **Test API** → `GET /health`
 
 **Settings → Providers → LLM = Backend:** Generate Brief / Follow-up в Meetings
@@ -218,24 +218,27 @@ xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft \
 
 CI: `.github/workflows/ci.yml` (rust + macos + backend).
 
+Локально перед push: `pre-commit install` (один раз) и/или
+`pre-commit run --all-files` — см. `.pre-commit-config.yaml` и `AGENTS.md`.
+
 ### 2.7 Минимальный smoke после установки
 
-1. Запустить app → **Start Captions** (demo) — появляются строки.  
-2. Сменить Language → English → снова demo — английский скрипт.  
-3. (Опц.) Whisper model + **Start Live** — captions / Mock.  
-4. Stop Live → **Meetings** → Final / Generate Brief.  
-5. (Опц.) `docker compose up` → Settings **Test API** = OK.  
-6. (Опц.) Settings **LLM = Backend** → **Meetings** → Final → **Generate Brief** → markdown из stub job (`kind: brief`).  
+1. Запустить app → **Start Captions** (demo) — появляются строки.
+2. Сменить Language → English → снова demo — английский скрипт.
+3. (Опц.) Whisper model + **Start Live** — captions / Mock.
+4. Stop Live → **Meetings** → Final / Generate Brief.
+5. (Опц.) `docker compose up` → Settings **Test API** = OK.
+6. (Опц.) Settings **LLM = Backend** → **Meetings** → Final → **Generate Brief** → markdown из stub job (`kind: brief`).
 7. (Опц.) **Meetings** → **Artifacts** → **Submit refine (stub)** → refine markdown из backend.
 
 ### 2.8 Потенциальная «продакшен»-инсталляция (ещё не автоматизирована)
 
 Целевое направление (не реализовано end-to-end):
 
-1. Подписанный / notarized `.app` (Phase 7).  
-2. First-run download ggml в Application Support.  
-3. Backend на домашнем сервере: полный ADR-007 (Postgres, Redis, Dramatiq, MinIO, WhisperX).  
-4. Token в Keychain; `apiBaseUrl` на HTTPS.  
+1. Подписанный / notarized `.app` (Phase 7).
+2. First-run download ggml в Application Support.
+3. Backend на домашнем сервере: полный ADR-007 (Postgres, Redis, Dramatiq, MinIO, WhisperX).
+4. Token в Keychain; `apiBaseUrl` на HTTPS.
 5. Опционально: NLLB translate worker, Ollama/Gemma для Brief.
 
 Пока используйте §2.3–2.7 как единственную поддерживаемую процедуру.

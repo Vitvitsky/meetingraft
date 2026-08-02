@@ -1,0 +1,43 @@
+# Local git hooks — зеркало быстрых CI-проверок (без полного cargo test / xcodebuild).
+# Установка: brew install pre-commit   # или: pipx install pre-commit
+#            pre-commit install
+# Разовый прогон: pre-commit run --all-files
+#
+# Clippy / cargo test / xcodebuild остаются в CI (слишком тяжёлые для каждый commit).
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(apps/macos/Generated/|rust/Cargo\.lock|backend/uv\.lock)
+      - id: end-of-file-fixer
+        exclude: ^(apps/macos/Generated/|rust/Cargo\.lock|backend/uv\.lock)
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: bash -c 'cd rust && cargo fmt --check'
+        language: system
+        pass_filenames: false
+        files: ^rust/.*\.rs$
+
+      - id: swiftformat-lint
+        name: swiftformat Sources Tests --lint
+        entry: bash -c 'cd apps/macos && swiftformat Sources Tests --lint'
+        language: system
+        pass_filenames: false
+        files: ^apps/macos/(Sources|Tests)/.*\.swift$
+
+      - id: ruff-backend
+        name: ruff check backend
+        entry: bash -c 'cd backend && uv run ruff check app tests'
+        language: system
+        pass_filenames: false
+        files: ^backend/.*\.py$
+        require_serial: true
