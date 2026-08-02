@@ -1,4 +1,12 @@
-//! Доменные модели MeetingRaft. Наполняется в Phase 2 (см. docs/roadmap.md).
+//! Доменные модели MeetingRaft.
+
+mod caption;
+mod language;
+mod session;
+
+pub use caption::{CaptionEvent, CaptionPhase};
+pub use language::{LanguagePolicy, SpeechLanguage};
+pub use session::SessionState;
 
 /// Версия доменного крейта; используется smoke-тестом сборки.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -11,5 +19,18 @@ mod tests {
     #[test]
     fn crate_version_matches_manifest() {
         assert_eq!(CRATE_VERSION, "0.1.0");
+    }
+
+    #[test]
+    fn default_language_policy_is_russian_first() {
+        let policy = LanguagePolicy::default_v1();
+        assert_eq!(policy.primary, SpeechLanguage::Ru);
+        assert_eq!(
+            policy.allowed,
+            vec![SpeechLanguage::Ru, SpeechLanguage::En, SpeechLanguage::Es]
+        );
+        assert!(policy.is_allowed(SpeechLanguage::Ru));
+        assert_eq!(SpeechLanguage::default(), SpeechLanguage::Ru);
+        assert_eq!(SpeechLanguage::Ru.code(), "ru");
     }
 }
