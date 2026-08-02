@@ -307,7 +307,7 @@ private var speakersPanel: some View {
             Button("Add", systemImage: "person.badge.plus") {
                 viewModel.addSpeaker(
                     meetingId: meeting.id,
-                    primaryLanguage: languageStore.primaryLanguage // or sessionStore field name
+                    primaryLanguage: languageStore.primary.rawValue // SpeechLanguage: ru/en/es
                 )
             }
             Spacer()
@@ -328,7 +328,7 @@ private var speakersPanel: some View {
 }
 ```
 
-Inject `@Environment(SessionLanguageStore.self)` (already used elsewhere) for primary code — check exact property name (`primary` / `primaryLanguageCode`).
+Inject `@Environment(SessionLanguageStore.self)` — поле `primary: SpeechLanguage` (`.ru` / `.en` / `.es`).
 
 Rename: simplest — `TextField` with `onSubmit` calling `renameSpeaker`. Delete: button → `removeSpeaker`.
 
