@@ -169,7 +169,7 @@ EOF
 **Files:**
 - Modify: `rust/crates/ffi/src/lib.rs`
 - Regenerate: `apps/macos/Generated/`
-- Optional test in `ffi` `mod tests`
+- Test: `rust/crates/ffi/src/lib.rs` `mod tests` — **обязательный** round-trip
 
 **Interfaces:**
 - Consumes: storage speakers API
@@ -185,31 +185,45 @@ EOF
   ```
   - `MeetingCore::list_speakers(meeting_id: String) -> Vec<FfiSpeaker>`
   - `MeetingCore::upsert_speaker(meeting_id, id, display_name, sort_index) -> String`
-    - if `id` empty → `Uuid::new_v4()`; if `sort_index < 0` treat as `list.len() as i64` **or** require caller to pass index (prefer: if `id` empty, set `sort_index` to `list_speakers.len() as i64` when caller passes `-1` OR always use provided sort_index from Swift)
-    - Spec: Swift computes `n`; FFI trusts `sort_index` as given. Empty id → new UUID.
+    - Empty `id` → `Uuid::new_v4()`. FFI trusts `sort_index` from caller (Swift).
   - `MeetingCore::delete_speaker(id: String) -> String`
 
 Use same `read_store` / `write_store` helpers as artifacts/glossary.
 
-- [ ] **Step 1: Failing FFI test (optional but preferred)**
+- [ ] **Step 1: Write failing FFI tests (required)**
 
 ```rust
 #[test]
 fn speakers_round_trip_via_core() {
-    let root = temp...;
-    let core = MeetingCore::with_data_root(...);
-    assert!(core.upsert_speaker("m1".into(), "".into(), "Спикер 1".into(), 0).is_empty());
+    let root = std::env::temp_dir().join(format!(
+        "mr-ffi-speakers-{}-{:?}",
+        now_ms(),
+        std::thread::current().id()
+    ));
+    let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+    assert!(core
+        .upsert_speaker("m1".into(), "".into(), "Спикер 1".into(), 0)
+        .is_empty());
     let list = core.list_speakers("m1".into());
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].display_name, "Спикер 1");
     assert!(!list[0].id.is_empty());
+    assert!(core
+        .upsert_speaker(
+            "m1".into(),
+            list[0].id.clone(),
+            "Алиса".into(),
+            list[0].sort_index
+        )
+        .is_empty());
+    assert_eq!(core.list_speakers("m1".into())[0].display_name, "Алиса");
     assert!(core.delete_speaker(list[0].id.clone()).is_empty());
     assert!(core.list_speakers("m1".into()).is_empty());
-    let _ = fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(&root);
 }
 ```
 
-- [ ] **Step 2: Implement + cargo test -p meetingraft-ffi**
+- [ ] **Step 2: Implement + `cargo test -p meetingraft-ffi speakers_` PASS**
 
 - [ ] **Step 3: Regenerate FFI**
 
@@ -275,6 +289,26 @@ func testAddSpeakerUsesRussianDefaultName() {
     XCTAssertEqual(core.lastUpsertSortIndex, 0)
 }
 
+func testAddSpeakerUsesEnglishDefaultName() {
+    let core = MeetingsCoreSpy()
+    let vm = MeetingsViewModel(core: core)
+    vm.reload(meetingId: "m1")
+    vm.addSpeaker(meetingId: "m1", primaryLanguage: "en")
+    XCTAssertEqual(core.lastUpsertDisplayName, "Speaker 1")
+    XCTAssertEqual(core.lastUpsertSortIndex, 0)
+}
+
+func testRenameSpeakerUpdatesDisplayName() {
+    let existing = FfiSpeaker(id: "s1", meetingId: "m1", displayName: "Old", sortIndex: 0)
+    let core = MeetingsCoreSpy(speakers: [existing])
+    let vm = MeetingsViewModel(core: core)
+    vm.reload(meetingId: "m1")
+    vm.renameSpeaker(meetingId: "m1", id: "s1", displayName: "New")
+    XCTAssertEqual(core.lastUpsertDisplayName, "New")
+    XCTAssertEqual(core.lastUpsertId, "s1")
+    XCTAssertEqual(vm.speakers.first?.displayName, "New")
+}
+
 func testRemoveSpeakerSurfacesCoreError() {
     let core = MeetingsCoreSpy()
     core.deleteSpeakerError = "boom"
@@ -284,7 +318,7 @@ func testRemoveSpeakerSurfacesCoreError() {
 }
 ```
 
-Extend spy with speakers storage / call recording.
+Extend spy with speakers storage / call recording (`lastUpsertId`, `lastUpsertDisplayName`, `lastUpsertSortIndex`).
 
 - [ ] **Step 2: Implement ViewModel — tests PASS**
 
@@ -395,10 +429,10 @@ EOF
 |-----------|------|
 | Domain Speaker | 1 |
 | SQLite speakers + CRUD | 1 |
-| UniFFI list/upsert/delete | 2 |
+| UniFFI list/upsert/delete + **required** FFI round-trip (+ rename) | 2 |
 | Speakers tab + banner | 3 |
-| Default name ru/en | 3 |
-| ViewModel tests | 3 |
+| Default name ru **and** en | 3 |
+| ViewModel: reload / add ru / add en / rename / delete error | 3 |
 | Docs | 4 |
 | pre-commit present | done on branch (`e8a1827`); verify in 4 |
 | No diarization / Final assignment | all (non-goals) |

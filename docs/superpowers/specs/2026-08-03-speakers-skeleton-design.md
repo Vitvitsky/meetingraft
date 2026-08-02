@@ -88,9 +88,9 @@ exists; orphans acceptable for MVP.
 
 ## Testing
 
-- Storage CRUD + meeting isolation
-- ViewModel spy: reload / upsert / delete / error
-- Optional thin FFI test via temp data root
+- Storage CRUD + meeting isolation + sort order
+- FFI round-trip via `MeetingCore` (upsert empty id → list → rename → delete) — **required**
+- ViewModel spy: reload; add default `ru` / `en`; rename; delete error
 
 ## Docs
 
