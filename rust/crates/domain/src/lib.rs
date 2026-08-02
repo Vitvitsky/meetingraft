@@ -6,6 +6,7 @@ mod glossary;
 mod language;
 mod postcall;
 mod session;
+mod speaker;
 
 pub use audio::AudioChannel;
 pub use caption::{CaptionEvent, CaptionPhase};
@@ -13,6 +14,7 @@ pub use glossary::{GlossaryScope, GlossaryTerm};
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use postcall::{Artifact, ArtifactKind, FinalTranscript, MeetingSummary};
 pub use session::SessionState;
+pub use speaker::Speaker;
 
 /// Версия доменного крейта; используется smoke-тестом сборки.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
