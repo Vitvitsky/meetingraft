@@ -6,6 +6,9 @@ protocol MeetingsCoreProviding: AnyObject {
     func listCaptions(meetingId: String) -> [FfiCaptionEvent]
     func getFinalTranscript(meetingId: String) -> FfiFinalTranscript
     func listArtifacts(meetingId: String) -> [FfiArtifact]
+    func listSpeakers(meetingId: String) -> [FfiSpeaker]
+    func upsertSpeaker(meetingId: String, id: String, displayName: String, sortIndex: Int64) -> String
+    func deleteSpeaker(id: String) -> String
     func setApiConfig(baseUrl: String, token: String)
     func setLlmConfig(engineCode: String, modelId: String)
     func generateArtifact(meetingId: String, kind: FfiArtifactKind) -> FfiGenerateArtifactResult
@@ -32,6 +35,7 @@ final class MeetingsViewModel {
     private(set) var captions: [FfiCaptionEvent] = []
     private(set) var finalTranscript: FfiFinalTranscript?
     private(set) var artifacts: [FfiArtifact] = []
+    private(set) var speakers: [FfiSpeaker] = []
     private(set) var selectedArtifact: FfiArtifact?
     private(set) var errorMessage: String?
     private(set) var backendJobStatus: BackendRefineStatus = .idle
@@ -65,6 +69,7 @@ final class MeetingsViewModel {
         finalTranscript = transcript.meetingId.isEmpty ? nil : transcript
 
         artifacts = core.listArtifacts(meetingId: meetingId)
+        speakers = core.listSpeakers(meetingId: meetingId)
         if let selectedArtifact,
            let refreshed = artifacts.first(where: { $0.id == selectedArtifact.id })
         {
@@ -73,6 +78,38 @@ final class MeetingsViewModel {
             selectedArtifact = artifacts.first
         }
         errorMessage = nil
+    }
+
+    func addSpeaker(meetingId: String, primaryLanguage: String) {
+        let number = speakers.count + 1
+        let displayName = primaryLanguage == "ru"
+            ? "Спикер \(number)"
+            : "Speaker \(number)"
+        let error = core.upsertSpeaker(
+            meetingId: meetingId,
+            id: "",
+            displayName: displayName,
+            sortIndex: Int64(speakers.count)
+        )
+        finishSpeakerMutation(error: error, meetingId: meetingId)
+    }
+
+    func renameSpeaker(meetingId: String, id: String, displayName: String) {
+        guard let speaker = speakers.first(where: { $0.id == id }) else {
+            return
+        }
+        let error = core.upsertSpeaker(
+            meetingId: meetingId,
+            id: id,
+            displayName: displayName,
+            sortIndex: speaker.sortIndex
+        )
+        finishSpeakerMutation(error: error, meetingId: meetingId)
+    }
+
+    func removeSpeaker(id: String, meetingId: String) {
+        let error = core.deleteSpeaker(id: id)
+        finishSpeakerMutation(error: error, meetingId: meetingId)
     }
 
     func applyProviderConfig(
@@ -103,6 +140,15 @@ final class MeetingsViewModel {
     }
 
     func dismissError() {
+        errorMessage = nil
+    }
+
+    private func finishSpeakerMutation(error: String, meetingId: String) {
+        guard error.isEmpty else {
+            errorMessage = error
+            return
+        }
+        speakers = core.listSpeakers(meetingId: meetingId)
         errorMessage = nil
     }
 
