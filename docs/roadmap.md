@@ -83,7 +83,8 @@ core, local raw recording manifest per ADR-006.
 manifest; permission denial paths handled in UI; chunk cadence matches what
 the STT path in ADR-005 expects.
 
-Maps to: Epic 5.
+Maps to: Epic 5. Status: **done** on `feat/phase-3-audio-capture`
+(mic path + SQLite manifest; system process tap follow-up).
 
 ## Phase 4 — Live subtitle pipeline (Stage 1 complete)
 

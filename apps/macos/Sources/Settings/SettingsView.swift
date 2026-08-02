@@ -13,8 +13,10 @@ struct SettingsView: View {
             }
             Text("Default is Russian (ADR-003).")
                 .foregroundStyle(.secondary)
+            Text("Audio: mic capture active; system tap wiring follow-up (ADR-004). Chunks 100 ms @ 16 kHz.")
+                .foregroundStyle(.secondary)
         }
         .padding()
-        .frame(width: 360, height: 140)
+        .frame(width: 420, height: 180)
     }
 }

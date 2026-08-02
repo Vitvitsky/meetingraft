@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/domain", "crates/session", "crates/ffi", "crates/uniffi-bindgen"]
+members = [
+    "crates/domain",
+    "crates/session",
+    "crates/storage",
+    "crates/ffi",
+    "crates/uniffi-bindgen",
+]
 
 [workspace.package]
 version = "0.1.0"

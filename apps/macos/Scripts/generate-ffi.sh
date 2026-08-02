@@ -5,7 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RUST_DIR="$ROOT/rust"
 OUT_DIR="$ROOT/apps/macos/Generated"
-TARGET_DIR="${CARGO_TARGET_DIR:-$RUST_DIR/target}"
+# Всегда пишем dylib туда, куда смотрит XcodeGen (не sandbox CARGO_TARGET_DIR).
+TARGET_DIR="$RUST_DIR/target"
 
 mkdir -p "$OUT_DIR"
 cd "$RUST_DIR"

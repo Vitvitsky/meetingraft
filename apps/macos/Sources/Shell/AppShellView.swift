@@ -5,6 +5,7 @@ struct AppShellView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
     @State private var selection: AppDestination? = .liveCaptions
     @State private var captionsViewModel = LiveCaptionsViewModel()
+    @State private var captureCoordinator = AudioCaptureCoordinator()
 
     var body: some View {
         NavigationSplitView {
@@ -14,6 +15,7 @@ struct AppShellView: View {
             case .liveCaptions:
                 LiveCaptionsView(
                     viewModel: captionsViewModel,
+                    capture: captureCoordinator,
                     primaryLanguage: languageStore.primary
                 )
             case .meetings:
@@ -40,6 +42,21 @@ struct AppShellView: View {
         }
         .focusedValue(\.startCaptions) {
             startDemoCaptions()
+        }
+        .alert(
+            "Нет доступа к микрофону",
+            isPresented: Binding(
+                get: { captureCoordinator.lastError?.contains("микрофон") == true && !captureCoordinator.isRecording },
+                set: {
+                    if !$0 {
+                        captureCoordinator.clearError()
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(captureCoordinator.lastError ?? "")
         }
     }
 

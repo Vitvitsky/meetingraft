@@ -1,9 +1,11 @@
 //! Доменные модели MeetingRaft.
 
+mod audio;
 mod caption;
 mod language;
 mod session;
 
+pub use audio::AudioChannel;
 pub use caption::{CaptionEvent, CaptionPhase};
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use session::SessionState;

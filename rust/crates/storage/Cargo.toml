@@ -1,0 +1,12 @@
+[package]
+name = "meetingraft-storage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+thiserror = "2"
+
+[lib]
+name = "storage"
