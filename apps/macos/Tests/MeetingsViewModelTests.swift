@@ -90,6 +90,36 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.errorMessage)
     }
 
+    func testReloadMeetingPreservesBackendRefineSessionState() async {
+        let transcript = makeTranscript(meetingId: "meeting-1")
+        let local = makeArtifact(id: "local-1", meetingId: "meeting-1")
+        let core = MeetingsCoreSpy(finalTranscript: transcript, artifacts: [local])
+        core.submitJobResult = FfiBackendJob(
+            id: "job-1",
+            meetingId: "meeting-1",
+            kind: "refine",
+            status: "succeeded",
+            error: "",
+            artifactIds: ["art-b1"]
+        )
+        core.getArtifactResult = FfiBackendArtifact(
+            id: "art-b1",
+            kind: "refine",
+            bodyMarkdown: "# Stub refine",
+            createdAt: "2026-08-02T00:00:00Z",
+            error: ""
+        )
+        let viewModel = MeetingsViewModel(core: core, maxPollAttempts: 20, pollDelayNanoseconds: 0)
+        viewModel.reload(meetingId: "meeting-1")
+
+        await viewModel.performBackendRefine(meetingId: "meeting-1")
+        viewModel.reload(meetingId: "meeting-1")
+
+        XCTAssertEqual(viewModel.backendJobStatus, .succeeded)
+        XCTAssertEqual(viewModel.backendJobId, "job-1")
+        XCTAssertEqual(viewModel.backendArtifactMarkdown, "# Stub refine")
+    }
+
     func testSubmitBackendRefineSurfacesSubmitError() async {
         let transcript = makeTranscript(meetingId: "meeting-1")
         let core = MeetingsCoreSpy(finalTranscript: transcript)
