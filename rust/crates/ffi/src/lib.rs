@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryScope,
-    GlossaryTerm, LanguagePolicy, MeetingSummary, SessionState, SpeechLanguage,
+    GlossaryTerm, LanguagePolicy, MeetingSummary, SessionState, Speaker, SpeechLanguage,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{assemble_final, make_artifact, render_brief, render_follow_up};
@@ -61,6 +61,15 @@ pub struct FfiGlossaryTerm {
     pub language: String,
     pub scope: FfiGlossaryScope,
     pub meeting_id: String,
+}
+
+/// Ручная метка спикера встречи для Swift.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiSpeaker {
+    pub id: String,
+    pub meeting_id: String,
+    pub display_name: String,
+    pub sort_index: i64,
 }
 
 /// Результат CSV-импорта глоссария.
@@ -309,6 +318,15 @@ fn meeting_summary_to_ffi(summary: MeetingSummary) -> FfiMeetingSummary {
         started_at_ms: summary.started_at_ms,
         has_final: summary.has_final,
         artifact_count: summary.artifact_count,
+    }
+}
+
+fn speaker_to_ffi(speaker: Speaker) -> FfiSpeaker {
+    FfiSpeaker {
+        id: speaker.id,
+        meeting_id: speaker.meeting_id,
+        display_name: speaker.display_name,
+        sort_index: speaker.sort_index,
     }
 }
 
@@ -852,6 +870,50 @@ impl MeetingCore {
         }
     }
 
+    /// Спикеры встречи в пользовательском порядке.
+    pub fn list_speakers(&self, meeting_id: String) -> Vec<FfiSpeaker> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        read_store(&guard, |store| store.list_speakers(&meeting_id))
+            .unwrap_or_default()
+            .into_iter()
+            .map(speaker_to_ffi)
+            .collect()
+    }
+
+    /// Создать или обновить ручную метку спикера; пустой id генерируется здесь.
+    pub fn upsert_speaker(
+        &self,
+        meeting_id: String,
+        id: String,
+        display_name: String,
+        sort_index: i64,
+    ) -> String {
+        let speaker = Speaker {
+            id: if id.is_empty() {
+                Uuid::new_v4().to_string()
+            } else {
+                id
+            },
+            meeting_id,
+            display_name,
+            sort_index,
+        };
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        write_store(&mut guard, |store| store.upsert_speaker(&speaker))
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default()
+    }
+
+    /// Удалить ручную метку спикера.
+    pub fn delete_speaker(&self, id: String) -> String {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        write_store(&mut guard, |store| store.delete_speaker(&id))
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default()
+    }
+
     /// Встречи, доступные в локальной истории.
     pub fn list_meetings(&self) -> Vec<FfiMeetingSummary> {
         let guard = self.inner.lock().expect("meeting core poisoned");
@@ -1300,6 +1362,37 @@ mod tests {
                 .is_empty()
         );
         assert!(core.list_glossary_terms().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn speakers_round_trip_via_core() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-speakers-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.upsert_speaker("m1".into(), "".into(), "Спикер 1".into(), 0)
+                .is_empty()
+        );
+        let list = core.list_speakers("m1".into());
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].display_name, "Спикер 1");
+        assert!(!list[0].id.is_empty());
+        assert!(
+            core.upsert_speaker(
+                "m1".into(),
+                list[0].id.clone(),
+                "Алиса".into(),
+                list[0].sort_index
+            )
+            .is_empty()
+        );
+        assert_eq!(core.list_speakers("m1".into())[0].display_name, "Алиса");
+        assert!(core.delete_speaker(list[0].id.clone()).is_empty());
+        assert!(core.list_speakers("m1".into()).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
