@@ -56,7 +56,7 @@
 - Commit + CI + PR
 
 ## Exit criteria (this PR may partial)
-- [ ] STT trait + tests green in CI (Mock)
-- [ ] Captions persist and drain from Rust during live
-- [ ] Whisper loads when model present (manual verify)
-- [ ] UI shows live captions from Rust path
+- [x] STT trait + tests green in CI (Mock)
+- [x] Captions persist and drain from Rust during live
+- [ ] Whisper loads when model present (manual verify; `--features whisper` + download script)
+- [x] UI shows live captions from Rust path

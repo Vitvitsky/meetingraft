@@ -36,13 +36,14 @@
 - System audio process tap (ADR-004) — follow-up wiring
 
 ## Epic 6 — Live Subtitle Flow
-- Open session with backend
+- [x] Open session with STT pipeline (Mock; Whisper when model + feature)
 - Pass language policy: primary `ru`, allowed `{ru, en, es}`
-- Stream chunks
-- Render partial captions
-- Merge final captions
-- Save local caption events
-- Settings: session language override (default Russian)
+- [x] Stream chunks → SttEngine
+- [x] Render partial captions
+- [x] Merge final captions
+- [x] Save local caption events
+- Settings: session language override (default Russian) — stub exists; STT model status in Settings
+- Whisper Metal + model download script (opt-in `--features whisper`)
 
 ## Epic 7 — Glossary
 - Create glossary domain model

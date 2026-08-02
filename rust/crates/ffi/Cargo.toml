@@ -7,8 +7,14 @@ edition.workspace = true
 name = "meetingraft_ffi"
 crate-type = ["cdylib", "lib"]
 
+[features]
+default = []
+# Прокинуть Metal Whisper в dylib (локальная macOS-сборка / generate-ffi).
+whisper = ["meetingraft-stt/whisper"]
+
 [dependencies]
 meetingraft-domain = { path = "../domain" }
 meetingraft-session = { path = "../session" }
 meetingraft-storage = { path = "../storage" }
+meetingraft-stt = { path = "../stt" }
 uniffi = "0.32"

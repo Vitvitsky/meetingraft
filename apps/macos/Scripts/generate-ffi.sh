@@ -14,7 +14,13 @@ mkdir -p "$OUT_DIR"
 cd "$RUST_DIR"
 export CARGO_TARGET_DIR="$TARGET_DIR"
 
-cargo build -p meetingraft-ffi
+# Whisper Metal по умолчанию; CI: MEETINGRAFT_FFI_FEATURES= ./generate-ffi.sh
+FEATURES="${MEETINGRAFT_FFI_FEATURES-whisper}"
+if [[ -n "$FEATURES" ]]; then
+  cargo build -p meetingraft-ffi --features "$FEATURES"
+else
+  cargo build -p meetingraft-ffi
+fi
 LIB="$TARGET_DIR/debug/libmeetingraft_ffi.dylib"
 test -f "$LIB"
 
