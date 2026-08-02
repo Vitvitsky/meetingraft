@@ -21,6 +21,9 @@ The product uses a two-stage flow:
 - Live STT and post-call refinement receive the same language policy (primary + allowed set).
 - Glossary terms may be language-tagged; Russian terms are the default scope.
 - Mixed-language meetings are in scope; Russian quality is optimized first.
+- Settings → Providers maps Live STT, post-call STT, translation, and LLM
+  (URLs only when the selected engine needs them); Meetings tabs show
+  provenance so Brief/Follow-up are clearly derived from Final, not Live.
 
 ## High-level architecture
 

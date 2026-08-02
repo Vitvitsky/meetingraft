@@ -6,6 +6,7 @@ import SwiftUI
 struct MeetingDetailView: View {
     let meeting: FfiMeetingSummary
     @Bindable var viewModel: MeetingsViewModel
+    @Environment(ProviderSettingsStore.self) private var providerStore
 
     @State private var section: MeetingDetailSection = .live
 
@@ -52,52 +53,66 @@ struct MeetingDetailView: View {
     }
 
     private var liveCaptions: some View {
-        List(viewModel.captions, id: \.id) { caption in
-            switch caption.phase {
-            case .partial:
-                Text(caption.text)
-                    .italic()
-                    .foregroundStyle(.secondary)
-            case .final:
-                Text(caption.text)
+        VStack(spacing: 0) {
+            provenanceBanner(
+                "Источник: Live STT · не используется для Brief / Follow-up"
+            )
+            List(viewModel.captions, id: \.id) { caption in
+                switch caption.phase {
+                case .partial:
+                    Text(caption.text)
+                        .italic()
+                        .foregroundStyle(.secondary)
+                case .final:
+                    Text(caption.text)
+                }
             }
-        }
-        .overlay {
-            if viewModel.captions.isEmpty {
-                ContentUnavailableView(
-                    "Live-транскрипт пуст",
-                    systemImage: "captions.bubble"
-                )
+            .overlay {
+                if viewModel.captions.isEmpty {
+                    ContentUnavailableView(
+                        "Live-транскрипт пуст",
+                        systemImage: "captions.bubble"
+                    )
+                }
             }
         }
     }
 
     @ViewBuilder
     private var finalTranscript: some View {
-        if let transcript = viewModel.finalTranscript {
-            ScrollView {
-                Text(markdown(transcript.bodyMarkdown))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-            }
-        } else {
-            ContentUnavailableView(
-                "Финальный транскрипт недоступен",
-                systemImage: "doc.text.magnifyingglass"
+        VStack(spacing: 0) {
+            provenanceBanner(
+                "Источник: Live finals + glossary · вход для Brief / Follow-up"
             )
+            if let transcript = viewModel.finalTranscript {
+                ScrollView {
+                    Text(markdown(transcript.bodyMarkdown))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
+            } else {
+                ContentUnavailableView(
+                    "Финальный транскрипт недоступен",
+                    systemImage: "doc.text.magnifyingglass"
+                )
+            }
         }
     }
 
     private var artifacts: some View {
         VStack(spacing: 0) {
+            provenanceBanner(providerStore.artifactsPipelineCaption)
+
             HStack {
                 Button("Generate Brief", systemImage: "doc.text") {
                     viewModel.generate(meetingId: meeting.id, kind: .brief)
                 }
+                .help(generateHelp)
                 Button("Generate Follow-up", systemImage: "envelope") {
                     viewModel.generate(meetingId: meeting.id, kind: .followUp)
                 }
+                .help(generateHelp)
                 Spacer()
             }
             .disabled(viewModel.finalTranscript == nil)
@@ -138,6 +153,12 @@ struct MeetingDetailView: View {
         }
     }
 
+    private var generateHelp: String {
+        viewModel.finalTranscript == nil
+            ? "Нужен Final transcript"
+            : "Собрать артефакт из Final"
+    }
+
     @ViewBuilder
     private var artifactBody: some View {
         if let artifact = viewModel.selectedArtifact {
@@ -167,6 +188,16 @@ struct MeetingDetailView: View {
                 systemImage: "doc.text"
             )
         }
+    }
+
+    private func provenanceBanner(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(Color.primary.opacity(0.04))
     }
 
     private func markdown(_ source: String) -> AttributedString {
