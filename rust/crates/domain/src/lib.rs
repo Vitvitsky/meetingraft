@@ -2,11 +2,13 @@
 
 mod audio;
 mod caption;
+mod glossary;
 mod language;
 mod session;
 
 pub use audio::AudioChannel;
 pub use caption::{CaptionEvent, CaptionPhase};
+pub use glossary::{GlossaryScope, GlossaryTerm};
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use session::SessionState;
 
