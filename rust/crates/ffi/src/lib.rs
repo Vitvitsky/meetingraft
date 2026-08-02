@@ -134,6 +134,23 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn utc_date_label(timestamp_ms: u64) -> String {
+    let days_since_epoch = (timestamp_ms / 86_400_000) as i64;
+    let shifted_days = days_since_epoch + 719_468;
+    let era = shifted_days / 146_097;
+    let day_of_era = shifted_days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_part = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_part + 2) / 5 + 1;
+    let month = month_part + if month_part < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 fn default_data_root() -> PathBuf {
     std::env::temp_dir().join("meetingraft-default")
 }
@@ -526,15 +543,28 @@ impl MeetingCore {
             FfiArtifactKind::Brief => ArtifactKind::Brief,
             FfiArtifactKind::FollowUp => ArtifactKind::FollowUp,
         };
+        let primary_language = LanguagePolicy::default_v1().primary;
+        let generated_at_ms = now_ms();
         let body = match domain_kind {
-            ArtifactKind::Brief => {
-                render_brief(&final_transcript.body_markdown, SpeechLanguage::Ru)
-            }
+            ArtifactKind::Brief => render_brief(&final_transcript.body_markdown, primary_language),
             ArtifactKind::FollowUp => {
-                render_follow_up(&final_transcript.body_markdown, SpeechLanguage::Ru, "")
+                let started_at_ms = read_store(&guard, |store| store.list_meeting_summaries())
+                    .ok()
+                    .and_then(|meetings| {
+                        meetings
+                            .into_iter()
+                            .find(|meeting| meeting.id == meeting_id)
+                            .map(|meeting| meeting.started_at_ms)
+                    })
+                    .unwrap_or(generated_at_ms);
+                render_follow_up(
+                    &final_transcript.body_markdown,
+                    primary_language,
+                    &utc_date_label(started_at_ms),
+                )
             }
         };
-        let mut artifact = make_artifact(&meeting_id, domain_kind, &body, now_ms());
+        let mut artifact = make_artifact(&meeting_id, domain_kind, &body, generated_at_ms);
         artifact.id = Uuid::new_v4().to_string();
         let insert_result = write_store(&mut guard, |store| store.insert_artifact(&artifact));
         match insert_result {
@@ -710,6 +740,12 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn utc_date_label_formats_calendar_date() {
+        assert_eq!(utc_date_label(0), "1970-01-01");
+        assert_eq!(utc_date_label(1_785_628_800_000), "2026-08-02");
+    }
 
     #[test]
     fn start_demo_drains_russian_caption() {
@@ -947,7 +983,20 @@ mod tests {
         let result = core.generate_artifact(meeting_id.clone(), FfiArtifactKind::Brief);
         assert!(result.error.is_empty(), "{}", result.error);
         assert!(result.artifact.body_markdown.contains("# Brief"));
-        assert_eq!(core.list_artifacts(meeting_id.clone()).len(), 1);
+
+        let follow_up = core.generate_artifact(meeting_id.clone(), FfiArtifactKind::FollowUp);
+        assert!(follow_up.error.is_empty(), "{}", follow_up.error);
+        let subject = follow_up
+            .artifact
+            .body_markdown
+            .lines()
+            .next()
+            .expect("follow-up должен содержать subject");
+        assert!(
+            subject.chars().any(|character| character.is_ascii_digit()),
+            "subject должен содержать дату: {subject}"
+        );
+        assert_eq!(core.list_artifacts(meeting_id.clone()).len(), 2);
         assert!(core.assemble_final_now(meeting_id).is_empty());
 
         let _ = std::fs::remove_dir_all(&root);

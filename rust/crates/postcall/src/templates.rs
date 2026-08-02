@@ -151,6 +151,19 @@ mod tests {
     }
 
     #[test]
+    fn follow_up_uses_english_copy_for_english_primary_language() {
+        let markdown = render_follow_up(
+            "First outcome.\n\nSecond outcome.",
+            SpeechLanguage::En,
+            "2026-08-02",
+        );
+
+        assert!(markdown.starts_with("<!-- subject: Meeting follow-up 2026-08-02 -->"));
+        assert!(markdown.contains("\n\nHello,\n\n"));
+        assert!(markdown.contains("Please review and add anything we may have missed."));
+    }
+
+    #[test]
     fn artifact_uses_builtin_template_for_kind() {
         let artifact = make_artifact("m1", ArtifactKind::FollowUp, "body", 42);
 
