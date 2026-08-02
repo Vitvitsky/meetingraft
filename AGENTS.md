@@ -98,7 +98,8 @@ A feature is not done until:
   `xcodegen generate` в `apps/macos/`)
 - Backend: `cd backend && uv sync --extra dev && uv run pytest`;
   docker: `docker compose up --build` (API `:8080`, token `dev-token`)
-- Docs: architecture и ADR — в `docs/`
+- Docs: architecture и ADR — в `docs/`; схемы + install —
+  `docs/architecture-and-install.md`
 - OpenAPI: `shared/openapi.yaml`
 
 ## Stack & conventions

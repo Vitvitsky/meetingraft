@@ -27,40 +27,29 @@ The product uses a two-stage flow:
 
 ## High-level architecture
 
+Актуальные **mermaid-схемы и пошаговая установка**:  
+[`docs/architecture-and-install.md`](architecture-and-install.md).
+
 ```text
 macOS App (SwiftUI)
-├─ App Shell
-├─ Meeting Controls
-├─ Live Captions UI
-├─ Glossary UI
-├─ Review / Brief / Follow-up UI
+├─ App Shell / Live Captions / Meetings / Glossary / Settings (Providers)
 └─ Swift Platform Adapters
    ├─ AVFoundation audio capture
    ├─ permissions
-   ├─ notifications
-   └─ exports
+   └─ HostTranslationBridge (ADR-008 Apple path)
 
-Rust Core via UniFFI
-├─ domain models
-├─ session engine
-├─ subtitle assembler
-├─ glossary engine
-├─ live translation engines (ADR-008; Apple via Swift host bridge)
-├─ sync client
-└─ local store facade
+Rust Core via UniFFI (MeetingCore)
+├─ domain · session · glossary · postcall templates
+├─ live STT (Whisper / Mock) · translate engines
+├─ sync client → HTTP backend
+└─ SQLite local store facade
 
-Remote Backend
-├─ streaming gateway
-├─ meeting API
-├─ artifact storage
-├─ post-call processing
-│  ├─ transcription refinement
-│  ├─ diarization
-│  ├─ alignment
-│  └─ enrichment
-└─ generated artifacts
+Backend (ADR-007 slice A today)
+├─ FastAPI :8080 — /health, /v1/jobs, /v1/artifacts (in-memory)
+└─ Later: Postgres · Redis · Dramatiq · MinIO · WhisperX · LLM workers
 ```
 
+OpenAPI: `shared/openapi.yaml`.
 ## Why this split
 
 SwiftUI and AVFoundation provide native macOS UX and native media access.

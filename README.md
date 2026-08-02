@@ -18,23 +18,39 @@ GitHub repository for **MeetingRaft** — a native-first macOS meeting companion
 
 - macOS app: SwiftUI + AVFoundation
 - Native core: Rust via UniFFI
-- Backend: processing API + workers + storage
+- Backend: processing API + workers + storage (stub FastAPI today, ADR-007)
 - UX: macOS-native patterns following Apple Human Interface Guidelines
+
+## Quick start
+
+Схемы архитектуры и полная процедура установки:
+
+→ **[`docs/architecture-and-install.md`](docs/architecture-and-install.md)**
+
+Кратко:
+
+```bash
+apps/macos/Scripts/generate-ffi.sh
+open apps/macos/MeetingRaft.xcodeproj   # ⌘R
+
+# опционально Whisper
+apps/macos/Scripts/download-stt-model.sh
+
+# опционально backend stub
+docker compose up --build   # :8080, token dev-token
+```
+
+Команды тестов и границы слоёв: [`AGENTS.md`](AGENTS.md).
 
 ## Repository map
 
 - `apps/macos` — native SwiftUI shell
-- `rust/crates` — Rust core, session engine, glossary engine, sync client
-- `backend` — remote processing services
-- `docs` — architecture, ADRs, backlog
-- `shared` — contracts and cross-layer schemas
+- `rust/crates` — Rust core, session, STT, glossary, postcall, translate, sync, UniFFI
+- `backend` — FastAPI job API stub
+- `shared/openapi.yaml` — ADR-007 contract
+- `docs` — architecture, ADRs, roadmap, install guide
 
-## Initial milestones
+## Milestones
 
-1. SwiftUI shell with fake subtitle stream
-2. Rust core + UniFFI boundary
-3. Audio capture and live subtitle pipeline
-4. Glossary management
-5. Post-call refinement and generated outputs
-
-Phased plan with exit criteria: [`docs/roadmap.md`](docs/roadmap.md).
+Phases 0–6 local MVP are on `main` (see [`docs/roadmap.md`](docs/roadmap.md)).  
+Next: full ADR-007 workers (WhisperX / LLM), speakers (Epic 9), Phase 7 hardening.
