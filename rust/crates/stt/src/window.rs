@@ -50,6 +50,10 @@ impl LiveCaptionPipeline {
         self.backend
     }
 
+    pub fn set_initial_prompt(&mut self, prompt: &str) {
+        self.engine.set_initial_prompt(prompt);
+    }
+
     pub fn push_pcm_bytes(&mut self, pcm: &[u8], sample_rate: u32) -> Vec<CaptionEvent> {
         let samples = pcm_bytes_to_i16(pcm);
         self.engine.push_pcm(&samples, sample_rate)

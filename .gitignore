@@ -10,6 +10,7 @@ CLAUDE.md
 # Xcode / Swift
 build/
 DerivedData/
+apps/macos/.derived-data/
 *.xcuserstate
 *.xcuserdata/
 xcuserdata/

@@ -89,7 +89,7 @@ impl SttEngine for MockSttEngine {
             return Vec::new();
         }
         let lang = self.policy.primary.code();
-        let text = format!("[final {lang}] фрагмент речи");
+        let text = format!("[final {lang}] фрагмент речи униффи");
         self.in_speech = false;
         self.speech_frames = 0;
         self.silence_frames = 0;

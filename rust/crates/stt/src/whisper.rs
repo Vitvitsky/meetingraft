@@ -26,6 +26,7 @@ pub struct WhisperSttEngine {
     in_speech: bool,
     frames_since_partial: usize,
     last_partial_text: String,
+    initial_prompt: String,
 }
 
 impl WhisperSttEngine {
@@ -45,6 +46,7 @@ impl WhisperSttEngine {
             in_speech: false,
             frames_since_partial: 0,
             last_partial_text: String::new(),
+            initial_prompt: String::new(),
         })
     }
 
@@ -77,6 +79,9 @@ impl WhisperSttEngine {
         params.set_print_timestamps(false);
         params.set_single_segment(true);
         params.set_no_context(true);
+        if !self.initial_prompt.is_empty() {
+            params.set_initial_prompt(&self.initial_prompt);
+        }
 
         let mut audio = vec![0.0f32; pcm.len()];
         convert_integer_to_float_audio(pcm, &mut audio).ok()?;
@@ -85,12 +90,12 @@ impl WhisperSttEngine {
         let n = state.full_n_segments();
         let mut parts = Vec::new();
         for i in 0..n {
-            if let Some(seg) = state.get_segment(i) {
-                if let Ok(t) = seg.to_str() {
-                    let trimmed = t.trim();
-                    if !trimmed.is_empty() {
-                        parts.push(trimmed.to_string());
-                    }
+            if let Some(seg) = state.get_segment(i)
+                && let Ok(t) = seg.to_str()
+            {
+                let trimmed = t.trim();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed.to_string());
                 }
             }
         }
@@ -113,6 +118,10 @@ impl SttEngine for WhisperSttEngine {
         self.policy = policy;
     }
 
+    fn set_initial_prompt(&mut self, prompt: &str) {
+        self.initial_prompt = prompt.to_owned();
+    }
+
     fn push_pcm(&mut self, pcm: &[i16], _sample_rate: u32) -> Vec<CaptionEvent> {
         let mut out = Vec::new();
         let energy = Self::rms(pcm);
@@ -126,11 +135,11 @@ impl SttEngine for WhisperSttEngine {
             if self.speech_frames >= MIN_SPEECH_FRAMES
                 && self.frames_since_partial >= PARTIAL_MIN_FRAMES
             {
-                if let Some(text) = self.transcribe(&self.buffer) {
-                    if text != self.last_partial_text {
-                        self.last_partial_text = text.clone();
-                        out.push(Self::event(text, CaptionPhase::Partial));
-                    }
+                if let Some(text) = self.transcribe(&self.buffer)
+                    && text != self.last_partial_text
+                {
+                    self.last_partial_text = text.clone();
+                    out.push(Self::event(text, CaptionPhase::Partial));
                 }
                 self.frames_since_partial = 0;
             }

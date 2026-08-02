@@ -141,8 +141,8 @@ Storage API (used by glossary engine / ffi): `list_terms`, `upsert_term`, `delet
 
 ## Exit criteria checklist
 
-- [ ] Terms change caption output via normalize (proven in `cargo test` on Mock path).
-- [ ] Normalization unit tests green.
-- [ ] CSV import of a real fixture succeeds and lists terms.
-- [ ] Glossary sidebar CRUD works against UniFFI.
-- [ ] Docs: roadmap Phase 5 status; backlog Epic 7 partial checkmarks.
+- [x] Terms change caption output via normalize (proven in `cargo test` on Mock path).
+- [x] Normalization unit tests green.
+- [x] CSV import of a real fixture succeeds and lists terms.
+- [x] Glossary sidebar CRUD works against UniFFI.
+- [x] Docs: roadmap Phase 5 status; backlog Epic 7 partial checkmarks.

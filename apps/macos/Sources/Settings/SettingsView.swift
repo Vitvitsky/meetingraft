@@ -34,6 +34,8 @@ struct SettingsView: View {
 
             Text("Audio: mic capture active; system tap wiring follow-up (ADR-004). Chunks 100 ms @ 16 kHz.")
                 .foregroundStyle(.secondary)
+            Text("Glossary is available in the sidebar.")
+                .foregroundStyle(.secondary)
         }
         .padding()
         .frame(width: 480, height: 260)

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use domain::AudioChannel;
+use domain::{AudioChannel, GlossaryScope, GlossaryTerm, SpeechLanguage};
 use rusqlite::{Connection, params};
 use thiserror::Error;
 
@@ -72,6 +72,17 @@ impl AudioManifestStore {
                 phase TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS glossary_terms (
+                id TEXT PRIMARY KEY NOT NULL,
+                surface TEXT NOT NULL,
+                canonical TEXT NOT NULL,
+                language TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                meeting_id TEXT,
+                updated_at_ms INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique
+                ON glossary_terms(surface, language, scope, ifnull(meeting_id, ''));
             ",
         )?;
         Ok(Self {
@@ -238,6 +249,138 @@ impl AudioManifestStore {
         Ok(count as u64)
     }
 
+    /// Добавить или обновить термин по id либо уникальному ключу.
+    pub fn upsert_glossary_term(
+        &mut self,
+        term: &GlossaryTerm,
+        updated_at_ms: u64,
+    ) -> Result<(), AudioManifestError> {
+        let transaction = self.conn.transaction()?;
+        Self::write_glossary_term(&transaction, term, updated_at_ms)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Удалить термин по id.
+    pub fn delete_glossary_term(&mut self, id: &str) -> Result<(), AudioManifestError> {
+        self.conn
+            .execute("DELETE FROM glossary_terms WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Вернуть сохранённые термины в стабильном порядке.
+    pub fn list_glossary_terms(&self) -> Result<Vec<GlossaryTerm>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, surface, canonical, language, scope, meeting_id
+             FROM glossary_terms
+             ORDER BY surface, language, scope, ifnull(meeting_id, ''), id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let language: String = row.get(3)?;
+            let scope: String = row.get(4)?;
+            let meeting_id: Option<String> = row.get(5)?;
+            Ok(GlossaryTerm {
+                id: row.get(0)?,
+                surface: row.get(1)?,
+                canonical: row.get(2)?,
+                language: Self::parse_speech_language(&language)?,
+                scope: Self::parse_glossary_scope(&scope, meeting_id)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Слить импортированные термины одной транзакцией.
+    pub fn replace_glossary_from_import(
+        &mut self,
+        terms: &[GlossaryTerm],
+        updated_at_ms: u64,
+    ) -> Result<(), AudioManifestError> {
+        let transaction = self.conn.transaction()?;
+        for term in terms {
+            Self::write_glossary_term(&transaction, term, updated_at_ms)?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn write_glossary_term(
+        connection: &Connection,
+        term: &GlossaryTerm,
+        updated_at_ms: u64,
+    ) -> Result<(), rusqlite::Error> {
+        let (scope, meeting_id) = match &term.scope {
+            GlossaryScope::Global => ("global", None),
+            GlossaryScope::Meeting { meeting_id } => ("meeting", Some(meeting_id.as_str())),
+        };
+        connection.execute(
+            "DELETE FROM glossary_terms
+             WHERE id = ?1
+                OR (
+                    surface = ?2
+                    AND language = ?3
+                    AND scope = ?4
+                    AND ifnull(meeting_id, '') = ifnull(?5, '')
+                )",
+            params![
+                term.id,
+                term.surface,
+                term.language.code(),
+                scope,
+                meeting_id
+            ],
+        )?;
+        connection.execute(
+            "INSERT INTO glossary_terms
+             (id, surface, canonical, language, scope, meeting_id, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                term.id,
+                term.surface,
+                term.canonical,
+                term.language.code(),
+                scope,
+                meeting_id,
+                updated_at_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn parse_speech_language(value: &str) -> Result<SpeechLanguage, rusqlite::Error> {
+        match value {
+            "ru" => Ok(SpeechLanguage::Ru),
+            "en" => Ok(SpeechLanguage::En),
+            "es" => Ok(SpeechLanguage::Es),
+            _ => Err(Self::invalid_glossary_value("language", value)),
+        }
+    }
+
+    fn parse_glossary_scope(
+        value: &str,
+        meeting_id: Option<String>,
+    ) -> Result<GlossaryScope, rusqlite::Error> {
+        match (value, meeting_id) {
+            ("global", _) => Ok(GlossaryScope::Global),
+            ("meeting", Some(meeting_id)) => Ok(GlossaryScope::Meeting { meeting_id }),
+            ("meeting", None) => Err(Self::invalid_glossary_value("scope", "meeting without id")),
+            _ => Err(Self::invalid_glossary_value("scope", value)),
+        }
+    }
+
+    fn invalid_glossary_value(field: &str, value: &str) -> rusqlite::Error {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid glossary {field}: {value}"),
+            )
+            .into(),
+        )
+    }
+
     fn chunk_dir(&self, session_id: &str, channel: AudioChannel) -> PathBuf {
         self.root
             .join("sessions")
@@ -249,6 +392,7 @@ impl AudioManifestStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::{GlossaryScope, GlossaryTerm, SpeechLanguage};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -314,6 +458,67 @@ mod tests {
             };
             store.append_caption("s1", &event, 42).unwrap();
             assert_eq!(store.caption_count("s1").unwrap(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn glossary_upsert_list_delete() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let mut term = GlossaryTerm {
+                id: "term-1".into(),
+                surface: "униффи".into(),
+                canonical: "UniFFI".into(),
+                language: SpeechLanguage::Ru,
+                scope: GlossaryScope::Global,
+            };
+
+            store.upsert_glossary_term(&term, 1).unwrap();
+            assert_eq!(store.list_glossary_terms().unwrap(), vec![term.clone()]);
+
+            term.canonical = "UniFFI Framework".into();
+            store.upsert_glossary_term(&term, 2).unwrap();
+            assert_eq!(store.list_glossary_terms().unwrap(), vec![term]);
+
+            store.delete_glossary_term("term-1").unwrap();
+            assert!(store.list_glossary_terms().unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn glossary_import_upserts_without_deleting_unrelated_terms() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let unrelated = GlossaryTerm {
+                id: "term-1".into(),
+                surface: "рафт".into(),
+                canonical: "Raft".into(),
+                language: SpeechLanguage::Ru,
+                scope: GlossaryScope::Global,
+            };
+            let imported = GlossaryTerm {
+                id: "term-2".into(),
+                surface: "meeting raft".into(),
+                canonical: "MeetingRaft".into(),
+                language: SpeechLanguage::En,
+                scope: GlossaryScope::Meeting {
+                    meeting_id: "meeting-1".into(),
+                },
+            };
+            store.upsert_glossary_term(&unrelated, 1).unwrap();
+
+            store
+                .replace_glossary_from_import(std::slice::from_ref(&imported), 2)
+                .unwrap();
+
+            assert_eq!(
+                store.list_glossary_terms().unwrap(),
+                vec![imported, unrelated]
+            );
         }
         let _ = fs::remove_dir_all(&root);
     }

@@ -1,0 +1,11 @@
+[package]
+name = "meetingraft-glossary"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "glossary"
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+uuid = { version = "1", features = ["v4"] }
