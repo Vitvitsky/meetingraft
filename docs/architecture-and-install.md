@@ -5,7 +5,8 @@
 `docs/adr/`.
 
 **Статус прототипа (2026-08):** Phase 0–6 local MVP + ADR-007 **slice A**
-(FastAPI stub jobs). WhisperX / diarization / production LLM — ещё не в рантайме.
+(FastAPI stub jobs) + **Speakers skeleton** (ручные метки в Meetings).
+WhisperX / diarization / production LLM — ещё не в рантайме.
 
 ---
 
@@ -95,8 +96,9 @@ flowchart LR
   end
 
   Settings["Settings → Backend API\nTest API / health"] --> Jobs
-  Meetings["Meetings → Artifacts\nSubmit refine (stub)"] --> Jobs
+  Meetings["Meetings → Live | Final | Speakers | Artifacts\nSubmit refine (stub)"] --> Jobs
   Final --> Meetings
+  Speakers["Speakers tab\nручные метки (SQLite)"] --> Meetings
 ```
 
 **Provenance (Meetings UI):** Live ≠ вход для Brief; Brief/Follow-up ← **Final**.
@@ -226,7 +228,7 @@ CI: `.github/workflows/ci.yml` (rust + macos + backend).
 1. Запустить app → **Start Captions** (demo) — появляются строки.
 2. Сменить Language → English → снова demo — английский скрипт.
 3. (Опц.) Whisper model + **Start Live** — captions / Mock.
-4. Stop Live → **Meetings** → Final / Generate Brief.
+4. Stop Live → **Meetings** → Final / **Speakers** (Add, rename, delete) / Generate Brief.
 5. (Опц.) `docker compose up` → Settings **Test API** = OK.
 6. (Опц.) Settings **LLM = Backend** → **Meetings** → Final → **Generate Brief** → markdown из stub job (`kind: brief`).
 7. (Опц.) **Meetings** → **Artifacts** → **Submit refine (stub)** → refine markdown из backend.

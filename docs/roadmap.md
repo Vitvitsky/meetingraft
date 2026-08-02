@@ -138,8 +138,10 @@ Settings Test API) и Meetings poll UI / stub e2e
 (`feat/meetings-backend-refine-stub`: Artifacts → Submit refine → poll job →
 show stub markdown). **Done follow-up:** Artifacts via backend jobs
 (`feat/artifacts-via-backend-jobs`: Settings LLM=Backend → Generate Brief/Follow-up
-→ `POST /v1/jobs` + poll; no silent fallback to templates). **Remaining:**
-WhisperX/LLM workers, Ollama adapters, speakers/diarization (Epic 9),
+→ `POST /v1/jobs` + poll; no silent fallback to templates). **Done follow-up:**
+Speakers skeleton (`feat/speakers-skeleton`: domain + SQLite + UniFFI + Meetings
+**Speakers** tab, ручные метки ru/en). **Remaining:** WhisperX/LLM workers,
+Ollama adapters, diarization и привязка спикеров к Final (Epic 9),
 user-defined templates, export .md/mail.
 
 ## Phase 7 — Hardening and release
