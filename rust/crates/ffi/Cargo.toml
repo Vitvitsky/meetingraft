@@ -23,3 +23,6 @@ meetingraft-sync = { path = "../sync" }
 meetingraft-translate = { path = "../translate" }
 uniffi = "0.32"
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+mockito = "1"

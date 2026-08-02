@@ -693,6 +693,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     func setLiveTranslation(enabled: Bool, targetCode: String)  -> String
     
     /**
+     * Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
+     */
+    func setLlmConfig(engineCode: String, modelId: String) 
+    
+    /**
      * Primary язык распознавания (`ru` | `en` | `es`). Не включает перевод.
      */
     func setSessionLanguage(primaryCode: String)  -> String
@@ -1124,6 +1129,19 @@ open func setLiveTranslation(enabled: Bool, targetCode: String) -> String  {
         FfiConverterString.lower(targetCode),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
+     */
+open func setLlmConfig(engineCode: String, modelId: String)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_set_llm_config(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(engineCode),
+        FfiConverterString.lower(modelId),uniffiCallStatus
+    )
+}
 }
     
     /**
@@ -2502,6 +2520,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_live_translation() != 28202) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_llm_config() != 4258) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_session_language() != 29416) {

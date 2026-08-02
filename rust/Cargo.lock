@@ -879,6 +879,7 @@ dependencies = [
  "meetingraft-stt",
  "meetingraft-sync",
  "meetingraft-translate",
+ "mockito",
  "uniffi",
  "uuid",
 ]

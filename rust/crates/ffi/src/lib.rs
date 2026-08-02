@@ -5,7 +5,7 @@ uniffi::setup_scaffolding!();
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryScope,
@@ -16,7 +16,7 @@ use postcall::{assemble_final, make_artifact, render_brief, render_follow_up};
 use session::MeetingSession;
 use storage::{AudioManifestError, AudioManifestStore};
 use stt::{LiveCaptionPipeline, SttBackendKind, models_dir, resolve_whisper_model};
-use sync::{CreateJobRequest, JobKind, SyncClient};
+use sync::{CreateJobRequest, JobKind, SyncClient, wait_for_job_artifact};
 use translate::{
     EffectiveBackend, HostPendingQueue, TranslationBackendKind, TranslationPolicy,
     resolve_effective, translate_now,
@@ -163,6 +163,8 @@ struct MeetingCoreInner {
     host_translation_queue: HostPendingQueue,
     pending_translations: VecDeque<FfiCaptionEvent>,
     sync_client: SyncClient,
+    llm_engine: String,
+    llm_model_id: String,
 }
 
 /// Фасад сессии для macOS shell.
@@ -353,6 +355,38 @@ fn empty_artifact() -> FfiArtifact {
     }
 }
 
+fn normalize_llm_engine(code: &str) -> &str {
+    match code {
+        "backend" => "backend",
+        _ => "builtin_templates",
+    }
+}
+
+fn store_generated_artifact(
+    inner: &mut MeetingCoreInner,
+    meeting_id: &str,
+    kind: ArtifactKind,
+    body: &str,
+    generated_at_ms: u64,
+    template_id: Option<&str>,
+) -> FfiGenerateArtifactResult {
+    let mut artifact = make_artifact(meeting_id, kind, body, generated_at_ms);
+    artifact.id = Uuid::new_v4().to_string();
+    if let Some(template_id) = template_id {
+        artifact.template_id = template_id.to_owned();
+    }
+    match write_store(inner, |store| store.insert_artifact(&artifact)) {
+        Ok(()) => FfiGenerateArtifactResult {
+            artifact: artifact_to_ffi(artifact),
+            error: String::new(),
+        },
+        Err(error) => FfiGenerateArtifactResult {
+            artifact: empty_artifact(),
+            error: error.to_string(),
+        },
+    }
+}
+
 fn empty_backend_job(error: String) -> FfiBackendJob {
     FfiBackendJob {
         id: String::new(),
@@ -466,6 +500,8 @@ impl MeetingCore {
                 host_translation_queue: HostPendingQueue::default(),
                 pending_translations: VecDeque::new(),
                 sync_client: SyncClient::new("", ""),
+                llm_engine: "builtin_templates".to_string(),
+                llm_model_id: String::new(),
             }),
         })
     }
@@ -567,6 +603,13 @@ impl MeetingCore {
     pub fn set_api_config(&self, base_url: String, token: String) {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
         guard.sync_client = SyncClient::new(base_url, token);
+    }
+
+    /// Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
+    pub fn set_llm_config(&self, engine_code: String, model_id: String) {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.llm_engine = normalize_llm_engine(&engine_code).to_owned();
+        guard.llm_model_id = model_id;
     }
 
     pub fn api_base_url(&self) -> String {
@@ -887,8 +930,53 @@ impl MeetingCore {
             FfiArtifactKind::Brief => ArtifactKind::Brief,
             FfiArtifactKind::FollowUp => ArtifactKind::FollowUp,
         };
-        let primary_language = guard.language_policy.primary;
+        let engine = normalize_llm_engine(&guard.llm_engine).to_owned();
         let generated_at_ms = now_ms();
+        if engine == "backend" {
+            let job_kind = match domain_kind {
+                ArtifactKind::Brief => JobKind::Brief,
+                ArtifactKind::FollowUp => JobKind::FollowUp,
+            };
+            let request = CreateJobRequest {
+                meeting_id: meeting_id.clone(),
+                kind: job_kind,
+                primary_language: guard.language_policy.primary.code().to_owned(),
+                allowed_languages: guard
+                    .language_policy
+                    .allowed
+                    .iter()
+                    .map(|language| language.code().to_owned())
+                    .collect(),
+                payload: None,
+            };
+            let client = guard.sync_client.clone();
+            drop(guard);
+            let backend_artifact =
+                match wait_for_job_artifact(&client, &request, 20, Duration::from_millis(250)) {
+                    Ok(artifact) => artifact,
+                    Err(error) => {
+                        return FfiGenerateArtifactResult {
+                            artifact: empty_artifact(),
+                            error: error.to_string(),
+                        };
+                    }
+                };
+            let template_id = match domain_kind {
+                ArtifactKind::Brief => "backend.brief",
+                ArtifactKind::FollowUp => "backend.follow_up",
+            };
+            let mut guard = self.inner.lock().expect("meeting core poisoned");
+            return store_generated_artifact(
+                &mut guard,
+                &meeting_id,
+                domain_kind,
+                &backend_artifact.body_markdown,
+                generated_at_ms,
+                Some(template_id),
+            );
+        }
+
+        let primary_language = guard.language_policy.primary;
         let body = match domain_kind {
             ArtifactKind::Brief => render_brief(&final_transcript.body_markdown, primary_language),
             ArtifactKind::FollowUp => {
@@ -908,19 +996,14 @@ impl MeetingCore {
                 )
             }
         };
-        let mut artifact = make_artifact(&meeting_id, domain_kind, &body, generated_at_ms);
-        artifact.id = Uuid::new_v4().to_string();
-        let insert_result = write_store(&mut guard, |store| store.insert_artifact(&artifact));
-        match insert_result {
-            Ok(()) => FfiGenerateArtifactResult {
-                artifact: artifact_to_ffi(artifact),
-                error: String::new(),
-            },
-            Err(error) => FfiGenerateArtifactResult {
-                artifact: empty_artifact(),
-                error: error.to_string(),
-            },
-        }
+        store_generated_artifact(
+            &mut guard,
+            &meeting_id,
+            domain_kind,
+            &body,
+            generated_at_ms,
+            None,
+        )
     }
 
     /// Recording + live STT (Whisper если модель есть и feature включён, иначе Mock).
@@ -1084,8 +1167,21 @@ impl MeetingCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::{Matcher, Server};
     use std::thread;
     use std::time::Duration;
+
+    fn seed_final_transcript(root: &std::path::Path, meeting_id: &str) {
+        let mut store = AudioManifestStore::open(root).expect("test store должен открыться");
+        store
+            .upsert_final_transcript(&FinalTranscript {
+                meeting_id: meeting_id.to_owned(),
+                version: 1,
+                body_markdown: "Обсудили backend-генерацию.".into(),
+                created_at_ms: 1_785_628_800_000,
+            })
+            .expect("final transcript должен сохраниться");
+    }
 
     #[test]
     fn utc_date_label_formats_calendar_date() {
@@ -1413,6 +1509,97 @@ mod tests {
         assert!(!result.error.is_empty());
         assert!(result.artifact.id.is_empty());
         assert!(core.list_artifacts("missing".into()).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generate_artifact_backend_uses_job_artifact() {
+        let mut server = Server::new();
+        let _post = server
+            .mock("POST", "/v1/jobs")
+            .match_body(Matcher::Exact(
+                r#"{"meeting_id":"m-backend","kind":"brief","primary_language":"ru","allowed_languages":["ru","en","es"]}"#
+                    .into(),
+            ))
+            .with_status(201)
+            .with_body(
+                r#"{"id":"j1","meeting_id":"m-backend","kind":"brief","status":"succeeded","error":null,"artifact_ids":["a1"]}"#,
+            )
+            .create();
+        let _artifact = server
+            .mock("GET", "/v1/artifacts/a1")
+            .with_status(200)
+            .with_body(
+                r##"{"id":"a1","kind":"brief","body_markdown":"# Stub brief","created_at":"2026-08-02T00:00:00Z"}"##,
+            )
+            .create();
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-backend-success-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_final_transcript(&root, "m-backend");
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_api_config(server.url(), "dev-token".into());
+        core.set_llm_config("backend".into(), "unused".into());
+
+        let result = core.generate_artifact("m-backend".into(), FfiArtifactKind::Brief);
+
+        assert!(result.error.is_empty(), "{}", result.error);
+        assert_eq!(result.artifact.body_markdown, "# Stub brief");
+        assert_eq!(result.artifact.template_id, "backend.brief");
+        assert_eq!(core.list_artifacts("m-backend".into()).len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generate_artifact_backend_surfaces_job_error() {
+        let mut server = Server::new();
+        let _post = server
+            .mock("POST", "/v1/jobs")
+            .with_status(201)
+            .with_body(
+                r#"{"id":"j2","meeting_id":"m-backend-error","kind":"follow_up","status":"failed","error":"model unavailable","artifact_ids":[]}"#,
+            )
+            .create();
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-backend-error-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_final_transcript(&root, "m-backend-error");
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_api_config(server.url(), "dev-token".into());
+        core.set_llm_config("backend".into(), "unused".into());
+
+        let result = core.generate_artifact("m-backend-error".into(), FfiArtifactKind::FollowUp);
+
+        assert!(
+            result.error.contains("model unavailable"),
+            "{}",
+            result.error
+        );
+        assert!(result.artifact.id.is_empty());
+        assert!(core.list_artifacts("m-backend-error".into()).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unknown_llm_engine_keeps_builtin_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-builtin-normalization-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_final_transcript(&root, "m-builtin");
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_llm_config("unknown".into(), "ignored".into());
+
+        let result = core.generate_artifact("m-builtin".into(), FfiArtifactKind::Brief);
+
+        assert!(result.error.is_empty(), "{}", result.error);
+        assert!(result.artifact.body_markdown.contains("# Brief"));
+        assert_eq!(result.artifact.template_id, "builtin.brief");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
