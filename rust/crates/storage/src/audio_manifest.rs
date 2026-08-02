@@ -3,7 +3,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use domain::{AudioChannel, GlossaryScope, GlossaryTerm, SpeechLanguage};
+use domain::{
+    Artifact, ArtifactKind, AudioChannel, CaptionEvent, CaptionPhase, FinalTranscript,
+    GlossaryScope, GlossaryTerm, MeetingSummary, SpeechLanguage,
+};
 use rusqlite::{Connection, params};
 use thiserror::Error;
 
@@ -70,6 +73,21 @@ impl AudioManifestStore {
                 session_id TEXT NOT NULL,
                 text TEXT NOT NULL,
                 phase TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS final_transcripts (
+                meeting_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                body_markdown TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (meeting_id, version)
+            );
+            CREATE TABLE IF NOT EXISTS artifacts (
+                id TEXT PRIMARY KEY NOT NULL,
+                meeting_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                template_id TEXT NOT NULL,
+                body_markdown TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS glossary_terms (
@@ -249,6 +267,148 @@ impl AudioManifestStore {
         Ok(count as u64)
     }
 
+    /// Вернуть caption events сессии в хронологическом порядке.
+    pub fn list_captions(&self, session_id: &str) -> Result<Vec<CaptionEvent>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, text, phase
+             FROM caption_events
+             WHERE session_id = ?1
+             ORDER BY created_at_ms, id",
+        )?;
+        let rows = statement.query_map(params![session_id], |row| {
+            let phase: String = row.get(2)?;
+            Ok(CaptionEvent {
+                id: row.get(0)?,
+                text: row.get(1)?,
+                phase: Self::parse_caption_phase(&phase)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Сохранить или заменить версию финального транскрипта.
+    pub fn upsert_final_transcript(
+        &mut self,
+        transcript: &FinalTranscript,
+    ) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "INSERT INTO final_transcripts
+             (meeting_id, version, body_markdown, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(meeting_id, version) DO UPDATE SET
+                 body_markdown = excluded.body_markdown,
+                 created_at_ms = excluded.created_at_ms",
+            params![
+                transcript.meeting_id,
+                transcript.version,
+                transcript.body_markdown,
+                transcript.created_at_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Вернуть последнюю версию финального транскрипта встречи.
+    pub fn get_final_transcript(
+        &self,
+        meeting_id: &str,
+    ) -> Result<Option<FinalTranscript>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT meeting_id, version, body_markdown, created_at_ms
+             FROM final_transcripts
+             WHERE meeting_id = ?1
+             ORDER BY version DESC
+             LIMIT 1",
+        )?;
+        let mut rows = statement.query(params![meeting_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(FinalTranscript {
+            meeting_id: row.get(0)?,
+            version: row.get::<_, i64>(1)? as u32,
+            body_markdown: row.get(2)?,
+            created_at_ms: row.get::<_, i64>(3)? as u64,
+        }))
+    }
+
+    /// Сохранить post-call артефакт.
+    pub fn insert_artifact(&mut self, artifact: &Artifact) -> Result<(), AudioManifestError> {
+        let kind = match artifact.kind {
+            ArtifactKind::Brief => "brief",
+            ArtifactKind::FollowUp => "follow_up",
+        };
+        self.conn.execute(
+            "INSERT INTO artifacts
+             (id, meeting_id, kind, template_id, body_markdown, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                artifact.id,
+                artifact.meeting_id,
+                kind,
+                artifact.template_id,
+                artifact.body_markdown,
+                artifact.created_at_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Вернуть артефакты встречи в хронологическом порядке.
+    pub fn list_artifacts(&self, meeting_id: &str) -> Result<Vec<Artifact>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, meeting_id, kind, template_id, body_markdown, created_at_ms
+             FROM artifacts
+             WHERE meeting_id = ?1
+             ORDER BY created_at_ms, id",
+        )?;
+        let rows = statement.query_map(params![meeting_id], |row| {
+            let kind: String = row.get(2)?;
+            Ok(Artifact {
+                id: row.get(0)?,
+                meeting_id: row.get(1)?,
+                kind: Self::parse_artifact_kind(&kind)?,
+                template_id: row.get(3)?,
+                body_markdown: row.get(4)?,
+                created_at_ms: row.get::<_, i64>(5)? as u64,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Вернуть встречи с признаками готового финала и числом артефактов.
+    pub fn list_meeting_summaries(&self) -> Result<Vec<MeetingSummary>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT
+                 sessions.id,
+                 sessions.started_at_ms,
+                 EXISTS(
+                     SELECT 1
+                     FROM final_transcripts
+                     WHERE final_transcripts.meeting_id = sessions.id
+                 ),
+                 (
+                     SELECT COUNT(*)
+                     FROM artifacts
+                     WHERE artifacts.meeting_id = sessions.id
+                 )
+             FROM sessions
+             ORDER BY sessions.started_at_ms DESC, sessions.id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(MeetingSummary {
+                id: row.get(0)?,
+                started_at_ms: row.get::<_, i64>(1)? as u64,
+                has_final: row.get(2)?,
+                artifact_count: row.get::<_, i64>(3)? as u64,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Добавить или обновить термин по id либо уникальному ключу.
     pub fn upsert_glossary_term(
         &mut self,
@@ -353,7 +513,7 @@ impl AudioManifestStore {
             "ru" => Ok(SpeechLanguage::Ru),
             "en" => Ok(SpeechLanguage::En),
             "es" => Ok(SpeechLanguage::Es),
-            _ => Err(Self::invalid_glossary_value("language", value)),
+            _ => Err(Self::invalid_storage_value("glossary language", value)),
         }
     }
 
@@ -364,18 +524,37 @@ impl AudioManifestStore {
         match (value, meeting_id) {
             ("global", _) => Ok(GlossaryScope::Global),
             ("meeting", Some(meeting_id)) => Ok(GlossaryScope::Meeting { meeting_id }),
-            ("meeting", None) => Err(Self::invalid_glossary_value("scope", "meeting without id")),
-            _ => Err(Self::invalid_glossary_value("scope", value)),
+            ("meeting", None) => Err(Self::invalid_storage_value(
+                "glossary scope",
+                "meeting without id",
+            )),
+            _ => Err(Self::invalid_storage_value("glossary scope", value)),
         }
     }
 
-    fn invalid_glossary_value(field: &str, value: &str) -> rusqlite::Error {
+    fn parse_caption_phase(value: &str) -> Result<CaptionPhase, rusqlite::Error> {
+        match value {
+            "partial" => Ok(CaptionPhase::Partial),
+            "final" => Ok(CaptionPhase::Final),
+            _ => Err(Self::invalid_storage_value("caption phase", value)),
+        }
+    }
+
+    fn parse_artifact_kind(value: &str) -> Result<ArtifactKind, rusqlite::Error> {
+        match value {
+            "brief" => Ok(ArtifactKind::Brief),
+            "follow_up" => Ok(ArtifactKind::FollowUp),
+            _ => Err(Self::invalid_storage_value("artifact kind", value)),
+        }
+    }
+
+    fn invalid_storage_value(field: &str, value: &str) -> rusqlite::Error {
         rusqlite::Error::FromSqlConversionFailure(
             0,
             rusqlite::types::Type::Text,
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("invalid glossary {field}: {value}"),
+                format!("invalid {field}: {value}"),
             )
             .into(),
         )
@@ -392,7 +571,10 @@ impl AudioManifestStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{GlossaryScope, GlossaryTerm, SpeechLanguage};
+    use domain::{
+        Artifact, ArtifactKind, CaptionEvent, CaptionPhase, FinalTranscript, GlossaryScope,
+        GlossaryTerm, SpeechLanguage,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -458,6 +640,166 @@ mod tests {
             };
             store.append_caption("s1", &event, 42).unwrap();
             assert_eq!(store.caption_count("s1").unwrap(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn list_captions_reads_reopened_session_in_creation_order() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store
+                .append_caption(
+                    "s1",
+                    &CaptionEvent {
+                        id: "later".into(),
+                        text: "готово".into(),
+                        phase: CaptionPhase::Final,
+                    },
+                    20,
+                )
+                .unwrap();
+            store
+                .append_caption(
+                    "s1",
+                    &CaptionEvent {
+                        id: "earlier".into(),
+                        text: "черновик".into(),
+                        phase: CaptionPhase::Partial,
+                    },
+                    10,
+                )
+                .unwrap();
+        }
+
+        {
+            let store = AudioManifestStore::open(&root).unwrap();
+            assert_eq!(
+                store.list_captions("s1").unwrap(),
+                vec![
+                    CaptionEvent {
+                        id: "earlier".into(),
+                        text: "черновик".into(),
+                        phase: CaptionPhase::Partial,
+                    },
+                    CaptionEvent {
+                        id: "later".into(),
+                        text: "готово".into(),
+                        phase: CaptionPhase::Final,
+                    },
+                ]
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn upsert_final_transcript_overwrites_same_version() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let mut transcript = FinalTranscript {
+                meeting_id: "meeting-1".into(),
+                version: 1,
+                body_markdown: "Первая версия".into(),
+                created_at_ms: 100,
+            };
+            store.upsert_final_transcript(&transcript).unwrap();
+
+            transcript.body_markdown = "Исправленная версия".into();
+            transcript.created_at_ms = 200;
+            store.upsert_final_transcript(&transcript).unwrap();
+
+            assert_eq!(
+                store.get_final_transcript("meeting-1").unwrap(),
+                Some(transcript)
+            );
+            assert_eq!(store.get_final_transcript("missing").unwrap(), None);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn insert_and_list_artifacts_maps_kinds() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let brief = Artifact {
+                id: "artifact-1".into(),
+                meeting_id: "meeting-1".into(),
+                kind: ArtifactKind::Brief,
+                template_id: "builtin.brief".into(),
+                body_markdown: "# Brief".into(),
+                created_at_ms: 100,
+            };
+            let follow_up = Artifact {
+                id: "artifact-2".into(),
+                meeting_id: "meeting-1".into(),
+                kind: ArtifactKind::FollowUp,
+                template_id: "builtin.follow_up".into(),
+                body_markdown: "Итоги встречи".into(),
+                created_at_ms: 200,
+            };
+            store.insert_artifact(&follow_up).unwrap();
+            store.insert_artifact(&brief).unwrap();
+
+            assert_eq!(
+                store.list_artifacts("meeting-1").unwrap(),
+                vec![brief, follow_up]
+            );
+            assert!(store.list_artifacts("missing").unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn meeting_summaries_include_final_and_artifact_flags() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("meeting-1", 100).unwrap();
+            store.begin_session("meeting-2", 200).unwrap();
+            store
+                .upsert_final_transcript(&FinalTranscript {
+                    meeting_id: "meeting-1".into(),
+                    version: 1,
+                    body_markdown: "Финал".into(),
+                    created_at_ms: 300,
+                })
+                .unwrap();
+            for (id, kind) in [
+                ("artifact-1", ArtifactKind::Brief),
+                ("artifact-2", ArtifactKind::FollowUp),
+            ] {
+                store
+                    .insert_artifact(&Artifact {
+                        id: id.into(),
+                        meeting_id: "meeting-1".into(),
+                        kind,
+                        template_id: "builtin".into(),
+                        body_markdown: "Текст".into(),
+                        created_at_ms: 400,
+                    })
+                    .unwrap();
+            }
+
+            let summaries = store.list_meeting_summaries().unwrap();
+            let meeting_1 = summaries
+                .iter()
+                .find(|summary| summary.id == "meeting-1")
+                .unwrap();
+            assert_eq!(meeting_1.started_at_ms, 100);
+            assert!(meeting_1.has_final);
+            assert_eq!(meeting_1.artifact_count, 2);
+
+            let meeting_2 = summaries
+                .iter()
+                .find(|summary| summary.id == "meeting-2")
+                .unwrap();
+            assert_eq!(meeting_2.started_at_ms, 200);
+            assert!(!meeting_2.has_final);
+            assert_eq!(meeting_2.artifact_count, 0);
         }
         let _ = fs::remove_dir_all(&root);
     }
