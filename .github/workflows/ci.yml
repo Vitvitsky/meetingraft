@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Формат
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Тесты
+        run: cargo test
+
+  macos:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: apps/macos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Установить XcodeGen и SwiftFormat
+        run: brew install xcodegen swiftformat
+      - name: Линт Swift
+        run: swiftformat --lint Sources
+      - name: Сгенерировать проект
+        run: xcodegen generate
+      - name: Собрать приложение
+        run: >
+          xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft
+          -configuration Debug build CODE_SIGNING_ALLOWED=NO
