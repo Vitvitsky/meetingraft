@@ -1,9 +1,9 @@
-import XCTest
 @testable import MeetingRaft
+import XCTest
 
 @MainActor
 final class FakeCaptionStreamTests: XCTestCase {
-    func testEmitsPartialThenFinalForFirstSegment() async throws {
+    func testEmitsPartialThenFinalForFirstSegment() async {
         let stream = FakeCaptionStream(
             script: [
                 .init(text: "Привет", phase: .partial),

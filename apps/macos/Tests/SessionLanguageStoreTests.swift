@@ -1,5 +1,5 @@
-import XCTest
 @testable import MeetingRaft
+import XCTest
 
 final class SessionLanguageStoreTests: XCTestCase {
     func testDefaultPrimaryIsRussian() {

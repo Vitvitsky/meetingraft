@@ -90,7 +90,9 @@ A feature is not done until:
   `MeetingRaft.xcodeproj` в Xcode или
   `xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -configuration Debug build CODE_SIGNING_ALLOWED=NO`
   (`.xcodeproj` генерируется, в git не трекается — источник `project.yml`)
-- CI: `.github/workflows/ci.yml` — fmt, clippy, cargo test, xcodebuild
+- macOS tests: `xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -configuration Debug test CODE_SIGNING_ALLOWED=NO`
+- Lint Swift: `cd apps/macos && swiftformat Sources Tests --lint`
+- CI: `.github/workflows/ci.yml` — fmt, clippy, cargo test, xcodebuild build+test
 - UniFFI bindings: появятся в Phase 2 (см. `docs/roadmap.md`)
 - Backend: появится в Phase 6 (ADR-007); контракт — `shared/openapi.yaml`
 - Docs: architecture и ADR — в `docs/`

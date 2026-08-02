@@ -6,7 +6,9 @@ enum SpeechLanguage: String, CaseIterable, Identifiable, Hashable, Sendable {
     case en
     case es
 
-    var id: String { rawValue }
+    var id: String {
+        rawValue
+    }
 
     /// Локализованное имя для UI.
     var displayName: String {

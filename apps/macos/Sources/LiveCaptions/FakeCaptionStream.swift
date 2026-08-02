@@ -19,11 +19,13 @@ final class FakeCaptionStream: CaptionStreaming, @unchecked Sendable {
 
     func start(onEvent: @escaping @MainActor (CaptionLine) -> Void) {
         stop()
-        let script = self.script
+        let script = script
         let tick = tickNanoseconds
         task = Task { @MainActor in
             for line in script {
-                if Task.isCancelled { return }
+                if Task.isCancelled {
+                    return
+                }
                 onEvent(line)
                 try? await Task.sleep(nanoseconds: tick)
             }
