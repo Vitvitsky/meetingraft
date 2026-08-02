@@ -9,6 +9,8 @@ final class AudioCaptureCoordinator {
     private(set) var lastError: String?
     private(set) var systemAudioAvailable = false
     private(set) var sessionId: String?
+    /// Обновляется при каждом успешном ingest — чтобы UI видел рост.
+    private(set) var chunkCount: UInt64 = 0
 
     private let core: MeetingCore
     private let microphone = MicrophoneCapture()
@@ -31,6 +33,7 @@ final class AudioCaptureCoordinator {
     /// Старт recording: permission → Rust session → taps.
     func startRecording() async {
         lastError = nil
+        chunkCount = 0
         let granted = await AudioPermissions.requestMicrophone()
         guard granted else {
             lastError = "Доступ к микрофону запрещён"
@@ -47,6 +50,8 @@ final class AudioCaptureCoordinator {
         startedAt = Date()
         micPipeline.reset()
         systemPipeline.reset()
+        // До start mic: иначе ранние буферы отбрасываются в ingest.
+        isRecording = true
 
         systemAudio.prepare()
         systemAudioAvailable = systemAudio.isAvailable
@@ -59,8 +64,10 @@ final class AudioCaptureCoordinator {
             }
         } catch {
             lastError = "Не удалось запустить микрофон: \(error.localizedDescription)"
+            microphone.stop()
             core.stopRecording()
             sessionId = nil
+            isRecording = false
             return
         }
 
@@ -71,8 +78,6 @@ final class AudioCaptureCoordinator {
                 }
             }
         }
-
-        isRecording = true
     }
 
     func stopRecording() {
@@ -88,20 +93,14 @@ final class AudioCaptureCoordinator {
         lastError = nil
     }
 
-    func manifestChunkCount() -> UInt64 {
-        guard let sessionId else { return 0 }
-        return core.manifestChunkCount(sessionId: sessionId)
-    }
-
     private func ingest(samples: [Float], channel: FfiAudioChannel) {
-        guard isRecording else { return }
-        let timestampMs = UInt64(max(0, (startedAt ?? Date()).timeIntervalSinceNow * -1000))
-        var chunks: [Data] = []
-        switch channel {
+        guard isRecording, sessionId != nil, !samples.isEmpty else { return }
+        let timestampMs = UInt64(max(0, Date().timeIntervalSince(startedAt ?? Date()) * 1000))
+        let chunks: [Data] = switch channel {
         case .mic:
-            chunks = micPipeline.push(samples: samples)
+            micPipeline.push(samples: samples)
         case .system:
-            chunks = systemPipeline.push(samples: samples)
+            systemPipeline.push(samples: samples)
         }
         for chunk in chunks {
             let err = core.ingestAudioChunk(
@@ -110,7 +109,9 @@ final class AudioCaptureCoordinator {
                 sampleRate: UInt32(AudioChunkPipeline.targetSampleRate),
                 timestampMs: timestampMs
             )
-            if !err.isEmpty {
+            if err.isEmpty {
+                chunkCount += 1
+            } else {
                 lastError = err
             }
         }

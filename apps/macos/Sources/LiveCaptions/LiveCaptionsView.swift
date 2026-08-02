@@ -21,7 +21,7 @@ struct LiveCaptionsView: View {
                 if capture.isRecording {
                     Label("Recording", systemImage: "record.circle.fill")
                         .foregroundStyle(.red)
-                    Text("chunks: \(capture.manifestChunkCount())")
+                    Text("chunks: \(capture.chunkCount)")
                         .foregroundStyle(.secondary)
                     if !capture.systemAudioAvailable {
                         Text("mic only")
