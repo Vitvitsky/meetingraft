@@ -136,6 +136,29 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertEqual(core.getBackendArtifactCallCount, 0)
     }
 
+    func testSubmitBackendRefineStopsOnFailedJobWithEmptyError() async {
+        let transcript = makeTranscript(meetingId: "meeting-1")
+        let core = MeetingsCoreSpy(finalTranscript: transcript)
+        core.submitJobResult = FfiBackendJob(
+            id: "job-1",
+            meetingId: "meeting-1",
+            kind: "refine",
+            status: "failed",
+            error: "",
+            artifactIds: []
+        )
+        let viewModel = MeetingsViewModel(core: core, maxPollAttempts: 2, pollDelayNanoseconds: 0)
+        viewModel.reload(meetingId: "meeting-1")
+
+        await viewModel.performBackendRefine(meetingId: "meeting-1")
+
+        XCTAssertEqual(viewModel.backendJobStatus, .failed)
+        XCTAssertEqual(viewModel.backendJobId, "job-1")
+        XCTAssertEqual(viewModel.errorMessage, "Backend job failed")
+        XCTAssertEqual(core.getBackendJobCallCount, 0)
+        XCTAssertEqual(core.getBackendArtifactCallCount, 0)
+    }
+
     func testSubmitBackendRefineRequiresFinalTranscript() async {
         let core = MeetingsCoreSpy()
         let viewModel = MeetingsViewModel(core: core)

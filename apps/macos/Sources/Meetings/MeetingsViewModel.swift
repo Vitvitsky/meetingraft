@@ -127,6 +127,12 @@ final class MeetingsViewModel {
             errorMessage = job.error
             return
         }
+        if job.status == "failed" {
+            backendJobStatus = .failed
+            backendJobId = job.id
+            errorMessage = job.error.isEmpty ? "Backend job failed" : job.error
+            return
+        }
 
         backendJobId = job.id
         var current = job
