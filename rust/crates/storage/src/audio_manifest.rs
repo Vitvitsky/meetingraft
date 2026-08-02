@@ -45,6 +45,8 @@ impl AudioManifestStore {
         fs::create_dir_all(&root)?;
         let db_path = root.join("meetingraft.sqlite3");
         let conn = Connection::open(&db_path)?;
+        // Снижает flaky SQLITE_BUSY при параллельных тестах / WAL checkpoint.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(
             "
             PRAGMA journal_mode=WAL;
@@ -247,14 +249,21 @@ impl AudioManifestStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
     fn tmp_root() -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("meetingraft-storage-test-{nanos}"))
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "meetingraft-storage-test-{nanos}-{seq}-{:?}",
+            std::thread::current().id()
+        ))
     }
 
     #[test]

@@ -95,11 +95,7 @@ impl WhisperSttEngine {
             }
         }
         let text = parts.join(" ").trim().to_string();
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
+        if text.is_empty() { None } else { Some(text) }
     }
 
     fn reset_segment(&mut self) {
