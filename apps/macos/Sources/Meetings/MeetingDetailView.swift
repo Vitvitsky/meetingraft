@@ -33,6 +33,7 @@ struct MeetingDetailView: View {
         }
         .navigationTitle(String(meeting.id.prefix(8)))
         .onAppear {
+            applyProviderConfig()
             viewModel.reload(meetingId: meeting.id)
         }
         .onDisappear {
@@ -108,10 +109,12 @@ struct MeetingDetailView: View {
 
             HStack {
                 Button("Generate Brief", systemImage: "doc.text") {
+                    applyProviderConfig()
                     viewModel.generate(meetingId: meeting.id, kind: .brief)
                 }
                 .help(generateHelp)
                 Button("Generate Follow-up", systemImage: "envelope") {
+                    applyProviderConfig()
                     viewModel.generate(meetingId: meeting.id, kind: .followUp)
                 }
                 .help(generateHelp)
@@ -246,6 +249,15 @@ struct MeetingDetailView: View {
             .padding(.horizontal)
             .padding(.vertical, 8)
             .background(Color.primary.opacity(0.04))
+    }
+
+    private func applyProviderConfig() {
+        viewModel.applyProviderConfig(
+            apiBaseUrl: providerStore.apiBaseUrl,
+            apiToken: providerStore.apiToken,
+            llmEngineCode: providerStore.llmEngine.rawValue,
+            llmModelId: providerStore.llmModelId
+        )
     }
 
     private func markdown(_ source: String) -> AttributedString {

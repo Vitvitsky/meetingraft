@@ -36,13 +36,13 @@
 |-----|---------|------------------------|
 | Live | `caption_events` from live STT | «Источник: Live STT · не используется для Brief / Follow-up» |
 | Final | `final_transcripts` (live finals + glossary) | «Источник: Live finals + glossary · **вход для Brief / Follow-up**» |
-| Artifacts | generated brief / follow-up | Над Generate: «Генерация из **Final** · сейчас: builtin templates (без LLM)» |
+| Artifacts | generated brief / follow-up | Над Generate: «Генерация из **Final** · builtin templates (без LLM)» либо выбранный backend engine/model |
 
 Rules:
 
 - Generate Brief / Follow-up остаются `disabled` если Final отсутствует.
 - Tooltip на disabled: «Нужен Final transcript».
-- Когда LLM engine ≠ `builtin_templates` (после wiring): баннер Artifacts показывает имя engine/model вместо «без LLM».
+- Когда LLM engine ≠ `builtin_templates`: баннер Artifacts показывает имя engine/model вместо «без LLM».
 
 ## Settings → Providers
 
@@ -55,7 +55,7 @@ Session language (ADR-003) остаётся **над** Providers, не смеш�
 | **Live STT** | `mock` \| `whisper` (resolved by model file) | `{Application Support}/meetingraft/models/ggml-*.bin` | — | Status only; download via script |
 | **Post-call STT** | `local_final` \| `backend_whisperx` | — | `POST {apiBase}/v1/jobs` | Only `local_final` enabled; WhisperX disabled «скоро» |
 | **Translation** | `auto` \| `apple` \| `backend` \| `local_llm` \| `stub` \| `off` | — | `{translateBase}/v1/translate` for `backend` / `auto→backend` | Existing ADR-008 wiring |
-| **LLM (Brief/Follow-up)** | `builtin_templates` \| `ollama` \| `openai_compat` \| `backend` | model id e.g. `gemma2` | Ollama `http://127.0.0.1:11434`; OpenAI-compat `{base}/v1`; Backend `{apiBase}/v1` | Only `builtin_templates` enabled; others disabled «скоро» |
+| **LLM (Brief/Follow-up)** | `builtin_templates` \| `backend` \| `ollama` \| `openai_compat` | model id e.g. `gemma2` | Backend `{apiBase}/v1`; Ollama `http://127.0.0.1:11434`; OpenAI-compat `{base}/v1` | `builtin_templates` и `backend` enabled; Ollama/OpenAI-compat disabled «скоро» |
 | **Data roots** | read-only | App Support root, models dir, DB path | — | Copyable paths |
 
 ### URL field rules
@@ -78,7 +78,8 @@ Session language (ADR-003) остаётся **над** Providers, не смеш�
 
 - SwiftUI: presentation only — banners, Form, disabled state.
 - Provider selection persisted via Observable stores → UniFFI where logic already exists (`set_translation_backend`, STT path queries).
-- New LLM / post-call STT pickers: store locally in Swift until Rust `ProviderConfig` / UniFFI exists (follow-up); do not invent parallel business rules in views.
+- Settings использует локальный `MeetingCore` только для health-check; Generate перед вызовом применяет сохранённые настройки к shell core через `MeetingsViewModel.applyProviderConfig`.
+- LLM / post-call STT pickers хранят выбор в Swift; доступные LLM-конфиги передаются через существующие UniFFI setters без параллельных бизнес-правил во views.
 - Cocoa Translation stays in `HostTranslationBridge` (ADR-008).
 
 ## UI sketch (Settings)
@@ -102,8 +103,8 @@ Providers
 │ → POST {base}/v1/translate            │
 └───────────────────────────────────────┘
 ┌ LLM (Brief / Follow-up) ──────────────┐
-│ Engine: [ builtin_templates ▾ ]       │
-│ ollama / openai_compat / backend — скоро │
+│ Engine: [ builtin_templates / backend ▾ ] │
+│ ollama / openai_compat — скоро        │
 └───────────────────────────────────────┘
 ┌ Data roots ───────────────────────────┐
 │ App Support: …/meetingraft            │

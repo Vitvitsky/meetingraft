@@ -183,6 +183,7 @@ struct SettingsView: View {
         applyApiConfig()
     }
 
+    /// Локальный core нужен для проверки API; Generate применяет эти настройки к shell core.
     private func applyApiConfig() {
         core?.setApiConfig(baseUrl: providerStore.apiBaseUrl, token: providerStore.apiToken)
         core?.setLlmConfig(

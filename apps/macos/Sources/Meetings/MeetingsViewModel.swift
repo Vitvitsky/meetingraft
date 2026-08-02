@@ -6,6 +6,8 @@ protocol MeetingsCoreProviding: AnyObject {
     func listCaptions(meetingId: String) -> [FfiCaptionEvent]
     func getFinalTranscript(meetingId: String) -> FfiFinalTranscript
     func listArtifacts(meetingId: String) -> [FfiArtifact]
+    func setApiConfig(baseUrl: String, token: String)
+    func setLlmConfig(engineCode: String, modelId: String)
     func generateArtifact(meetingId: String, kind: FfiArtifactKind) -> FfiGenerateArtifactResult
     func submitBackendJob(meetingId: String, kindCode: String) -> FfiBackendJob
     func getBackendJob(jobId: String) -> FfiBackendJob
@@ -71,6 +73,16 @@ final class MeetingsViewModel {
             selectedArtifact = artifacts.first
         }
         errorMessage = nil
+    }
+
+    func applyProviderConfig(
+        apiBaseUrl: String,
+        apiToken: String,
+        llmEngineCode: String,
+        llmModelId: String
+    ) {
+        core.setApiConfig(baseUrl: apiBaseUrl, token: apiToken)
+        core.setLlmConfig(engineCode: llmEngineCode, modelId: llmModelId)
     }
 
     func generate(meetingId: String, kind: FfiArtifactKind) {
