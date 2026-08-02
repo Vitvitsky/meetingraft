@@ -24,6 +24,8 @@ playground.xcworkspace
 .swiftpm/config/registries.json
 .swiftpm/xcode/package.xcworkspace
 .netrc
+apps/macos/MeetingRaft.xcodeproj/
+apps/macos/Sources/Info.plist
 
 # Rust
 target/
