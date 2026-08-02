@@ -1,0 +1,131 @@
+# AGENTS.md
+
+## Purpose
+
+This repository contains BriefLane, a native-first macOS meeting companion with live subtitles first and post-call intelligence second.
+
+## Product constraints
+
+- Live subtitles and final transcript are different artifacts.
+- Realtime mode does not require speaker attribution.
+- Post-call mode may assign or recognize speakers.
+- Glossary support is a first-class feature.
+- Native UX on macOS is required.
+
+## Architecture rules
+
+- SwiftUI views must not contain networking or business rules.
+- AVFoundation stays in the Swift platform layer.
+- Rust contains shared domain logic, session engine, transcript assembly, glossary normalization, sync logic, and local state orchestration.
+- UniFFI is the only preferred boundary between Swift and Rust.
+- Backend concerns stay outside the macOS shell.
+- Live transcript and final refined transcript use separate domain models.
+
+## Module boundaries
+
+### Swift layer
+- app lifecycle
+- navigation
+- window scenes
+- menu bar and commands
+- permissions
+- audio capture adapters
+- presentation models
+
+### Rust layer
+- domain entities
+- meeting session state machine
+- subtitle aggregation
+- glossary engine
+- sync client
+- local persistence abstractions
+- DTOs exposed through UniFFI facade
+
+### Backend layer
+- processing jobs
+- storage
+- diarization
+- transcript refinement
+- generated brief and follow-up artifacts
+
+## Guardrails for coding agents
+
+- Do not bypass UniFFI with ad hoc FFI glue unless explicitly approved.
+- Do not put Cocoa or AVFoundation types into Rust-facing contracts.
+- Prefer small DTOs and explicit enums across boundaries.
+- Keep state transitions explicit and testable.
+- Add tests for any new state machine branch.
+- Prefer repository interfaces over direct API calls in views or view models.
+- Keep docs updated when changing domain boundaries or contracts.
+
+## Agent roles
+
+- Swift Shell Agent
+- Swift Audio Agent
+- Swift UI Agent
+- Rust Core Agent
+- Rust Sync Agent
+- Rust UniFFI Agent
+- Backend Agent
+- QA Agent
+- Docs/ADR Agent
+
+## Done criteria
+
+A feature is not done until:
+- architecture boundaries are respected;
+- tests cover core logic;
+- docs changed if contracts changed;
+- no UI layer contains direct business logic;
+- glossary and transcript version impact is considered where relevant.
+
+## Setup
+
+Scaffolding monorepo — crates/app targets appear as they are added under the map below.
+
+- macOS shell: open `apps/macos` in Xcode (or `xcodebuild` once a project exists)
+- Rust core: from `rust/`, `cargo test` / `cargo build` (workspace `Cargo.toml` when present)
+- UniFFI bindings: regenerate via the crate’s documented `uniffi-bindgen` / build script before Swift consume
+- Backend: follow `backend/` README when services land (`docker compose up` if compose is added)
+- Docs: architecture and ADRs live in `docs/`
+
+## Stack & conventions
+
+- Stack: SwiftUI + AVFoundation (macOS shell), Rust + UniFFI (domain core), backend workers/API (post-call)
+- Comments/docstrings: Russian; identifiers: English
+- Prefer explicit types and small DTOs across UniFFI; keep state machines testable
+- SQL (when present): keywords UPPERCASE, identifiers lowercase
+- Commits: Conventional Commits with Russian subject (`feat:`, `fix:`, `docs:`, …)
+
+## Skills & tooling
+
+- graphify (CLI): `uv tool install graphifyy` — codebase knowledge graph
+- Slash skills (agent side): `/agents-init`, graphify skill when answering structure questions
+- Prefer UniFFI-facing contracts and ADRs in `docs/adr/` over ad hoc cross-layer glue
+
+## hindsight (agent memory)
+
+Long-term memory service (local Docker, `http://localhost:8888`, MCP at `/mcp`).
+Bank id = repo name: `meetingraft`. Skip this section silently if the
+service is not running or MCP tools are absent.
+
+- **Recall at task start**: call `recall` with the task topic — past
+  decisions, gotchas, and data quirks live there.
+- **Retain on the way out**: after a significant decision, verified finding,
+  or data gotcha, call `retain` with a short self-contained fact.
+- Do not retain what the repo already records (code, git history, READMEs)
+  or session-local noise.
+- Recalled facts about code are historical context, not ground truth: verify
+  against the current code. On mismatch the code wins — retire the stale
+  fact via `invalidate_memory`.
+- Connect in Claude Code:
+  `claude mcp add --transport http --scope user hindsight http://localhost:8888/mcp`.
+
+## graphify (knowledge graph)
+
+Plain CLI (`uv tool install graphifyy`), works with any agent.
+
+- When `graphify-out/graph.json` exists, answer codebase questions with
+  `graphify query "<question>"` first; fall back to grep for exact strings.
+- After modifying code, run `graphify update .` (AST-only, no API cost).
+- Build initially with `graphify .` if the graph does not exist yet.

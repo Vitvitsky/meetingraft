@@ -1,0 +1,54 @@
+# Personal agent layer (not tracked)
+CLAUDE.md
+.claude/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Xcode / Swift
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+timeline.xctimeline
+playground.xcworkspace
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.swiftpm/config/registries.json
+.swiftpm/xcode/package.xcworkspace
+.netrc
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# UniFFI / generated bindings (track only intentionally committed outputs)
+# uncomment if you regenerate bindings in CI and do not commit them:
+# apps/macos/**/Generated/
+
+# Backend / local env
+.env
+.env.*
+!.env.example
+*.pem
+secrets/
+
+# Python tooling (graphify / uv helpers)
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+graphify-out/
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
