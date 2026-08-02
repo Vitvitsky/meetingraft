@@ -134,8 +134,10 @@ Maps to: Epics 8, 9. Status: **done (local MVP)** on
 Meetings UI Live | Final | Artifacts; Brief + Follow-up через built-in
 templates; `LlmClient` stub). **In progress / follow-up:** backend stub
 (`feat/phase-6-backend-stub`: OpenAPI + FastAPI in-memory jobs + Rust sync +
-Settings Test API); then WhisperX/LLM workers, speakers/diarization (Epic 9),
-user-defined templates, export .md/mail.
+Settings Test API); Meetings poll UI
+(`feat/meetings-backend-refine-stub`: Artifacts → Submit refine → poll job →
+show stub markdown) — **done**; then WhisperX/LLM workers,
+speakers/diarization (Epic 9), user-defined templates, export .md/mail.
 
 ## Phase 7 — Hardening and release
 
