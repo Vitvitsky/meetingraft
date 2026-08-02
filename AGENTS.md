@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository contains BriefLane, a native-first macOS meeting companion with live subtitles first and post-call intelligence second.
+This repository contains MeetingRaft, a native-first macOS meeting companion with live subtitles first and post-call intelligence second.
 
 ## Product constraints
 

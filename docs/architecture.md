@@ -1,8 +1,8 @@
-# BriefLane Architecture
+# MeetingRaft Architecture
 
 ## Overview
 
-BriefLane is a native-first macOS application for meeting assistance.
+MeetingRaft is a native-first macOS application for meeting assistance.
 Repository name on GitHub: `meetingraft`.
 
 The product uses a two-stage flow:
@@ -85,6 +85,42 @@ The backend handles long-running and heavy post-call processing.
 - project glossary
 - aliases and canonical forms
 - acronym and slang normalization
+
+## Operational budgets and policies
+
+### Live caption latency budget
+
+| Metric | Budget |
+|--------|--------|
+| Partial caption after spoken word | ≤ 2.0 s |
+| Final caption after segment end | ≤ 5.0 s |
+| Session start with warm model | ≤ 3 s |
+| Cold model load (first run) | ≤ 15 s |
+
+Budgets are measured in roadmap Phase 4 on real meetings; regressions block
+the phase exit. VAD window tuning (ADR-005) is the primary latency lever.
+
+### Recording privacy and consent
+
+- Local by default: raw audio, captions, and transcripts never leave the
+  device (ADR-005); data reaches the backend only through an explicit
+  Stage 2 action.
+- A visible recording indicator is shown during any capture; on first
+  recording the app reminds the user that meeting-recording consent norms
+  are their responsibility.
+- Storage protection baseline is FileVault; the SQLite build can move to
+  SQLCipher without facade changes (ADR-006). Backend tokens live in the
+  Keychain.
+- Deleting a meeting removes everything: audio chunks, manifest rows,
+  caption events, transcript versions, and generated artifacts.
+
+### Network loss behavior
+
+- The live pipeline has zero network dependency (on-device STT): captions
+  keep working fully offline.
+- Stage 2 is local-first: jobs are queued in the local store (`jobs` table,
+  ADR-006) and retried with backoff; connectivity loss never blocks or
+  degrades a running meeting session.
 
 ## Core principles
 

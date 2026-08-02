@@ -1,11 +1,11 @@
 # meetingraft
 
-GitHub repository for **BriefLane** — a native-first macOS meeting companion for live subtitles, post-call refinement, brief generation, and follow-up email drafting.
+GitHub repository for **MeetingRaft** — a native-first macOS meeting companion for live subtitles, post-call refinement, brief generation, and follow-up email drafting.
 
 | | |
 |---|---|
 | Repository | [`meetingraft`](https://github.com/Vitvitsky/meetingraft) |
-| Product name | BriefLane |
+| Product name | MeetingRaft |
 
 ## Product idea
 
@@ -36,3 +36,5 @@ GitHub repository for **BriefLane** — a native-first macOS meeting companion f
 3. Audio capture and live subtitle pipeline
 4. Glossary management
 5. Post-call refinement and generated outputs
+
+Phased plan with exit criteria: [`docs/roadmap.md`](docs/roadmap.md).

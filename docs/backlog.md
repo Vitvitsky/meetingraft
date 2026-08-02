@@ -1,4 +1,4 @@
-# BriefLane Backlog
+# MeetingRaft Backlog
 
 ## Epic 1 — Repository Bootstrap
 - Create repo skeleton
