@@ -55,3 +55,7 @@ graphify-out/
 .idea/
 .vscode/
 *.code-workspace
+
+# Local agent / worktree scratch
+.worktrees/
+.superpowers/
