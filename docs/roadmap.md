@@ -44,7 +44,8 @@ that builds both worlds and runs `cargo test`.
 **Exit criteria:** ADR-004..006 accepted (ADR-007 accepted or explicitly
 deferred); empty app and empty workspace build green in CI.
 
-Maps to: Epic 1 (finishing touches).
+Maps to: Epic 1 (finishing touches). Status: in progress on
+`feat/phase-0-bootstrap` (workspace + XcodeGen + CI wired).
 
 ## Phase 1 — SwiftUI shell with fake subtitle stream
 
