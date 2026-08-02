@@ -95,7 +95,8 @@ flowchart LR
   end
 
   Settings["Settings → Backend API\nTest API / health"] --> Jobs
-  Final -.->|"будущее: refine job"| Jobs
+  Meetings["Meetings → Artifacts\nSubmit refine (stub)"] --> Jobs
+  Final --> Meetings
 ```
 
 **Provenance (Meetings UI):** Live ≠ вход для Brief; Brief/Follow-up ← **Final**.
@@ -218,7 +219,8 @@ CI: `.github/workflows/ci.yml` (rust + macos + backend).
 2. Сменить Language → English → снова demo — английский скрипт.  
 3. (Опц.) Whisper model + **Start Live** — captions / Mock.  
 4. Stop Live → **Meetings** → Final / Generate Brief.  
-5. (Опц.) `docker compose up` → Settings **Test API** = OK.
+5. (Опц.) `docker compose up` → Settings **Test API** = OK.  
+6. (Опц.) **Meetings** → встреча с Final → **Artifacts** → **Submit refine (stub)** → markdown из backend.
 
 ### 2.8 Потенциальная «продакшен»-инсталляция (ещё не автоматизирована)
 

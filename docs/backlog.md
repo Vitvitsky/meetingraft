@@ -70,9 +70,11 @@
   deferred
 - Real LLM generation (`LlmClient` → Ollama/LM Studio/Gemma) — **deferred**
   (stub trait only; heuristic templates in local MVP)
-- [ ] Backend HTTP (ADR-007) — **slice A:** OpenAPI + FastAPI stub jobs +
+- [x] Backend HTTP (ADR-007) — **slice A:** OpenAPI + FastAPI stub jobs +
   `meetingraft-sync` + Settings Test API (`feat/phase-6-backend-stub`)
-- Create sync client crate — **in progress** (`meetingraft-sync`)
+- [x] Meetings UI: Submit refine (stub) → poll → show artifact
+  (`feat/meetings-backend-refine-stub`)
+- Create sync client crate — **done** (`meetingraft-sync`)
 
 ## Epic 9 — Speaker Assignment
 - Add speaker entities
