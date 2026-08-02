@@ -34,29 +34,29 @@
 
 ### Task 1: ProviderSettingsStore + tests
 
-- [ ] Add store enums: `PostCallSttEngine`, `LlmEngine` with `isAvailable`
-- [ ] Defaults: `localFinal`, `builtinTemplates`
-- [ ] XCTest defaults + unavailable flags
-- [ ] Wire into `MeetingRaftApp`
+- [x] Add store enums: `PostCallSttEngine`, `LlmEngine` with `isAvailable`
+- [x] Defaults: `localFinal`, `builtinTemplates`
+- [x] XCTest defaults + availability
+- [x] Wire into `MeetingRaftApp`
 
 ### Task 2: Settings Providers UI
 
-- [ ] Restructure `SettingsView`: language → Live STT → Post-call STT → Translation → LLM → Data roots
-- [ ] Live STT status from MeetingCore paths
-- [ ] Translation URL caption `POST /v1/translate`
-- [ ] Larger settings window
+- [x] Restructure `SettingsView`: language → Live STT → Post-call STT → Translation → LLM → Data roots
+- [x] Live STT status from MeetingCore paths
+- [x] Translation URL caption `POST /v1/translate`
+- [x] Larger settings window
 
 ### Task 3: Meetings provenance banners
 
-- [ ] Banner on Live / Final / Artifacts (copy from spec)
-- [ ] Artifacts caption uses LLM engine label when builtin
-- [ ] Tooltip on disabled Generate buttons
+- [x] Banner on Live / Final / Artifacts (copy from spec)
+- [x] Artifacts caption uses LLM engine label when builtin
+- [x] Tooltip on disabled Generate buttons
 
 ### Task 4: Docs + verify
 
-- [ ] architecture.md note
-- [ ] `xcodebuild test`
-- [ ] Commit on feature branch
+- [x] architecture.md note
+- [x] `xcodebuild test` (25 passed)
+- [x] Commit on feature branch (`dd30027`)
 
 ---
 
