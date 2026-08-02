@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Координатор mic (+ system если available) → UniFFI ingest.
+/// Координатор mic (+ system если available) → UniFFI ingest + drain live STT.
 @Observable
 @MainActor
 final class AudioCaptureCoordinator {
@@ -11,6 +11,9 @@ final class AudioCaptureCoordinator {
     private(set) var sessionId: String?
     /// Обновляется при каждом успешном ingest — чтобы UI видел рост.
     private(set) var chunkCount: UInt64 = 0
+    /// `idle` | `mock` | `whisper` после startRecording.
+    private(set) var sttBackend: String = "idle"
+    private(set) var captionEventCount: UInt64 = 0
 
     private let core: MeetingCore
     private let microphone = MicrophoneCapture()
@@ -30,10 +33,21 @@ final class AudioCaptureCoordinator {
         }
     }
 
+    /// Путь к ggml-модели (пусто если нет).
+    var whisperModelPath: String {
+        core.whisperModelPath()
+    }
+
+    var modelsDirectory: String {
+        core.modelsDirectory()
+    }
+
     /// Старт recording: permission → Rust session → taps.
     func startRecording() async {
         lastError = nil
         chunkCount = 0
+        captionEventCount = 0
+        sttBackend = "idle"
         let granted = await AudioPermissions.requestMicrophone()
         guard granted else {
             lastError = "Доступ к микрофону запрещён"
@@ -50,6 +64,7 @@ final class AudioCaptureCoordinator {
         startedAt = Date()
         micPipeline.reset()
         systemPipeline.reset()
+        sttBackend = core.sttBackend()
         // До start mic: иначе ранние буферы отбрасываются в ingest.
         isRecording = true
 
@@ -68,6 +83,7 @@ final class AudioCaptureCoordinator {
             core.stopRecording()
             sessionId = nil
             isRecording = false
+            sttBackend = "idle"
             return
         }
 
@@ -86,6 +102,16 @@ final class AudioCaptureCoordinator {
         core.stopRecording()
         isRecording = false
         startedAt = nil
+        sttBackend = "idle"
+    }
+
+    /// Live STT events с того же MeetingCore, что и ingest.
+    func drainLiveCaptions() -> [FfiCaptionEvent] {
+        let events = core.drainLiveCaptions()
+        if let sessionId {
+            captionEventCount = core.captionEventCount(sessionId: sessionId)
+        }
+        return events
     }
 
     /// Сбросить сообщение об ошибке (UI alert).

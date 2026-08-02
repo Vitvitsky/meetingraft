@@ -63,6 +63,13 @@ impl AudioManifestStore {
                 timestamp_ms INTEGER NOT NULL,
                 UNIQUE(session_id, channel, seq)
             );
+            CREATE TABLE IF NOT EXISTS caption_events (
+                id TEXT PRIMARY KEY NOT NULL,
+                session_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            );
             ",
         )?;
         Ok(Self {
@@ -194,6 +201,41 @@ impl AudioManifestStore {
         Ok(out)
     }
 
+    /// Сохранить live caption event.
+    pub fn append_caption(
+        &mut self,
+        session_id: &str,
+        event: &domain::CaptionEvent,
+        created_at_ms: u64,
+    ) -> Result<(), AudioManifestError> {
+        let phase = match event.phase {
+            domain::CaptionPhase::Partial => "partial",
+            domain::CaptionPhase::Final => "final",
+        };
+        self.conn.execute(
+            "INSERT INTO caption_events (id, session_id, text, phase, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                event.id,
+                session_id,
+                event.text,
+                phase,
+                created_at_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Число caption events session.
+    pub fn caption_count(&self, session_id: &str) -> Result<u64, AudioManifestError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM caption_events WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
     fn chunk_dir(&self, session_id: &str, channel: AudioChannel) -> PathBuf {
         self.root
             .join("sessions")
@@ -246,6 +288,23 @@ mod tests {
                 .append_chunk(AudioChannel::Mic, &[0, 0], 16_000, 0)
                 .unwrap_err();
             assert!(matches!(err, AudioManifestError::SessionNotOpen));
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn append_caption_persists() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1).unwrap();
+            let event = domain::CaptionEvent {
+                id: "c1".into(),
+                text: "привет".into(),
+                phase: domain::CaptionPhase::Final,
+            };
+            store.append_caption("s1", &event, 42).unwrap();
+            assert_eq!(store.caption_count("s1").unwrap(), 1);
         }
         let _ = fs::remove_dir_all(&root);
     }

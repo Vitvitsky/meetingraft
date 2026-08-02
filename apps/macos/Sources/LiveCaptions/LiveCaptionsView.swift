@@ -12,25 +12,29 @@ struct LiveCaptionsView: View {
                 Text("Session language: \(primaryLanguage.displayName)")
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Start demo") { viewModel.start() }
-                Button("Stop") { viewModel.stop() }
+                Button("Start demo") { viewModel.startDemo() }
+                Button("Stop demo") { viewModel.stopDemo() }
             }
             .padding(.horizontal)
 
             HStack {
-                if capture.isRecording {
-                    Label("Recording", systemImage: "record.circle.fill")
+                if capture.isRecording || viewModel.isLiveSession {
+                    Label("Live", systemImage: "record.circle.fill")
                         .foregroundStyle(.red)
                     Text("chunks: \(capture.chunkCount)")
+                        .foregroundStyle(.secondary)
+                    Text("captions: \(capture.captionEventCount)")
+                        .foregroundStyle(.secondary)
+                    Text("STT: \(capture.sttBackend)")
                         .foregroundStyle(.secondary)
                     if !capture.systemAudioAvailable {
                         Text("mic only")
                             .foregroundStyle(.orange)
                     }
-                    Button("Stop Recording") { capture.stopRecording() }
+                    Button("Stop Live") { viewModel.stopLive(capture: capture) }
                 } else {
-                    Button("Start Recording") {
-                        Task { await capture.startRecording() }
+                    Button("Start Live") {
+                        Task { await viewModel.startLive(capture: capture) }
                     }
                 }
             }
@@ -51,8 +55,7 @@ struct LiveCaptionsView: View {
         }
         .navigationTitle("Live Captions")
         .onDisappear {
-            viewModel.stop()
-            capture.stopRecording()
+            viewModel.stopAll(capture: capture)
         }
     }
 }

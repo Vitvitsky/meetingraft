@@ -1,0 +1,17 @@
+[package]
+name = "meetingraft-stt"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+# On-device Whisper (Metal). Включать при локальной сборке macOS / generate-ffi.
+whisper = ["dep:whisper-rs"]
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+uuid = { version = "1", features = ["v4"] }
+whisper-rs = { version = "0.16", optional = true, default-features = false, features = ["metal"] }
+
+[lib]
+name = "stt"

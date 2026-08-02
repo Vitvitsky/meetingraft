@@ -38,6 +38,10 @@ struct AppShellView: View {
                     startDemoCaptions()
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+                Button("Start Live", systemImage: "mic.fill") {
+                    startLiveSession()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
             }
         }
         .focusedValue(\.startCaptions) {
@@ -62,6 +66,11 @@ struct AppShellView: View {
 
     private func startDemoCaptions() {
         selection = .liveCaptions
-        captionsViewModel.start()
+        captionsViewModel.startDemo()
+    }
+
+    private func startLiveSession() {
+        selection = .liveCaptions
+        Task { await captionsViewModel.startLive(capture: captureCoordinator) }
     }
 }

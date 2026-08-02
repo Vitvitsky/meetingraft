@@ -567,44 +567,54 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol MeetingCoreProtocol: AnyObject, Sendable {
     
     /**
-     * Слить накопившиеся caption events по elapsed time.
+     * Число сохранённых live captions.
+     */
+    func captionEventCount(sessionId: String)  -> UInt64
+    
+    /**
+     * Demo script events (не STT).
      */
     func drainEvents()  -> [FfiCaptionEvent]
     
     /**
-     * Принять PCM i16 LE chunk.
+     * Live STT captions, накопленные после ingest.
      */
+    func drainLiveCaptions()  -> [FfiCaptionEvent]
+    
     func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt32, timestampMs: UInt64)  -> String
     
-    /**
-     * Число чанков в manifest для session.
-     */
     func manifestChunkCount(sessionId: String)  -> UInt64
     
     /**
-     * Старт demo captions с политикой v1 (ru primary).
+     * Каталог моделей: `{data_root}/models`.
+     */
+    func modelsDirectory()  -> String
+    
+    /**
+     * Старт demo captions (scripted, без аудио).
      */
     func startDemo() 
     
     /**
-     * Начать recording: создаёт session + SQLite store. Пустая строка = ok, иначе ошибка.
+     * Recording + live STT (Whisper если модель есть и feature включён, иначе Mock).
      */
     func startRecording(sessionId: String)  -> String
     
-    /**
-     * Состояние: idle | live | ended.
-     */
     func state()  -> String
     
-    /**
-     * Остановка demo.
-     */
     func stop() 
     
-    /**
-     * Остановить recording.
-     */
     func stopRecording() 
+    
+    /**
+     * `idle` | `mock` | `whisper`.
+     */
+    func sttBackend()  -> String
+    
+    /**
+     * Абсолютный путь к найденной ggml-модели или пустая строка.
+     */
+    func whisperModelPath()  -> String
     
 }
 /**
@@ -669,9 +679,6 @@ public convenience init() {
     }
 
     
-    /**
-     * Конструктор с корнем Application Support.
-     */
 public static func withDataRoot(dataRoot: String) -> MeetingCore  {
     return try!  FfiConverterTypeMeetingCore_lift(try! rustCall() {
         uniffiCallStatus in
@@ -684,7 +691,20 @@ public static func withDataRoot(dataRoot: String) -> MeetingCore  {
 
     
     /**
-     * Слить накопившиеся caption events по elapsed time.
+     * Число сохранённых live captions.
+     */
+open func captionEventCount(sessionId: String) -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_caption_event_count(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sessionId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Demo script events (не STT).
      */
 open func drainEvents() -> [FfiCaptionEvent]  {
     return try!  FfiConverterSequenceTypeFfiCaptionEvent.lift(try! rustCall() {
@@ -696,8 +716,17 @@ open func drainEvents() -> [FfiCaptionEvent]  {
 }
     
     /**
-     * Принять PCM i16 LE chunk.
+     * Live STT captions, накопленные после ingest.
      */
+open func drainLiveCaptions() -> [FfiCaptionEvent]  {
+    return try!  FfiConverterSequenceTypeFfiCaptionEvent.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_drain_live_captions(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
 open func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt32, timestampMs: UInt64) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -711,9 +740,6 @@ open func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt
 })
 }
     
-    /**
-     * Число чанков в manifest для session.
-     */
 open func manifestChunkCount(sessionId: String) -> UInt64  {
     return try!  FfiConverterUInt64.lift(try! rustCall() {
         uniffiCallStatus in
@@ -725,7 +751,19 @@ open func manifestChunkCount(sessionId: String) -> UInt64  {
 }
     
     /**
-     * Старт demo captions с политикой v1 (ru primary).
+     * Каталог моделей: `{data_root}/models`.
+     */
+open func modelsDirectory() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_models_directory(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Старт demo captions (scripted, без аудио).
      */
 open func startDemo()  {try! rustCall() {
         uniffiCallStatus in
@@ -736,7 +774,7 @@ open func startDemo()  {try! rustCall() {
 }
     
     /**
-     * Начать recording: создаёт session + SQLite store. Пустая строка = ok, иначе ошибка.
+     * Recording + live STT (Whisper если модель есть и feature включён, иначе Mock).
      */
 open func startRecording(sessionId: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
@@ -748,9 +786,6 @@ open func startRecording(sessionId: String) -> String  {
 })
 }
     
-    /**
-     * Состояние: idle | live | ended.
-     */
 open func state() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -760,9 +795,6 @@ open func state() -> String  {
 })
 }
     
-    /**
-     * Остановка demo.
-     */
 open func stop()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_stop(
@@ -771,15 +803,36 @@ open func stop()  {try! rustCall() {
 }
 }
     
-    /**
-     * Остановить recording.
-     */
 open func stopRecording()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_stop_recording(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * `idle` | `mock` | `whisper`.
+     */
+open func sttBackend() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_stt_backend(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Абсолютный путь к найденной ggml-модели или пустая строка.
+     */
+open func whisperModelPath() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_whisper_model_path(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
     
 
@@ -1068,34 +1121,49 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_events() != 43801) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_caption_event_count() != 34674) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_ingest_audio_chunk() != 29830) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_events() != 7822) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_manifest_chunk_count() != 4353) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_live_captions() != 11166) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_demo() != 29228) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_ingest_audio_chunk() != 34068) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_recording() != 14503) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_manifest_chunk_count() != 286) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_state() != 12529) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_models_directory() != 25600) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_stop() != 43930) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_demo() != 15831) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_stop_recording() != 62064) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_recording() != 34732) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_state() != 11869) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_stop() != 22222) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_stop_recording() != 27703) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_stt_backend() != 61625) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_whisper_model_path() != 14470) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_constructor_meetingcore_new() != 7859) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_constructor_meetingcore_with_data_root() != 19678) {
+    if (uniffi_meetingraft_ffi_checksum_constructor_meetingcore_with_data_root() != 41899) {
         return InitializationResult.apiChecksumMismatch
     }
 
