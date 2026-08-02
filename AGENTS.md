@@ -96,8 +96,11 @@ A feature is not done until:
 - UniFFI + Xcode project (из корня репо): `apps/macos/Scripts/generate-ffi.sh`
   (dylib → `rust/target/debug`, биндинги → `apps/macos/Generated/`, затем
   `xcodegen generate` в `apps/macos/`)
-- Backend: появится в Phase 6 (ADR-007); контракт — `shared/openapi.yaml`
-- Docs: architecture и ADR — в `docs/`
+- Backend: `cd backend && uv sync --extra dev && uv run pytest`;
+  docker: `docker compose up --build` (API `:8080`, token `dev-token`)
+- Docs: architecture и ADR — в `docs/`; схемы + install —
+  `docs/architecture-and-install.md`
+- OpenAPI: `shared/openapi.yaml`
 
 ## Stack & conventions
 

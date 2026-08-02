@@ -62,12 +62,8 @@ mod tests {
 
     #[test]
     fn drops_russian_credits_hallucination() {
-        assert!(is_whisper_hallucination(
-            "Авторы субтитров и пара имен"
-        ));
-        assert!(is_whisper_hallucination(
-            "авторы субтитров А. Иванов"
-        ));
+        assert!(is_whisper_hallucination("Авторы субтитров и пара имен"));
+        assert!(is_whisper_hallucination("авторы субтитров А. Иванов"));
     }
 
     #[test]

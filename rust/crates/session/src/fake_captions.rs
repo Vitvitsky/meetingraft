@@ -28,7 +28,10 @@ impl FakeCaptionProducer {
                 ("Welcome", CaptionPhase::Partial),
                 ("Welcome to MeetingRaft", CaptionPhase::Final),
                 ("Session language is English", CaptionPhase::Partial),
-                ("Session language is English for this meeting", CaptionPhase::Final),
+                (
+                    "Session language is English for this meeting",
+                    CaptionPhase::Final,
+                ),
                 ("Russian terms are fine", CaptionPhase::Partial),
                 (
                     "Russian terms are fine in mixed meetings",

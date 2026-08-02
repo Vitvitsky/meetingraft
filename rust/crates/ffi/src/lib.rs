@@ -16,6 +16,7 @@ use postcall::{assemble_final, make_artifact, render_brief, render_follow_up};
 use session::MeetingSession;
 use storage::{AudioManifestError, AudioManifestStore};
 use stt::{LiveCaptionPipeline, SttBackendKind, models_dir, resolve_whisper_model};
+use sync::{CreateJobRequest, JobKind, SyncClient};
 use translate::{
     EffectiveBackend, HostPendingQueue, TranslationBackendKind, TranslationPolicy,
     resolve_effective, translate_now,
@@ -123,6 +124,27 @@ pub struct FfiHostTranslationRequest {
     pub phase: FfiCaptionPhase,
 }
 
+/// Статус backend job (ADR-007).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiBackendJob {
+    pub id: String,
+    pub meeting_id: String,
+    pub kind: String,
+    pub status: String,
+    pub error: String,
+    pub artifact_ids: Vec<String>,
+}
+
+/// Артефакт с backend (отдельно от локального FfiArtifact).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiBackendArtifact {
+    pub id: String,
+    pub kind: String,
+    pub body_markdown: String,
+    pub created_at: String,
+    pub error: String,
+}
+
 struct MeetingCoreInner {
     session: MeetingSession,
     started_at: Option<Instant>,
@@ -140,6 +162,7 @@ struct MeetingCoreInner {
     host_translation_available: bool,
     host_translation_queue: HostPendingQueue,
     pending_translations: VecDeque<FfiCaptionEvent>,
+    sync_client: SyncClient,
 }
 
 /// Фасад сессии для macOS shell.
@@ -202,10 +225,7 @@ fn maybe_enqueue_translation(inner: &mut MeetingCoreInner, event: &domain::Capti
     if target == source {
         return;
     }
-    let effective = resolve_effective(
-        &inner.translation_policy,
-        inner.host_translation_available,
-    );
+    let effective = resolve_effective(&inner.translation_policy, inner.host_translation_available);
     match effective {
         EffectiveBackend::Off => {}
         EffectiveBackend::AppleHost => {
@@ -333,6 +353,17 @@ fn empty_artifact() -> FfiArtifact {
     }
 }
 
+fn empty_backend_job(error: String) -> FfiBackendJob {
+    FfiBackendJob {
+        id: String::new(),
+        meeting_id: String::new(),
+        kind: String::new(),
+        status: String::new(),
+        error,
+        artifact_ids: Vec::new(),
+    }
+}
+
 fn read_store<T>(
     inner: &MeetingCoreInner,
     read: impl FnOnce(&AudioManifestStore) -> Result<T, AudioManifestError>,
@@ -434,6 +465,7 @@ impl MeetingCore {
                 host_translation_available: false,
                 host_translation_queue: HostPendingQueue::default(),
                 pending_translations: VecDeque::new(),
+                sync_client: SyncClient::new("", ""),
             }),
         })
     }
@@ -526,12 +558,96 @@ impl MeetingCore {
     /// Фактический backend после резолва `auto` (для UI/debug).
     pub fn effective_translation_backend(&self) -> String {
         let guard = self.inner.lock().expect("meeting core poisoned");
-        resolve_effective(
-            &guard.translation_policy,
-            guard.host_translation_available,
-        )
-        .code()
-        .to_owned()
+        resolve_effective(&guard.translation_policy, guard.host_translation_available)
+            .code()
+            .to_owned()
+    }
+
+    /// ADR-007: base URL + bearer token (в памяти процесса).
+    pub fn set_api_config(&self, base_url: String, token: String) {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.sync_client = SyncClient::new(base_url, token);
+    }
+
+    pub fn api_base_url(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        // SyncClient doesn't expose base_url — store separately or add getter.
+        // Use health probe path via clone fields: add accessors on SyncClient.
+        guard.sync_client.base_url().to_owned()
+    }
+
+    /// Пустая строка = OK.
+    pub fn test_api_connection(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        match guard.sync_client.health() {
+            Ok(()) => String::new(),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    pub fn submit_backend_job(&self, meeting_id: String, kind_code: String) -> FfiBackendJob {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        let Some(kind) = JobKind::from_code(&kind_code) else {
+            return empty_backend_job(format!("unsupported job kind: {kind_code}"));
+        };
+        let request = CreateJobRequest {
+            meeting_id,
+            kind,
+            primary_language: guard.language_policy.primary.code().to_owned(),
+            allowed_languages: guard
+                .language_policy
+                .allowed
+                .iter()
+                .map(|l| l.code().to_owned())
+                .collect(),
+            payload: None,
+        };
+        match guard.sync_client.create_job(&request) {
+            Ok(job) => FfiBackendJob {
+                id: job.id,
+                meeting_id: job.meeting_id,
+                kind: job.kind.as_str().to_owned(),
+                status: job.status.as_str().to_owned(),
+                error: job.error.unwrap_or_default(),
+                artifact_ids: job.artifact_ids,
+            },
+            Err(error) => empty_backend_job(error.to_string()),
+        }
+    }
+
+    pub fn get_backend_job(&self, job_id: String) -> FfiBackendJob {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        match guard.sync_client.get_job(&job_id) {
+            Ok(job) => FfiBackendJob {
+                id: job.id,
+                meeting_id: job.meeting_id,
+                kind: job.kind.as_str().to_owned(),
+                status: job.status.as_str().to_owned(),
+                error: job.error.unwrap_or_default(),
+                artifact_ids: job.artifact_ids,
+            },
+            Err(error) => empty_backend_job(error.to_string()),
+        }
+    }
+
+    pub fn get_backend_artifact(&self, artifact_id: String) -> FfiBackendArtifact {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        match guard.sync_client.get_artifact(&artifact_id) {
+            Ok(artifact) => FfiBackendArtifact {
+                id: artifact.id,
+                kind: artifact.kind.as_str().to_owned(),
+                body_markdown: artifact.body_markdown,
+                created_at: artifact.created_at,
+                error: String::new(),
+            },
+            Err(error) => FfiBackendArtifact {
+                id: String::new(),
+                kind: String::new(),
+                body_markdown: String::new(),
+                created_at: String::new(),
+                error: error.to_string(),
+            },
+        }
     }
 
     /// Swift: host bridge готов (Apple Translation или stub).
@@ -1005,7 +1121,10 @@ mod tests {
     fn live_translation_is_separate_from_captions() {
         let core = MeetingCore::new();
         assert!(core.set_live_translation(true, "en".into()).is_empty());
-        assert!(core.set_translation_backend("stub".into(), String::new()).is_empty());
+        assert!(
+            core.set_translation_backend("stub".into(), String::new())
+                .is_empty()
+        );
         core.start_demo();
         let captions = core.drain_events();
         assert_eq!(captions[0].text, "Добро пожаловать");
@@ -1019,7 +1138,10 @@ mod tests {
         let core = MeetingCore::new();
         core.set_host_translation_available(true);
         assert!(core.set_live_translation(true, "en".into()).is_empty());
-        assert!(core.set_translation_backend("apple".into(), String::new()).is_empty());
+        assert!(
+            core.set_translation_backend("apple".into(), String::new())
+                .is_empty()
+        );
         assert_eq!(core.effective_translation_backend(), "apple");
         core.start_demo();
         let _ = core.drain_events();

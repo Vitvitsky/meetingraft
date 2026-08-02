@@ -29,8 +29,12 @@ pub fn stub_translate(text: &str, target: SpeechLanguage) -> String {
 fn lookup(text: &str, target: SpeechLanguage) -> Option<&'static str> {
     match (text, target) {
         ("Добро пожаловать", SpeechLanguage::En) => Some("Welcome"),
-        ("Добро пожаловать в MeetingRaft", SpeechLanguage::En) => Some("Welcome to MeetingRaft"),
-        ("Язык сессии — русский", SpeechLanguage::En) => Some("Session language is Russian"),
+        ("Добро пожаловать в MeetingRaft", SpeechLanguage::En) => {
+            Some("Welcome to MeetingRaft")
+        }
+        ("Язык сессии — русский", SpeechLanguage::En) => {
+            Some("Session language is Russian")
+        }
         ("Язык сессии — русский по умолчанию", SpeechLanguage::En) => {
             Some("Session language is Russian by default")
         }
@@ -39,8 +43,12 @@ fn lookup(text: &str, target: SpeechLanguage) -> Option<&'static str> {
             Some("English terms are fine in mixed meetings")
         }
         ("Добро пожаловать", SpeechLanguage::Es) => Some("Bienvenido"),
-        ("Добро пожаловать в MeetingRaft", SpeechLanguage::Es) => Some("Bienvenido a MeetingRaft"),
-        ("Язык сессии — русский", SpeechLanguage::Es) => Some("El idioma de la sesión es ruso"),
+        ("Добро пожаловать в MeetingRaft", SpeechLanguage::Es) => {
+            Some("Bienvenido a MeetingRaft")
+        }
+        ("Язык сессии — русский", SpeechLanguage::Es) => {
+            Some("El idioma de la sesión es ruso")
+        }
         ("Язык сессии — русский по умолчанию", SpeechLanguage::Es) => {
             Some("El idioma de la sesión es ruso por defecto")
         }

@@ -1,0 +1,157 @@
+openapi: 3.1.0
+info:
+  title: MeetingRaft Backend API
+  version: 0.1.0
+  description: >
+    Job-based Stage 2 API (ADR-007). Slice A: in-memory stub without ML workers.
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Liveness
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /v1/jobs:
+    post:
+      summary: Submit a processing job
+      operationId: createJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJobRequest"
+      responses:
+        "201":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          description: Unauthorized
+  /v1/jobs/{job_id}:
+    get:
+      summary: Get job status
+      operationId: getJob
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          description: Not found
+  /v1/artifacts/{artifact_id}:
+    get:
+      summary: Fetch artifact body
+      operationId: getArtifact
+      parameters:
+        - name: artifact_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Artifact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Artifact"
+        "404":
+          description: Not found
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+    JobKind:
+      type: string
+      enum: [refine, translate, brief, follow_up]
+    JobStatus:
+      type: string
+      enum: [queued, running, succeeded, failed]
+    CreateJobRequest:
+      type: object
+      required:
+        - meeting_id
+        - kind
+        - primary_language
+        - allowed_languages
+      properties:
+        meeting_id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/JobKind"
+        primary_language:
+          type: string
+          enum: [ru, en, es]
+        allowed_languages:
+          type: array
+          items:
+            type: string
+            enum: [ru, en, es]
+          minItems: 1
+        payload:
+          type: object
+          additionalProperties: true
+    Job:
+      type: object
+      required: [id, meeting_id, kind, status, artifact_ids]
+      properties:
+        id:
+          type: string
+        meeting_id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/JobKind"
+        status:
+          $ref: "#/components/schemas/JobStatus"
+        error:
+          type: string
+          nullable: true
+        artifact_ids:
+          type: array
+          items:
+            type: string
+    Artifact:
+      type: object
+      required: [id, kind, body_markdown, created_at]
+      properties:
+        id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/JobKind"
+        body_markdown:
+          type: string
+        created_at:
+          type: string
+          format: date-time

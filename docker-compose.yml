@@ -1,0 +1,7 @@
+services:
+  api:
+    build: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      MEETINGRAFT_API_TOKEN: dev-token

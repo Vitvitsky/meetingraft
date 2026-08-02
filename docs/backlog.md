@@ -18,7 +18,7 @@
 - [x] Create domain crate
 - [x] Create session engine crate
 - [x] Create glossary engine crate
-- Create sync client crate
+- [x] Create sync client crate — `meetingraft-sync` (ADR-007 slice A)
 - [x] Create UniFFI facade crate
 
 ## Epic 4 — Swift ↔ Rust Boundary
@@ -70,6 +70,9 @@
   deferred
 - Real LLM generation (`LlmClient` → Ollama/LM Studio/Gemma) — **deferred**
   (stub trait only; heuristic templates in local MVP)
+- [ ] Backend HTTP (ADR-007) — **slice A:** OpenAPI + FastAPI stub jobs +
+  `meetingraft-sync` + Settings Test API (`feat/phase-6-backend-stub`)
+- Create sync client crate — **in progress** (`meetingraft-sync`)
 
 ## Epic 9 — Speaker Assignment
 - Add speaker entities
