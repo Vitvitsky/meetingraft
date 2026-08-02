@@ -497,6 +497,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "meetingraft-postcall"
+version = "0.1.0"
+dependencies = [
+ "meetingraft-domain",
+ "thiserror",
+]
+
+[[package]]
 name = "meetingraft-session"
 version = "0.1.0"
 dependencies = [

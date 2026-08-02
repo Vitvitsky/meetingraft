@@ -1,0 +1,11 @@
+[package]
+name = "meetingraft-postcall"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+thiserror = "2"
+
+[lib]
+name = "postcall"
