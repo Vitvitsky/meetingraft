@@ -120,6 +120,14 @@ fn glossary_term_to_ffi(term: GlossaryTerm) -> FfiGlossaryTerm {
 }
 
 fn glossary_term_from_ffi(term: FfiGlossaryTerm) -> Result<GlossaryTerm, String> {
+    let surface = term.surface.trim();
+    if surface.is_empty() {
+        return Err("surface не может быть пустым".into());
+    }
+    let canonical = term.canonical.trim();
+    if canonical.is_empty() {
+        return Err("canonical не может быть пустым".into());
+    }
     let language = match term.language.as_str() {
         "ru" => SpeechLanguage::Ru,
         "en" => SpeechLanguage::En,
@@ -135,8 +143,8 @@ fn glossary_term_from_ffi(term: FfiGlossaryTerm) -> Result<GlossaryTerm, String>
     };
     Ok(GlossaryTerm {
         id: term.id,
-        surface: term.surface,
-        canonical: term.canonical,
+        surface: surface.to_owned(),
+        canonical: canonical.to_owned(),
         language,
         scope,
     })
@@ -494,6 +502,37 @@ mod tests {
     }
 
     #[test]
+    fn upsert_rejects_empty_surface_and_canonical() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-glossary-validation-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let make_term = |surface: &str, canonical: &str| FfiGlossaryTerm {
+            id: format!("{surface}-{canonical}"),
+            surface: surface.into(),
+            canonical: canonical.into(),
+            language: "ru".into(),
+            scope: FfiGlossaryScope::Global,
+            meeting_id: String::new(),
+        };
+
+        assert!(
+            !core
+                .upsert_glossary_term(make_term(" ", "UniFFI"))
+                .is_empty()
+        );
+        assert!(
+            !core
+                .upsert_glossary_term(make_term("униффи", "\n"))
+                .is_empty()
+        );
+        assert!(core.list_glossary_terms().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn loud_mic_produces_live_captions() {
         let root = std::env::temp_dir().join(format!("mr-ffi-stt-{}", now_ms()));
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
@@ -573,6 +612,53 @@ mod tests {
         assert!(
             finals.iter().any(|event| event.text.contains("UniFFI")),
             "expected normalized UniFFI token, got {finals:?}"
+        );
+        core.stop_recording();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn glossary_upsert_during_recording_updates_live_normalization() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-glossary-reload-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(core.start_recording("glossary-live".into()).is_empty());
+        assert!(
+            core.upsert_glossary_term(FfiGlossaryTerm {
+                id: "term-live-uniffi".into(),
+                surface: "униффи".into(),
+                canonical: "UniFFI".into(),
+                language: "ru".into(),
+                scope: FfiGlossaryScope::Global,
+                meeting_id: String::new(),
+            })
+            .is_empty()
+        );
+
+        let mut loud = Vec::new();
+        for _ in 0..4000 {
+            loud.extend_from_slice(&3000_i16.to_le_bytes());
+        }
+        assert!(
+            core.ingest_audio_chunk(FfiAudioChannel::Mic, loud, 16_000, 0)
+                .is_empty()
+        );
+        let mut silence = Vec::new();
+        for _ in 0..6000 {
+            silence.extend_from_slice(&0_i16.to_le_bytes());
+        }
+        assert!(
+            core.ingest_audio_chunk(FfiAudioChannel::Mic, silence, 16_000, 500)
+                .is_empty()
+        );
+
+        let captions = core.drain_live_captions();
+        assert!(
+            captions.iter().any(|event| event.text.contains("UniFFI")),
+            "expected live glossary reload, got {captions:?}"
         );
         core.stop_recording();
         let _ = std::fs::remove_dir_all(&root);

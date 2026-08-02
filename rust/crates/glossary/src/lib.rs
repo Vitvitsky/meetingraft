@@ -80,6 +80,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_quoted_csv_fields_with_commas_and_escaped_quotes() {
+        let csv = "surface,canonical,language,scope\n\
+                   \"рафт, митинг\",\"Meeting \"\"Raft\"\"\",ru,global\n";
+
+        let (terms, skipped) = parse_csv(csv).expect("CSV с кавычками должен разбираться");
+
+        assert_eq!(skipped, 0);
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].surface, "рафт, митинг");
+        assert_eq!(terms[0].canonical, "Meeting \"Raft\"");
+    }
+
+    #[test]
     fn builds_unique_russian_first_prompt_with_character_limit() {
         let eng = GlossaryEngine::from_terms(vec![
             term("foo", "Foo", SpeechLanguage::En, GlossaryScope::Global),

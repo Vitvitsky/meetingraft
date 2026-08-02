@@ -102,7 +102,8 @@ Maps to: Epic 6. Status: **done** on `feat/phase-4-live-stt`
 ## Phase 5 — Glossary
 
 Glossary domain model and normalization engine in Rust, scopes
-(global/workspace/project/meeting), CSV/TXT import, glossary UI, attaching
+(global/workspace/project/meeting; MVP implements global + meeting only),
+CSV/TXT import, glossary UI, attaching
 the glossary to a live session (bias/normalization), language-tagged terms
 with Russian as default scope.
 

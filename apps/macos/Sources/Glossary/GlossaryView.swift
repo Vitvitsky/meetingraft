@@ -17,10 +17,11 @@ struct GlossaryView: View {
                         Button("Edit") {
                             editorDraft = GlossaryEditorDraft(term: term)
                         }
-                        .disabled(!canEdit(term))
+                        .disabled(!viewModel.canEdit(term, liveSessionId: liveSessionId))
                         Button("Delete", role: .destructive) {
                             viewModel.delete(id: term.id)
                         }
+                        .disabled(!viewModel.canEdit(term, liveSessionId: liveSessionId))
                     }
             }
         }
@@ -112,18 +113,9 @@ struct GlossaryView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
-            if canEdit(term) {
+            if viewModel.canEdit(term, liveSessionId: liveSessionId) {
                 editorDraft = GlossaryEditorDraft(term: term)
             }
-        }
-    }
-
-    private func canEdit(_ term: FfiGlossaryTerm) -> Bool {
-        switch term.scope {
-        case .global:
-            true
-        case .meeting:
-            liveSessionId == term.meetingId
         }
     }
 
@@ -236,19 +228,24 @@ private struct GlossaryEditorView: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(draft.surface.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSave)
             }
         }
         .padding()
         .frame(width: 420, height: 280)
     }
 
+    private var canSave: Bool {
+        !draft.surface.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !draft.canonical.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func makeTerm() -> FfiGlossaryTerm {
         let meetingId = draft.scope == .meeting ? liveSessionId ?? "" : ""
         return FfiGlossaryTerm(
             id: draft.id,
-            surface: draft.surface,
-            canonical: draft.canonical,
+            surface: draft.surface.trimmingCharacters(in: .whitespacesAndNewlines),
+            canonical: draft.canonical.trimmingCharacters(in: .whitespacesAndNewlines),
             language: draft.language.rawValue,
             scope: draft.scope == .meeting ? .meeting : .global,
             meetingId: meetingId

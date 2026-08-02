@@ -22,6 +22,10 @@ final class AudioCaptureCoordinator {
     private var systemPipeline = AudioChunkPipeline()
     private var startedAt: Date?
 
+    init(core: MeetingCore) {
+        self.core = core
+    }
+
     init(dataRoot: String? = nil) {
         if let dataRoot {
             core = MeetingCore.withDataRoot(dataRoot: dataRoot)

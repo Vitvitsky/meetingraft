@@ -95,6 +95,15 @@ final class GlossaryViewModel {
         liveSessionId == nil ? [.global] : [.global, .meeting]
     }
 
+    func canEdit(_ term: FfiGlossaryTerm, liveSessionId: String?) -> Bool {
+        switch term.scope {
+        case .global:
+            true
+        case .meeting:
+            liveSessionId == term.meetingId
+        }
+    }
+
     func showError(_ message: String) {
         errorMessage = message
     }

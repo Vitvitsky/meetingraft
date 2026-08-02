@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 /// Корневой shell: sidebar + detail + toolbar.
@@ -5,8 +6,20 @@ struct AppShellView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
     @State private var selection: AppDestination? = .liveCaptions
     @State private var captionsViewModel = LiveCaptionsViewModel()
-    @State private var captureCoordinator = AudioCaptureCoordinator()
-    @State private var glossaryViewModel = GlossaryViewModel()
+    @State private var captureCoordinator: AudioCaptureCoordinator
+    @State private var glossaryViewModel: GlossaryViewModel
+
+    init() {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!
+        let root = support.appendingPathComponent("meetingraft", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let core = MeetingCore.withDataRoot(dataRoot: root.path)
+        _captureCoordinator = State(initialValue: AudioCaptureCoordinator(core: core))
+        _glossaryViewModel = State(initialValue: GlossaryViewModel(core: core))
+    }
 
     var body: some View {
         NavigationSplitView {

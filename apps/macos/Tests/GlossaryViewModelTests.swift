@@ -60,6 +60,22 @@ final class GlossaryViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.availableScopes(liveSessionId: "live-1"), [.global, .meeting])
     }
 
+    func testForeignMeetingTermCannotBeEditedOrDeleted() {
+        let viewModel = GlossaryViewModel(core: GlossaryCoreSpy())
+        let foreignTerm = FfiGlossaryTerm(
+            id: "foreign",
+            surface: "рафт",
+            canonical: "Raft",
+            language: "ru",
+            scope: .meeting,
+            meetingId: "meeting-2"
+        )
+
+        XCTAssertFalse(viewModel.canEdit(foreignTerm, liveSessionId: "meeting-1"))
+        XCTAssertTrue(viewModel.canEdit(foreignTerm, liveSessionId: "meeting-2"))
+        XCTAssertTrue(viewModel.canEdit(makeTerm(id: "global"), liveSessionId: nil))
+    }
+
     private func makeTerm(id: String) -> FfiGlossaryTerm {
         FfiGlossaryTerm(
             id: id,
