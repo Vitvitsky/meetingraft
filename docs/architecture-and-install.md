@@ -194,6 +194,11 @@ MEETINGRAFT_API_TOKEN=dev-token uv run uvicorn app.main:app --port 8080
 - Bearer: `dev-token`  
 - кнопка **Test API** → `GET /health`
 
+**Settings → Providers → LLM = Backend:** Generate Brief / Follow-up в Meetings
+отправляет `POST /v1/jobs` с `kind: brief` или `follow_up`, затем poll job и
+`GET /v1/artifacts/{id}`; при ошибке backend — явная ошибка (без fallback на
+builtin templates).
+
 Контракт: [`shared/openapi.yaml`](../shared/openapi.yaml).
 
 ### 2.6 Проверка тестами
@@ -220,7 +225,8 @@ CI: `.github/workflows/ci.yml` (rust + macos + backend).
 3. (Опц.) Whisper model + **Start Live** — captions / Mock.  
 4. Stop Live → **Meetings** → Final / Generate Brief.  
 5. (Опц.) `docker compose up` → Settings **Test API** = OK.  
-6. (Опц.) **Meetings** → встреча с Final → **Artifacts** → **Submit refine (stub)** → markdown из backend.
+6. (Опц.) Settings **LLM = Backend** → **Meetings** → Final → **Generate Brief** → markdown из stub job (`kind: brief`).  
+7. (Опц.) **Meetings** → **Artifacts** → **Submit refine (stub)** → refine markdown из backend.
 
 ### 2.8 Потенциальная «продакшен»-инсталляция (ещё не автоматизирована)
 

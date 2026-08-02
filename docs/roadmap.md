@@ -136,8 +136,11 @@ templates; `LlmClient` stub). **Done follow-up:** backend stub
 (`feat/phase-6-backend-stub`: OpenAPI + FastAPI in-memory jobs + Rust sync +
 Settings Test API) и Meetings poll UI / stub e2e
 (`feat/meetings-backend-refine-stub`: Artifacts → Submit refine → poll job →
-show stub markdown). **Remaining:** WhisperX/LLM workers,
-speakers/diarization (Epic 9), user-defined templates, export .md/mail.
+show stub markdown). **Done follow-up:** Artifacts via backend jobs
+(`feat/artifacts-via-backend-jobs`: Settings LLM=Backend → Generate Brief/Follow-up
+→ `POST /v1/jobs` + poll; no silent fallback to templates). **Remaining:**
+WhisperX/LLM workers, Ollama adapters, speakers/diarization (Epic 9),
+user-defined templates, export .md/mail.
 
 ## Phase 7 — Hardening and release
 
