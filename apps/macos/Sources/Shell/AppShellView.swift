@@ -8,6 +8,7 @@ struct AppShellView: View {
     @State private var captionsViewModel = LiveCaptionsViewModel()
     @State private var captureCoordinator: AudioCaptureCoordinator
     @State private var glossaryViewModel: GlossaryViewModel
+    @State private var meetingsViewModel: MeetingsViewModel
 
     init() {
         let support = FileManager.default.urls(
@@ -19,6 +20,7 @@ struct AppShellView: View {
         let core = MeetingCore.withDataRoot(dataRoot: root.path)
         _captureCoordinator = State(initialValue: AudioCaptureCoordinator(core: core))
         _glossaryViewModel = State(initialValue: GlossaryViewModel(core: core))
+        _meetingsViewModel = State(initialValue: MeetingsViewModel(core: core))
     }
 
     var body: some View {
@@ -33,11 +35,7 @@ struct AppShellView: View {
                     primaryLanguage: languageStore.primary
                 )
             case .meetings:
-                ContentUnavailableView(
-                    "Meetings",
-                    systemImage: "calendar",
-                    description: Text("Появится в следующих фазах")
-                )
+                MeetingsListView(viewModel: meetingsViewModel)
             case .glossary:
                 GlossaryView(
                     viewModel: glossaryViewModel,

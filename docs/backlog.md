@@ -56,15 +56,20 @@
   approval queue
 
 ## Epic 8 — Post-call Intelligence
-- Trigger refinement after meeting end (same language policy as live)
-- Fetch final transcript
-- Show transcript review screen
-- Artifact template system: built-in templates (brief, follow-up email,
-  technical requirements, meeting minutes, action items)
+- [x] Trigger refinement after meeting end — **local MVP:** assemble on Stop Live
+  (backend refinement / ADR-007 HTTP deferred)
+- [x] Fetch final transcript — SQLite `final_transcripts`
+- [x] Show transcript review screen — Meetings detail: Live | Final | Artifacts
+- Artifact template system: built-in templates — **partial:** Brief + Follow-up
+  (technical requirements, meeting minutes, action items deferred)
 - User-defined markdown templates (prompt + placeholders: transcript,
-  brief, glossary, participants)
-- Template picker, regeneration and versioning of generated artifacts
-- Export artifacts (copy, .md file, mail draft)
+  brief, glossary, participants) — **deferred**
+- Template picker, regeneration and versioning — **partial:** generate Brief /
+  Follow-up in UI; versioning deferred
+- Export artifacts — **partial:** copy to clipboard; .md file and mail draft
+  deferred
+- Real LLM generation (`LlmClient` → Ollama/LM Studio/Gemma) — **deferred**
+  (stub trait only; heuristic templates in local MVP)
 
 ## Epic 9 — Speaker Assignment
 - Add speaker entities
