@@ -132,8 +132,9 @@ user-defined template; transcript versions comparable in UI.
 Maps to: Epics 8, 9. Status: **done (local MVP)** on
 `feat/phase-6-postcall-local` (Stop Live → `FinalTranscript` из live finals;
 Meetings UI Live | Final | Artifacts; Brief + Follow-up через built-in
-templates; `LlmClient` stub). **Follow-up:** backend refinement и HTTP
-(ADR-007), real LLM (Ollama/LM Studio), speakers/diarization (Epic 9),
+templates; `LlmClient` stub). **In progress / follow-up:** backend stub
+(`feat/phase-6-backend-stub`: OpenAPI + FastAPI in-memory jobs + Rust sync +
+Settings Test API); then WhisperX/LLM workers, speakers/diarization (Epic 9),
 user-defined templates, export .md/mail.
 
 ## Phase 7 — Hardening and release

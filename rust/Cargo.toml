@@ -7,6 +7,7 @@ members = [
     "crates/session",
     "crates/storage",
     "crates/stt",
+    "crates/sync",
     "crates/translate",
     "crates/ffi",
     "crates/uniffi-bindgen",

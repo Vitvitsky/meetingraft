@@ -50,3 +50,18 @@ jobs:
         run: >
           xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft
           -configuration Debug test CODE_SIGNING_ALLOWED=NO
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Sync deps
+        run: uv sync --extra dev
+      - name: Ruff
+        run: uv run ruff check app tests
+      - name: Pytest
+        run: uv run pytest

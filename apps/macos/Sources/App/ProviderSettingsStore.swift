@@ -20,8 +20,12 @@ final class ProviderSettingsStore {
         }
     }
 
-    /// Общий backend (ADR-007 jobs); пока только UI.
-    var apiBaseUrl: String = ""
+    /// Общий backend (ADR-007 jobs).
+    var apiBaseUrl: String = "http://127.0.0.1:8080"
+    /// Bearer token; не коммитить секреты — default только для local docker.
+    var apiToken: String = "dev-token"
+    var apiConnectionMessage: String = ""
+    var apiConnectionOk: Bool? = nil
     /// Ollama / OpenAI-compat base; показывается когда LLM станет available.
     var llmBaseUrl: String = "http://127.0.0.1:11434"
     var llmModelId: String = "gemma2"

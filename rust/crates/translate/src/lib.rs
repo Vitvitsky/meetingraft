@@ -17,10 +17,7 @@ pub use stub::{StubTranslateEngine, stub_translate};
 use domain::SpeechLanguage;
 
 /// Резолв `auto` → конкретный backend (ADR-008).
-pub fn resolve_effective(
-    policy: &TranslationPolicy,
-    host_available: bool,
-) -> EffectiveBackend {
+pub fn resolve_effective(policy: &TranslationPolicy, host_available: bool) -> EffectiveBackend {
     if !policy.enabled {
         return EffectiveBackend::Off;
     }

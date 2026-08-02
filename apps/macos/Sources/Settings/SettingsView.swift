@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Окно настроек: язык + карта Providers (STT / translation / LLM / paths).
+/// Окно настроек: язык + карта Providers (STT / translation / LLM / backend / paths).
 struct SettingsView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
     @Environment(TranslationSettingsStore.self) private var translationStore
@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var modelPath: String = ""
     @State private var modelsDir: String = ""
     @State private var dataRoot: String = ""
+    @State private var core: MeetingCore?
 
     var body: some View {
         Form {
@@ -20,6 +21,36 @@ struct SettingsView: View {
                 Text("Primary recognition language (ADR-003). Default: Russian.")
                     .foregroundStyle(.secondary)
                     .font(.caption)
+            }
+
+            Section("Backend API (ADR-007)") {
+                TextField("API base URL", text: Bindable(providerStore).apiBaseUrl)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("Bearer token", text: Bindable(providerStore).apiToken)
+                    .textFieldStyle(.roundedBorder)
+                Text("docker compose up → http://127.0.0.1:8080 · token default `dev-token`")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("POST /v1/jobs · GET /v1/jobs/{id} · GET /v1/artifacts/{id}")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Test API") {
+                        testApiConnection()
+                    }
+                    if let ok = providerStore.apiConnectionOk {
+                        Text(ok ? "OK" : "Fail")
+                            .foregroundStyle(ok ? Color.green : Color.red)
+                    }
+                }
+                if !providerStore.apiConnectionMessage.isEmpty {
+                    Text(providerStore.apiConnectionMessage)
+                        .font(.caption)
+                        .foregroundStyle(
+                            providerStore.apiConnectionOk == true ? Color.secondary : Color.red
+                        )
+                        .textSelection(.enabled)
+                }
             }
 
             Section("Live STT (ADR-005)") {
@@ -53,17 +84,9 @@ struct SettingsView: View {
                         Text(engine.pickerLabel).tag(engine)
                     }
                 }
-                Text("local_final: Final = Live finals + glossary. WhisperX jobs — позже (ADR-007).")
+                Text("local_final: Final = Live finals + glossary. WhisperX → Backend API /v1/jobs — скоро.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if providerStore.postCallStt == .backendWhisperX || !PostCallSttEngine.backendWhisperX.isAvailable {
-                    TextField("API base URL", text: Bindable(providerStore).apiBaseUrl)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(true)
-                    Text("POST {apiBase}/v1/jobs — скоро")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             Section("Translation (ADR-008)") {
@@ -81,7 +104,7 @@ struct SettingsView: View {
                 if translationStore.backend == .backend || translationStore.backend == .auto {
                     TextField("Translate base URL", text: Bindable(translationStore).backendBaseUrl)
                         .textFieldStyle(.roundedBorder)
-                    Text("POST {base}/v1/translate (NLLB on backend later). Empty → auto falls back to stub.")
+                    Text("POST {base}/v1/translate (NLLB later). Empty → auto falls back to stub.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -106,7 +129,7 @@ struct SettingsView: View {
                     TextField("Model id", text: Bindable(providerStore).llmModelId)
                         .textFieldStyle(.roundedBorder)
                         .disabled(!providerStore.llmEngine.isAvailable)
-                    Text("Ollama: http://127.0.0.1:11434 · OpenAI-compat: {base}/v1 · Backend: {apiBase}/v1 — скоро")
+                    Text("Ollama / OpenAI-compat / Backend LLM — скоро")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -129,8 +152,14 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(minWidth: 560, minHeight: 560)
+        .frame(minWidth: 560, minHeight: 620)
         .onAppear(perform: refreshModelStatus)
+        .onChange(of: providerStore.apiBaseUrl) { _, _ in
+            applyApiConfig()
+        }
+        .onChange(of: providerStore.apiToken) { _, _ in
+            applyApiConfig()
+        }
     }
 
     private var liveSttEngineLabel: String {
@@ -141,8 +170,27 @@ struct SettingsView: View {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let root = support.appendingPathComponent("meetingraft", isDirectory: true)
         dataRoot = root.path
-        let core = MeetingCore.withDataRoot(dataRoot: root.path)
-        modelPath = core.whisperModelPath()
-        modelsDir = core.modelsDirectory()
+        let meetingCore = MeetingCore.withDataRoot(dataRoot: root.path)
+        core = meetingCore
+        modelPath = meetingCore.whisperModelPath()
+        modelsDir = meetingCore.modelsDirectory()
+        applyApiConfig()
+    }
+
+    private func applyApiConfig() {
+        core?.setApiConfig(baseUrl: providerStore.apiBaseUrl, token: providerStore.apiToken)
+    }
+
+    private func testApiConnection() {
+        applyApiConfig()
+        guard let core else { return }
+        let error = core.testApiConnection()
+        if error.isEmpty {
+            providerStore.apiConnectionOk = true
+            providerStore.apiConnectionMessage = "GET /health OK"
+        } else {
+            providerStore.apiConnectionOk = false
+            providerStore.apiConnectionMessage = error
+        }
     }
 }
