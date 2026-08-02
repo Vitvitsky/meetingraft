@@ -16,6 +16,10 @@ use postcall::{assemble_final, make_artifact, render_brief, render_follow_up};
 use session::MeetingSession;
 use storage::{AudioManifestError, AudioManifestStore};
 use stt::{LiveCaptionPipeline, SttBackendKind, models_dir, resolve_whisper_model};
+use translate::{
+    EffectiveBackend, HostPendingQueue, TranslationBackendKind, TranslationPolicy,
+    resolve_effective, translate_now,
+};
 use uuid::Uuid;
 
 /// Фаза caption для Swift.
@@ -109,6 +113,16 @@ pub struct FfiGenerateArtifactResult {
     pub error: String,
 }
 
+/// Запрос на host (Apple) перевод — Swift drain → complete.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiHostTranslationRequest {
+    pub id: String,
+    pub text: String,
+    pub source_code: String,
+    pub target_code: String,
+    pub phase: FfiCaptionPhase,
+}
+
 struct MeetingCoreInner {
     session: MeetingSession,
     started_at: Option<Instant>,
@@ -119,6 +133,13 @@ struct MeetingCoreInner {
     stt_backend: String,
     glossary: GlossaryEngine,
     pending_live_captions: VecDeque<FfiCaptionEvent>,
+    /// Язык распознавания (captions); не путать с целевым языком перевода.
+    language_policy: LanguagePolicy,
+    translation_policy: TranslationPolicy,
+    /// Swift зарегистрировал Apple / host bridge.
+    host_translation_available: bool,
+    host_translation_queue: HostPendingQueue,
+    pending_translations: VecDeque<FfiCaptionEvent>,
 }
 
 /// Фасад сессии для macOS shell.
@@ -162,6 +183,54 @@ fn to_ffi(event: domain::CaptionEvent) -> FfiCaptionEvent {
         phase: match event.phase {
             CaptionPhase::Partial => FfiCaptionPhase::Partial,
             CaptionPhase::Final => FfiCaptionPhase::Final,
+        },
+    }
+}
+
+/// Captions + опциональный отдельный translation event (не подменяет caption).
+fn enqueue_caption(inner: &mut MeetingCoreInner, event: domain::CaptionEvent) {
+    maybe_enqueue_translation(inner, &event);
+    inner.pending_live_captions.push_back(to_ffi(event));
+}
+
+fn maybe_enqueue_translation(inner: &mut MeetingCoreInner, event: &domain::CaptionEvent) {
+    if !inner.translation_policy.enabled {
+        return;
+    }
+    let target = inner.translation_policy.target;
+    let source = inner.language_policy.primary;
+    if target == source {
+        return;
+    }
+    let effective = resolve_effective(
+        &inner.translation_policy,
+        inner.host_translation_available,
+    );
+    match effective {
+        EffectiveBackend::Off => {}
+        EffectiveBackend::AppleHost => {
+            inner
+                .host_translation_queue
+                .enqueue(&event.text, source, target, event.phase);
+        }
+        other => match translate_now(
+            other,
+            &inner.translation_policy,
+            &event.text,
+            source,
+            target,
+        ) {
+            Ok(text) => {
+                let translated = domain::CaptionEvent {
+                    id: Uuid::new_v4().to_string(),
+                    text,
+                    phase: event.phase,
+                };
+                inner.pending_translations.push_back(to_ffi(translated));
+            }
+            Err(_) => {
+                // Молча пропускаем битый translate — captions остаются.
+            }
         },
     }
 }
@@ -360,8 +429,157 @@ impl MeetingCore {
                 stt_backend: "idle".to_string(),
                 glossary: GlossaryEngine::from_terms(Vec::new()),
                 pending_live_captions: VecDeque::new(),
+                language_policy: LanguagePolicy::default_v1(),
+                translation_policy: TranslationPolicy::disabled(),
+                host_translation_available: false,
+                host_translation_queue: HostPendingQueue::default(),
+                pending_translations: VecDeque::new(),
             }),
         })
+    }
+
+    /// Primary язык распознавания (`ru` | `en` | `es`). Не включает перевод.
+    pub fn set_session_language(&self, primary_code: String) -> String {
+        let Some(primary) = SpeechLanguage::from_code(&primary_code) else {
+            return format!("unsupported language: {primary_code}");
+        };
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        let policy = LanguagePolicy::with_primary(primary);
+        guard.language_policy = policy.clone();
+        if let Some(pipeline) = guard.stt.as_mut() {
+            pipeline.set_language_policy(policy);
+        }
+        String::new()
+    }
+
+    pub fn session_language(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.language_policy.primary.code().to_owned()
+    }
+
+    /// Включить/выключить sync-перевод и задать target (`ru`|`en`|`es`).
+    pub fn set_live_translation(&self, enabled: bool, target_code: String) -> String {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        if !enabled {
+            guard.translation_policy.enabled = false;
+            guard.translation_policy.backend = TranslationBackendKind::Off;
+            guard.pending_translations.clear();
+            guard.host_translation_queue.clear();
+            return String::new();
+        }
+        let Some(target) = SpeechLanguage::from_code(&target_code) else {
+            return format!("unsupported translation target: {target_code}");
+        };
+        if target == guard.language_policy.primary {
+            return "translation target must differ from session language".to_string();
+        }
+        if !guard.language_policy.is_allowed(target) {
+            return format!("translation target not allowed: {target_code}");
+        }
+        guard.translation_policy.enabled = true;
+        guard.translation_policy.target = target;
+        if matches!(
+            guard.translation_policy.backend,
+            TranslationBackendKind::Off
+        ) {
+            guard.translation_policy.backend = TranslationBackendKind::Auto;
+        }
+        String::new()
+    }
+
+    pub fn live_translation_target(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        if guard.translation_policy.enabled {
+            guard.translation_policy.target.code().to_owned()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Backend: `off` | `auto` | `stub` | `apple` | `backend` | `local_llm`.
+    /// `base_url` используется для `backend` / `auto→backend`.
+    pub fn set_translation_backend(&self, kind_code: String, base_url: String) -> String {
+        let Some(kind) = TranslationBackendKind::from_code(&kind_code) else {
+            return format!("unsupported translation backend: {kind_code}");
+        };
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.translation_policy.backend = kind;
+        let trimmed = base_url.trim();
+        guard.translation_policy.backend_base_url = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        };
+        if matches!(kind, TranslationBackendKind::Off) {
+            guard.translation_policy.enabled = false;
+            guard.pending_translations.clear();
+            guard.host_translation_queue.clear();
+        }
+        String::new()
+    }
+
+    pub fn translation_backend(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.translation_policy.backend.code().to_owned()
+    }
+
+    /// Фактический backend после резолва `auto` (для UI/debug).
+    pub fn effective_translation_backend(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        resolve_effective(
+            &guard.translation_policy,
+            guard.host_translation_available,
+        )
+        .code()
+        .to_owned()
+    }
+
+    /// Swift: host bridge готов (Apple Translation или stub).
+    pub fn set_host_translation_available(&self, available: bool) {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.host_translation_available = available;
+    }
+
+    pub fn drain_host_translation_requests(&self) -> Vec<FfiHostTranslationRequest> {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard
+            .host_translation_queue
+            .drain()
+            .into_iter()
+            .map(|req| FfiHostTranslationRequest {
+                id: req.id,
+                text: req.text,
+                source_code: req.source_code,
+                target_code: req.target_code,
+                phase: if req.phase_final {
+                    FfiCaptionPhase::Final
+                } else {
+                    FfiCaptionPhase::Partial
+                },
+            })
+            .collect()
+    }
+
+    /// Ответ host bridge → в translation stream.
+    pub fn complete_host_translation(&self, id: String, translated_text: String) -> String {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        let Some(phase_final) = guard.host_translation_queue.take_awaiting(&id) else {
+            return format!("unknown host translation id: {id}");
+        };
+        let text = translated_text.trim();
+        if text.is_empty() {
+            return String::new();
+        }
+        guard.pending_translations.push_back(FfiCaptionEvent {
+            id: Uuid::new_v4().to_string(),
+            text: text.to_owned(),
+            phase: if phase_final {
+                FfiCaptionPhase::Final
+            } else {
+                FfiCaptionPhase::Partial
+            },
+        });
+        String::new()
     }
 
     /// Старт demo captions (scripted, без аудио).
@@ -371,8 +589,11 @@ impl MeetingCore {
             guard.session = MeetingSession::new();
             guard.started_at = None;
         }
-        let _ = guard.session.start(LanguagePolicy::default_v1());
+        let policy = guard.language_policy.clone();
+        let _ = guard.session.start(policy);
         guard.started_at = Some(Instant::now());
+        guard.pending_translations.clear();
+        guard.host_translation_queue.clear();
     }
 
     pub fn stop(&self) {
@@ -397,18 +618,25 @@ impl MeetingCore {
             return Vec::new();
         };
         let elapsed_ms = started.elapsed().as_millis() as u64;
-        guard
-            .session
-            .push_tick(elapsed_ms)
-            .into_iter()
-            .map(to_ffi)
-            .collect()
+        let events = guard.session.push_tick(elapsed_ms);
+        let mut out = Vec::with_capacity(events.len());
+        for event in events {
+            maybe_enqueue_translation(&mut guard, &event);
+            out.push(to_ffi(event));
+        }
+        out
     }
 
     /// Live STT captions, накопленные после ingest.
     pub fn drain_live_captions(&self) -> Vec<FfiCaptionEvent> {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
         guard.pending_live_captions.drain(..).collect()
+    }
+
+    /// Отдельный поток sync-перевода (demo + live); пусто если выключен.
+    pub fn drain_live_translations(&self) -> Vec<FfiCaptionEvent> {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.pending_translations.drain(..).collect()
     }
 
     pub fn list_glossary_terms(&self) -> Vec<FfiGlossaryTerm> {
@@ -543,7 +771,7 @@ impl MeetingCore {
             FfiArtifactKind::Brief => ArtifactKind::Brief,
             FfiArtifactKind::FollowUp => ArtifactKind::FollowUp,
         };
-        let primary_language = LanguagePolicy::default_v1().primary;
+        let primary_language = guard.language_policy.primary;
         let generated_at_ms = now_ms();
         let body = match domain_kind {
             ArtifactKind::Brief => render_brief(&final_transcript.body_markdown, primary_language),
@@ -593,8 +821,8 @@ impl MeetingCore {
                     Err(error) => return error.to_string(),
                 };
                 let glossary = GlossaryEngine::from_terms(terms);
-                let mut pipeline =
-                    LiveCaptionPipeline::from_data_root(&root, LanguagePolicy::default_v1());
+                let policy = guard.language_policy.clone();
+                let mut pipeline = LiveCaptionPipeline::from_data_root(&root, policy);
                 if pipeline.backend() == SttBackendKind::Whisper {
                     pipeline.set_initial_prompt(&glossary.build_whisper_prompt(800));
                 }
@@ -607,6 +835,8 @@ impl MeetingCore {
                 guard.stt = Some(pipeline);
                 guard.glossary = glossary;
                 guard.pending_live_captions.clear();
+                guard.pending_translations.clear();
+                guard.host_translation_queue.clear();
                 String::new()
             }
             Err(err) => err.to_string(),
@@ -667,7 +897,7 @@ impl MeetingCore {
                     if let Some(store) = guard.store.as_mut() {
                         let _ = store.append_caption(&sid, &event, now_ms());
                     }
-                    guard.pending_live_captions.push_back(to_ffi(event));
+                    enqueue_caption(&mut guard, event);
                 }
             }
         }
@@ -684,7 +914,7 @@ impl MeetingCore {
                 if let Some(store) = guard.store.as_mut() {
                     let _ = store.append_caption(&sid, &event, now_ms());
                 }
-                guard.pending_live_captions.push_back(to_ffi(event));
+                enqueue_caption(&mut guard, event);
             }
             if let Some(store) = guard.store.as_mut() {
                 let _ = assemble_and_store_final(store, &sid);
@@ -757,6 +987,51 @@ mod tests {
         thread::sleep(Duration::from_millis(850));
         let next = core.drain_events();
         assert!(!next.is_empty());
+        core.stop();
+    }
+
+    #[test]
+    fn session_language_drives_english_demo() {
+        let core = MeetingCore::new();
+        assert!(core.set_session_language("en".into()).is_empty());
+        assert_eq!(core.session_language(), "en");
+        core.start_demo();
+        let events = core.drain_events();
+        assert_eq!(events[0].text, "Welcome");
+        core.stop();
+    }
+
+    #[test]
+    fn live_translation_is_separate_from_captions() {
+        let core = MeetingCore::new();
+        assert!(core.set_live_translation(true, "en".into()).is_empty());
+        assert!(core.set_translation_backend("stub".into(), String::new()).is_empty());
+        core.start_demo();
+        let captions = core.drain_events();
+        assert_eq!(captions[0].text, "Добро пожаловать");
+        let translations = core.drain_live_translations();
+        assert_eq!(translations[0].text, "Welcome");
+        core.stop();
+    }
+
+    #[test]
+    fn apple_backend_uses_host_bridge_queue() {
+        let core = MeetingCore::new();
+        core.set_host_translation_available(true);
+        assert!(core.set_live_translation(true, "en".into()).is_empty());
+        assert!(core.set_translation_backend("apple".into(), String::new()).is_empty());
+        assert_eq!(core.effective_translation_backend(), "apple");
+        core.start_demo();
+        let _ = core.drain_events();
+        let reqs = core.drain_host_translation_requests();
+        assert!(!reqs.is_empty());
+        assert_eq!(reqs[0].text, "Добро пожаловать");
+        assert!(
+            core.complete_host_translation(reqs[0].id.clone(), "Welcome".into())
+                .is_empty()
+        );
+        let translations = core.drain_live_translations();
+        assert_eq!(translations[0].text, "Welcome");
         core.stop();
     }
 

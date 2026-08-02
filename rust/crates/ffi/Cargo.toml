@@ -19,5 +19,6 @@ meetingraft-postcall = { path = "../postcall" }
 meetingraft-session = { path = "../session" }
 meetingraft-storage = { path = "../storage" }
 meetingraft-stt = { path = "../stt" }
+meetingraft-translate = { path = "../translate" }
 uniffi = "0.32"
 uuid = { version = "1", features = ["v4"] }

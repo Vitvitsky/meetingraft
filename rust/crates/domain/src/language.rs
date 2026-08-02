@@ -18,6 +18,16 @@ impl SpeechLanguage {
             Self::Es => "es",
         }
     }
+
+    /// Разбор кода из UI / UniFFI (`ru` | `en` | `es`).
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "ru" => Some(Self::Ru),
+            "en" => Some(Self::En),
+            "es" => Some(Self::Es),
+            _ => None,
+        }
+    }
 }
 
 /// Политика языков сессии: primary + allowed set.
@@ -30,8 +40,13 @@ pub struct LanguagePolicy {
 impl LanguagePolicy {
     /// Политика v1: русский primary, ru/en/es allowed.
     pub fn default_v1() -> Self {
+        Self::with_primary(SpeechLanguage::Ru)
+    }
+
+    /// Primary из UI; allowed всегда `{ru, en, es}` (ADR-003).
+    pub fn with_primary(primary: SpeechLanguage) -> Self {
         Self {
-            primary: SpeechLanguage::Ru,
+            primary,
             allowed: vec![SpeechLanguage::Ru, SpeechLanguage::En, SpeechLanguage::Es],
         }
     }

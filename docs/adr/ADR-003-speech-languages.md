@@ -29,3 +29,10 @@ STT providers and post-call jobs must honor this policy. Russian-first model rou
 ### Trade-offs
 - Other languages are out of scope until a new ADR
 - Mixed-language accuracy depends on provider capabilities within the allowed set
+
+## Live translation (orthogonal)
+Synchronous translation of captions is a **separate product function**, not a change of
+`primary_language`. Captions always reflect recognition language; a parallel translation
+stream may target another allowed language without replacing STT output.
+
+Backend selection and Apple host bridge: **ADR-008**.

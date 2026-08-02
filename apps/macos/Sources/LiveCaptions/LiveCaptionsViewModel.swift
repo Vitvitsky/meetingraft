@@ -1,27 +1,70 @@
 import Foundation
 import Observation
 
-/// Presentation model экрана live captions (demo + live STT).
+/// Presentation model экрана live captions (demo + live STT + optional translation).
 @Observable
 @MainActor
 final class LiveCaptionsViewModel {
     private(set) var lines: [CaptionLine] = []
+    private(set) var translationLines: [CaptionLine] = []
     private(set) var isLiveSession = false
-    private let stream: CaptionStreaming
+    private(set) var effectiveTranslationBackend: String = "off"
+
+    private let core: MeetingCore
+    private let stream: RustCaptionStream
+    private let hostBridge: HostTranslationBridge
     private var livePollTask: Task<Void, Never>?
 
-    init(stream: CaptionStreaming = RustCaptionStream()) {
-        self.stream = stream
+    init(core: MeetingCore) {
+        self.core = core
+        self.stream = RustCaptionStream(core: core)
+        self.hostBridge = HostTranslationBridge(core: core)
+        self.hostBridge.start()
+    }
+
+    /// Прокинуть primary из Settings / toolbar в Rust STT/demo.
+    func applySessionLanguage(_ language: SpeechLanguage) {
+        let error = core.setSessionLanguage(primaryCode: language.rawValue)
+        if !error.isEmpty {
+            assertionFailure(error)
+        }
+    }
+
+    /// ADR-008: enabled/target/backend → MeetingCore.
+    func applyTranslationSettings(_ store: TranslationSettingsStore) {
+        let backendError = core.setTranslationBackend(
+            kindCode: store.backend.rawValue,
+            baseUrl: store.backendBaseUrl
+        )
+        if !backendError.isEmpty {
+            assertionFailure(backendError)
+        }
+        let enabled = store.enabled && store.backend != .off
+        let liveError = core.setLiveTranslation(
+            enabled: enabled,
+            targetCode: store.target.rawValue
+        )
+        if !liveError.isEmpty, enabled {
+            // target == primary — UI может поправить target.
+        }
+        effectiveTranslationBackend = core.effectiveTranslationBackend()
     }
 
     /// Scripted demo captions (без аудио).
-    func startDemo() {
+    func startDemo(translation: TranslationSettingsStore) {
         stopLivePoll()
         isLiveSession = false
         lines = []
-        stream.start { [weak self] line in
-            self?.append(line)
-        }
+        translationLines = []
+        applyTranslationSettings(translation)
+        stream.start(
+            onEvent: { [weak self] line in
+                self?.appendCaption(line)
+            },
+            onTranslation: { [weak self] line in
+                self?.appendTranslation(line)
+            }
+        )
     }
 
     func stopDemo() {
@@ -29,25 +72,20 @@ final class LiveCaptionsViewModel {
     }
 
     /// Recording + drainLiveCaptions с того же MeetingCore.
-    func startLive(capture: AudioCaptureCoordinator) async {
+    func startLive(capture: AudioCaptureCoordinator, translation: TranslationSettingsStore) async {
         stopDemo()
         stopLivePoll()
         lines = []
+        translationLines = []
+        applyTranslationSettings(translation)
         await capture.startRecording()
         guard capture.isRecording else { return }
         isLiveSession = true
         livePollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let events = capture.drainLiveCaptions()
-                for event in events {
-                    let phase: CaptionPhase = switch event.phase {
-                    case .partial: .partial
-                    case .final: .final
-                    }
-                    let id = UUID(uuidString: event.id) ?? UUID()
-                    append(CaptionLine(id: id, text: event.text, phase: phase))
-                }
+                self.ingestLiveEvents(capture.drainLiveCaptions(), intoCaptions: true)
+                self.ingestLiveEvents(self.core.drainLiveTranslations(), intoCaptions: false)
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
         }
@@ -55,27 +93,11 @@ final class LiveCaptionsViewModel {
 
     func stopLive(capture: AudioCaptureCoordinator) {
         stopLivePoll()
-        // Дочитать flush после stop.
-        let events = capture.drainLiveCaptions()
-        for event in events {
-            let phase: CaptionPhase = switch event.phase {
-            case .partial: .partial
-            case .final: .final
-            }
-            let id = UUID(uuidString: event.id) ?? UUID()
-            append(CaptionLine(id: id, text: event.text, phase: phase))
-        }
+        ingestLiveEvents(capture.drainLiveCaptions(), intoCaptions: true)
+        ingestLiveEvents(core.drainLiveTranslations(), intoCaptions: false)
         capture.stopRecording()
-        // Ещё раз после stopRecording (Rust flush в очередь до clear).
-        let after = capture.drainLiveCaptions()
-        for event in after {
-            let phase: CaptionPhase = switch event.phase {
-            case .partial: .partial
-            case .final: .final
-            }
-            let id = UUID(uuidString: event.id) ?? UUID()
-            append(CaptionLine(id: id, text: event.text, phase: phase))
-        }
+        ingestLiveEvents(capture.drainLiveCaptions(), intoCaptions: true)
+        ingestLiveEvents(core.drainLiveTranslations(), intoCaptions: false)
         isLiveSession = false
     }
 
@@ -91,7 +113,31 @@ final class LiveCaptionsViewModel {
         livePollTask = nil
     }
 
-    private func append(_ line: CaptionLine) {
+    private func ingestLiveEvents(_ events: [FfiCaptionEvent], intoCaptions: Bool) {
+        for event in events {
+            let phase: CaptionPhase = switch event.phase {
+            case .partial: .partial
+            case .final: .final
+            }
+            let id = UUID(uuidString: event.id) ?? UUID()
+            let line = CaptionLine(id: id, text: event.text, phase: phase)
+            if intoCaptions {
+                appendCaption(line)
+            } else {
+                appendTranslation(line)
+            }
+        }
+    }
+
+    private func appendCaption(_ line: CaptionLine) {
+        append(line, to: &lines)
+    }
+
+    private func appendTranslation(_ line: CaptionLine) {
+        append(line, to: &translationLines)
+    }
+
+    private func append(_ line: CaptionLine, to lines: inout [CaptionLine]) {
         if line.phase == .final, let last = lines.last, last.phase == .partial {
             lines[lines.count - 1] = line
         } else if line.phase == .partial, let last = lines.last, last.phase == .partial {

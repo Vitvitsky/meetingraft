@@ -56,4 +56,8 @@ model, cloud STT, or a home-server worker — fixed later in ADR-007 scope.
   tuning (target ≤ 2 s for partials), to be validated in Phase 4 against
   the latency budget.
 - Local model files must be downloaded/managed by the app (first-run
-  download flow).
+  download flow). Official ggml weights come from Hugging Face
+  (`ggerganov/whisper.cpp`); see `apps/macos/Scripts/download-stt-model.sh`.
+- Whisper may emit credit-style hallucinations on silence/noise (e.g. Russian
+  «авторы субтитров…»). Live engine filters known markers and drops high
+  `no_speech` segments; Silero VAD remains the longer-term fix.

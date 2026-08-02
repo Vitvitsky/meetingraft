@@ -1,6 +1,6 @@
 //! Mock STT: energy VAD → русские partial/final (для CI и без модели).
 
-use domain::{CaptionEvent, CaptionPhase, LanguagePolicy};
+use domain::{CaptionEvent, CaptionPhase, LanguagePolicy, SpeechLanguage};
 use uuid::Uuid;
 
 use crate::SttEngine;
@@ -53,6 +53,24 @@ impl MockSttEngine {
             phase,
         }
     }
+
+    fn partial_placeholder(&self) -> String {
+        let lang = self.policy.primary.code();
+        match self.policy.primary {
+            SpeechLanguage::Ru => format!("[partial {lang}] речь…"),
+            SpeechLanguage::En => format!("[partial {lang}] speaking…"),
+            SpeechLanguage::Es => format!("[partial {lang}] hablando…"),
+        }
+    }
+
+    fn final_placeholder(&self) -> String {
+        let lang = self.policy.primary.code();
+        match self.policy.primary {
+            SpeechLanguage::Ru => format!("[final {lang}] фрагмент речи униффи"),
+            SpeechLanguage::En => format!("[final {lang}] speech fragment uniffi"),
+            SpeechLanguage::Es => format!("[final {lang}] fragmento de habla uniffi"),
+        }
+    }
 }
 
 impl SttEngine for MockSttEngine {
@@ -68,9 +86,8 @@ impl SttEngine for MockSttEngine {
             self.silence_frames = 0;
             self.speech_frames += pcm.len();
             if !self.partial_emitted && self.speech_frames >= MIN_SPEECH_FRAMES {
-                let lang = self.policy.primary.code();
                 out.push(Self::event(
-                    &format!("[partial {lang}] речь…"),
+                    &self.partial_placeholder(),
                     CaptionPhase::Partial,
                 ));
                 self.partial_emitted = true;
@@ -88,8 +105,7 @@ impl SttEngine for MockSttEngine {
         if !self.in_speech && !self.partial_emitted {
             return Vec::new();
         }
-        let lang = self.policy.primary.code();
-        let text = format!("[final {lang}] фрагмент речи униффи");
+        let text = self.final_placeholder();
         self.in_speech = false;
         self.speech_frames = 0;
         self.silence_frames = 0;

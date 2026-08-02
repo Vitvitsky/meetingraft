@@ -38,8 +38,9 @@ impl MeetingSession {
         if self.state != SessionState::Idle {
             return Err(SessionError::InvalidTransition);
         }
+        let producer = FakeCaptionProducer::for_language(policy.primary);
         self.policy = Some(policy);
-        self.producer = Some(FakeCaptionProducer::default_script());
+        self.producer = Some(producer);
         self.state = SessionState::Live;
         Ok(())
     }
@@ -114,5 +115,15 @@ mod tests {
         let second = session.push_tick(800);
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].phase, CaptionPhase::Final);
+    }
+
+    #[test]
+    fn english_policy_emits_english_demo() {
+        let mut session = MeetingSession::new();
+        session
+            .start(LanguagePolicy::with_primary(domain::SpeechLanguage::En))
+            .unwrap();
+        let first = session.push_tick(0);
+        assert_eq!(first[0].text, "Welcome");
     }
 }
