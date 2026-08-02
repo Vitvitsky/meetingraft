@@ -6,6 +6,7 @@ struct AppShellView: View {
     @State private var selection: AppDestination? = .liveCaptions
     @State private var captionsViewModel = LiveCaptionsViewModel()
     @State private var captureCoordinator = AudioCaptureCoordinator()
+    @State private var glossaryViewModel = GlossaryViewModel()
 
     var body: some View {
         NavigationSplitView {
@@ -23,6 +24,11 @@ struct AppShellView: View {
                     "Meetings",
                     systemImage: "calendar",
                     description: Text("Появится в следующих фазах")
+                )
+            case .glossary:
+                GlossaryView(
+                    viewModel: glossaryViewModel,
+                    liveSessionId: captureCoordinator.isRecording ? captureCoordinator.sessionId : nil
                 )
             }
         }

@@ -4,6 +4,7 @@ import Foundation
 enum AppDestination: String, Hashable, CaseIterable, Identifiable {
     case liveCaptions
     case meetings
+    case glossary
 
     var id: String {
         rawValue
@@ -13,6 +14,7 @@ enum AppDestination: String, Hashable, CaseIterable, Identifiable {
         switch self {
         case .liveCaptions: "Live Captions"
         case .meetings: "Meetings"
+        case .glossary: "Glossary"
         }
     }
 
@@ -20,6 +22,7 @@ enum AppDestination: String, Hashable, CaseIterable, Identifiable {
         switch self {
         case .liveCaptions: "captions.bubble"
         case .meetings: "calendar"
+        case .glossary: "book"
         }
     }
 }
