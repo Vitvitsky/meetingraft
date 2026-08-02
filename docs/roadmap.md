@@ -129,7 +129,12 @@ domain models (ADR-002).
 speaker assignment → artifacts from at least two built-in templates and one
 user-defined template; transcript versions comparable in UI.
 
-Maps to: Epics 8, 9.
+Maps to: Epics 8, 9. Status: **done (local MVP)** on
+`feat/phase-6-postcall-local` (Stop Live → `FinalTranscript` из live finals;
+Meetings UI Live | Final | Artifacts; Brief + Follow-up через built-in
+templates; `LlmClient` stub). **Follow-up:** backend refinement и HTTP
+(ADR-007), real LLM (Ollama/LM Studio), speakers/diarization (Epic 9),
+user-defined templates, export .md/mail.
 
 ## Phase 7 — Hardening and release
 
