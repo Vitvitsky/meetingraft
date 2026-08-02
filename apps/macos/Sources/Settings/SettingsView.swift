@@ -119,17 +119,17 @@ struct SettingsView: View {
                         Text(engine.pickerLabel).tag(engine)
                     }
                 }
-                Text("Сейчас артефакты всегда из Final через builtin templates.")
+                Text("Builtin templates локально; Backend — jobs brief/follow_up (stub). Ollama — скоро.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if providerStore.llmEngine.needsUrl || !LlmEngine.ollama.isAvailable {
+                if providerStore.llmEngine.needsUrl {
                     TextField("LLM base URL", text: Bindable(providerStore).llmBaseUrl)
                         .textFieldStyle(.roundedBorder)
-                        .disabled(!providerStore.llmEngine.isAvailable || !providerStore.llmEngine.needsUrl)
+                        .disabled(!providerStore.llmEngine.isAvailable)
                     TextField("Model id", text: Bindable(providerStore).llmModelId)
                         .textFieldStyle(.roundedBorder)
                         .disabled(!providerStore.llmEngine.isAvailable)
-                    Text("Ollama / OpenAI-compat / Backend LLM — скоро")
+                    Text("Ollama / OpenAI-compat — скоро")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -160,6 +160,12 @@ struct SettingsView: View {
         .onChange(of: providerStore.apiToken) { _, _ in
             applyApiConfig()
         }
+        .onChange(of: providerStore.llmEngine) { _, _ in
+            applyApiConfig()
+        }
+        .onChange(of: providerStore.llmModelId) { _, _ in
+            applyApiConfig()
+        }
     }
 
     private var liveSttEngineLabel: String {
@@ -179,6 +185,10 @@ struct SettingsView: View {
 
     private func applyApiConfig() {
         core?.setApiConfig(baseUrl: providerStore.apiBaseUrl, token: providerStore.apiToken)
+        core?.setLlmConfig(
+            engineCode: providerStore.llmEngine.rawValue,
+            modelId: providerStore.llmModelId
+        )
     }
 
     private func testApiConnection() {

@@ -15,7 +15,19 @@ final class ProviderSettingsStoreTests: XCTestCase {
         XCTAssertFalse(PostCallSttEngine.backendWhisperX.isAvailable)
         XCTAssertFalse(LlmEngine.ollama.isAvailable)
         XCTAssertFalse(LlmEngine.openaiCompat.isAvailable)
-        XCTAssertFalse(LlmEngine.backend.isAvailable)
+    }
+
+    func testBackendLlmIsAvailableAndSelectable() {
+        let store = ProviderSettingsStore()
+        XCTAssertTrue(LlmEngine.backend.isAvailable)
+        XCTAssertFalse(LlmEngine.ollama.isAvailable)
+        store.llmEngine = .backend
+        XCTAssertEqual(store.llmEngine, .backend)
+        XCTAssertFalse(LlmEngine.backend.needsUrl)
+        XCTAssertEqual(
+            store.artifactsPipelineCaption,
+            "Генерация из Final · LLM: backend"
+        )
     }
 
     func testSelectingUnavailablePostCallResetsToLocalFinal() {

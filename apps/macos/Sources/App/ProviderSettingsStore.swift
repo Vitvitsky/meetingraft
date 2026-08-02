@@ -87,8 +87,8 @@ enum LlmEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var isAvailable: Bool {
         switch self {
-        case .builtinTemplates: true
-        case .ollama, .openaiCompat, .backend: false
+        case .builtinTemplates, .backend: true
+        case .ollama, .openaiCompat: false
         }
     }
 
@@ -107,8 +107,8 @@ enum LlmEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var needsUrl: Bool {
         switch self {
-        case .builtinTemplates: false
-        case .ollama, .openaiCompat, .backend: true
+        case .builtinTemplates, .backend: false
+        case .ollama, .openaiCompat: true
         }
     }
 }
