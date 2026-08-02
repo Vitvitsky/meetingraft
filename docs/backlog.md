@@ -79,8 +79,11 @@
 - Create sync client crate — **done** (`meetingraft-sync`)
 
 ## Epic 9 — Speaker Assignment
-- Add speaker entities
-- Add speaker correction screen
+- [x] Add speaker entities — **skeleton:** `domain::Speaker`, SQLite `speakers`,
+  UniFFI list/upsert/delete (`feat/speakers-skeleton`)
+- [x] Add speaker correction screen — **partial (skeleton):** Meetings detail
+  **Speakers** tab: ручные метки (add/rename/delete), banner «diarization — скоро»;
+  без diarization и без привязки к Final transcript
 - Add versioned refined transcript
 - Compare live vs final transcript
 

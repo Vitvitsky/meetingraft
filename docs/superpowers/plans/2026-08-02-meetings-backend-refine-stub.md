@@ -331,7 +331,7 @@ func performBackendRefine(meetingId: String) async {
 
 - [ ] **Step 5: Run tests — expect PASS**
 
-Та же команда `xcodebuild … -only-testing:MeetingRaftTests/MeetingsViewModelTests`.  
+Та же команда `xcodebuild … -only-testing:MeetingRaftTests/MeetingsViewModelTests`.
 Expected: PASS для четырёх новых + старых Meetings тестов.
 
 - [ ] **Step 6: Commit**

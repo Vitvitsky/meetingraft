@@ -1,8 +1,8 @@
 # Phase 6 follow-up — Artifacts via backend jobs (LLM engine `backend`)
 
-**Date:** 2026-08-02  
-**Status:** Approved for implementation  
-**Maps to:** ADR-007, Phase 6 follow-up, Epic 8 (artifacts path)  
+**Date:** 2026-08-02
+**Status:** Approved for implementation
+**Maps to:** ADR-007, Phase 6 follow-up, Epic 8 (artifacts path)
 **Depends on:** backend stub + Meetings refine poll UI; `LlmClient` trait remains for future Ollama
 
 ## Goal

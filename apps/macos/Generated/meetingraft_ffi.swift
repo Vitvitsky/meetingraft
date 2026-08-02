@@ -497,6 +497,22 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
+    typealias FfiType = Int64
+    typealias SwiftType = Int64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int64, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -610,6 +626,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     func deleteGlossaryTerm(id: String)  -> String
     
     /**
+     * Удалить ручную метку спикера.
+     */
+    func deleteSpeaker(id: String)  -> String
+    
+    /**
      * Demo script events (не STT).
      */
     func drainEvents()  -> [FfiCaptionEvent]
@@ -665,6 +686,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      * Встречи, доступные в локальной истории.
      */
     func listMeetings()  -> [FfiMeetingSummary]
+    
+    /**
+     * Спикеры встречи в пользовательском порядке.
+     */
+    func listSpeakers(meetingId: String)  -> [FfiSpeaker]
     
     func liveTranslationTarget()  -> String
     
@@ -739,6 +765,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     func translationBackend()  -> String
     
     func upsertGlossaryTerm(term: FfiGlossaryTerm)  -> String
+    
+    /**
+     * Создать или обновить ручную метку спикера; пустой id генерируется здесь.
+     */
+    func upsertSpeaker(meetingId: String, id: String, displayName: String, sortIndex: Int64)  -> String
     
     /**
      * Абсолютный путь к найденной ggml-модели или пустая строка.
@@ -872,6 +903,19 @@ open func deleteGlossaryTerm(id: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_delete_glossary_term(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Удалить ручную метку спикера.
+     */
+open func deleteSpeaker(id: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_delete_speaker(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(id),uniffiCallStatus
     )
@@ -1048,6 +1092,19 @@ open func listMeetings() -> [FfiMeetingSummary]  {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_list_meetings(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Спикеры встречи в пользовательском порядке.
+     */
+open func listSpeakers(meetingId: String) -> [FfiSpeaker]  {
+    return try!  FfiConverterSequenceTypeFfiSpeaker.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_list_speakers(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),uniffiCallStatus
     )
 })
 }
@@ -1271,6 +1328,22 @@ open func upsertGlossaryTerm(term: FfiGlossaryTerm) -> String  {
     uniffi_meetingraft_ffi_fn_method_meetingcore_upsert_glossary_term(
             self.uniffiCloneHandle(),
         FfiConverterTypeFfiGlossaryTerm_lower(term),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Создать или обновить ручную метку спикера; пустой id генерируется здесь.
+     */
+open func upsertSpeaker(meetingId: String, id: String, displayName: String, sortIndex: Int64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_upsert_speaker(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(displayName),
+        FfiConverterInt64.lower(sortIndex),uniffiCallStatus
     )
 })
 }
@@ -2002,6 +2075,71 @@ public func FfiConverterTypeFfiMeetingSummary_lower(_ value: FfiMeetingSummary) 
 
 
 /**
+ * Ручная метка спикера встречи для Swift.
+ */
+public struct FfiSpeaker: Equatable, Hashable {
+    public var id: String
+    public var meetingId: String
+    public var displayName: String
+    public var sortIndex: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, meetingId: String, displayName: String, sortIndex: Int64) {
+        self.id = id
+        self.meetingId = meetingId
+        self.displayName = displayName
+        self.sortIndex = sortIndex
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiSpeaker: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiSpeaker: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiSpeaker {
+        return
+            try FfiSpeaker(
+                id: FfiConverterString.read(from: &buf), 
+                meetingId: FfiConverterString.read(from: &buf), 
+                displayName: FfiConverterString.read(from: &buf), 
+                sortIndex: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiSpeaker, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.meetingId, into: &buf)
+        FfiConverterString.write(value.displayName, into: &buf)
+        FfiConverterInt64.write(value.sortIndex, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSpeaker_lift(_ buf: RustBuffer) throws -> FfiSpeaker {
+    return try FfiConverterTypeFfiSpeaker.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSpeaker_lower(_ value: FfiSpeaker) -> RustBuffer {
+    return FfiConverterTypeFfiSpeaker.lower(value)
+}
+
+
+/**
  * Вид локального post-call артефакта.
  */
 
@@ -2426,6 +2564,31 @@ fileprivate struct FfiConverterSequenceTypeFfiMeetingSummary: FfiConverterRustBu
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFfiSpeaker: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiSpeaker]
+
+    public static func write(_ value: [FfiSpeaker], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiSpeaker.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiSpeaker] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiSpeaker]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiSpeaker.read(from: &buf))
+        }
+        return seq
+    }
+}
+
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
@@ -2454,6 +2617,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_delete_glossary_term() != 55034) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_delete_speaker() != 29708) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_events() != 7822) {
@@ -2499,6 +2665,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_meetings() != 58213) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_speakers() != 10320) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_live_translation_target() != 56766) {
@@ -2559,6 +2728,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_upsert_glossary_term() != 40376) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_upsert_speaker() != 53338) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_whisper_model_path() != 14470) {

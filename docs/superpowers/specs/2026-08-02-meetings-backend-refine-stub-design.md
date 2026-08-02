@@ -1,8 +1,8 @@
 # Phase 6 follow-up — Meetings ↔ backend refine stub UI
 
-**Date:** 2026-08-02  
-**Status:** Approved for implementation  
-**Maps to:** ADR-007, Phase 6 follow-up (after slice A API stub), Epic 8  
+**Date:** 2026-08-02
+**Status:** Approved for implementation
+**Maps to:** ADR-007, Phase 6 follow-up (after slice A API stub), Epic 8
 **Depends on:** `2026-08-02-phase-6-backend-stub-design.md` (OpenAPI + sync + Settings Test API)
 
 ## Goal

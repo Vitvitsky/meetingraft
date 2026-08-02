@@ -32,6 +32,75 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.artifacts, [artifact])
     }
 
+    func testReloadPublishesSpeakers() {
+        let speaker = FfiSpeaker(
+            id: "speaker-1",
+            meetingId: "meeting-1",
+            displayName: "Алиса",
+            sortIndex: 0
+        )
+        let core = MeetingsCoreSpy(speakers: [speaker])
+        let viewModel = MeetingsViewModel(core: core)
+
+        viewModel.reload(meetingId: "meeting-1")
+
+        XCTAssertEqual(viewModel.speakers, [speaker])
+    }
+
+    func testAddSpeakerUsesRussianDefaultName() {
+        let core = MeetingsCoreSpy()
+        let viewModel = MeetingsViewModel(core: core)
+        viewModel.reload(meetingId: "meeting-1")
+
+        viewModel.addSpeaker(meetingId: "meeting-1", primaryLanguage: "ru")
+
+        XCTAssertEqual(core.lastUpsertDisplayName, "Спикер 1")
+        XCTAssertEqual(core.lastUpsertSortIndex, 0)
+    }
+
+    func testAddSpeakerUsesEnglishDefaultName() {
+        let core = MeetingsCoreSpy()
+        let viewModel = MeetingsViewModel(core: core)
+        viewModel.reload(meetingId: "meeting-1")
+
+        viewModel.addSpeaker(meetingId: "meeting-1", primaryLanguage: "en")
+
+        XCTAssertEqual(core.lastUpsertDisplayName, "Speaker 1")
+        XCTAssertEqual(core.lastUpsertSortIndex, 0)
+    }
+
+    func testRenameSpeakerUpdatesDisplayName() {
+        let existing = FfiSpeaker(
+            id: "speaker-1",
+            meetingId: "meeting-1",
+            displayName: "Old",
+            sortIndex: 0
+        )
+        let core = MeetingsCoreSpy(speakers: [existing])
+        let viewModel = MeetingsViewModel(core: core)
+        viewModel.reload(meetingId: "meeting-1")
+
+        viewModel.renameSpeaker(
+            meetingId: "meeting-1",
+            id: "speaker-1",
+            displayName: "New"
+        )
+
+        XCTAssertEqual(core.lastUpsertDisplayName, "New")
+        XCTAssertEqual(core.lastUpsertId, "speaker-1")
+        XCTAssertEqual(viewModel.speakers.first?.displayName, "New")
+    }
+
+    func testRemoveSpeakerSurfacesCoreError() {
+        let core = MeetingsCoreSpy()
+        core.deleteSpeakerError = "boom"
+        let viewModel = MeetingsViewModel(core: core)
+
+        viewModel.removeSpeaker(id: "speaker-1", meetingId: "meeting-1")
+
+        XCTAssertEqual(viewModel.errorMessage, "boom")
+    }
+
     func testReloadMeetingTreatsEmptyFinalDtoAsMissing() {
         let core = MeetingsCoreSpy()
         let viewModel = MeetingsViewModel(core: core)
@@ -279,9 +348,11 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
     var captions: [FfiCaptionEvent]
     var finalTranscript: FfiFinalTranscript
     var artifacts: [FfiArtifact]
+    var speakers: [FfiSpeaker]
     var generateResult: FfiGenerateArtifactResult
     var meetingsAfterGenerate: [FfiMeetingSummary]?
     var artifactsAfterGenerate: [FfiArtifact]?
+    var deleteSpeakerError = ""
     var submitJobResult: FfiBackendJob = .init(
         id: "", meetingId: "", kind: "", status: "", error: "", artifactIds: []
     )
@@ -298,6 +369,9 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
     private(set) var apiToken = ""
     private(set) var llmEngineCode = ""
     private(set) var llmModelId = ""
+    private(set) var lastUpsertId: String?
+    private(set) var lastUpsertDisplayName: String?
+    private(set) var lastUpsertSortIndex: Int64?
     private var getJobIndex = 0
 
     init(
@@ -309,12 +383,14 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
             bodyMarkdown: "",
             createdAtMs: 0
         ),
-        artifacts: [FfiArtifact] = []
+        artifacts: [FfiArtifact] = [],
+        speakers: [FfiSpeaker] = []
     ) {
         self.meetings = meetings
         self.captions = captions
         self.finalTranscript = finalTranscript
         self.artifacts = artifacts
+        self.speakers = speakers
         generateResult = FfiGenerateArtifactResult(
             artifact: FfiArtifact(
                 id: "",
@@ -350,6 +426,39 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
             artifacts = artifactsAfterGenerate
         }
         return artifacts
+    }
+
+    func listSpeakers(meetingId _: String) -> [FfiSpeaker] {
+        speakers
+    }
+
+    func upsertSpeaker(
+        meetingId: String,
+        id: String,
+        displayName: String,
+        sortIndex: Int64
+    ) -> String {
+        lastUpsertId = id
+        lastUpsertDisplayName = displayName
+        lastUpsertSortIndex = sortIndex
+
+        let savedId = id.isEmpty ? "speaker-\(speakers.count + 1)" : id
+        let saved = FfiSpeaker(
+            id: savedId,
+            meetingId: meetingId,
+            displayName: displayName,
+            sortIndex: sortIndex
+        )
+        if let index = speakers.firstIndex(where: { $0.id == savedId }) {
+            speakers[index] = saved
+        } else {
+            speakers.append(saved)
+        }
+        return ""
+    }
+
+    func deleteSpeaker(id _: String) -> String {
+        deleteSpeakerError
     }
 
     func generateArtifact(

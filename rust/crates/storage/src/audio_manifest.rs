@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionEvent, CaptionPhase, FinalTranscript,
-    GlossaryScope, GlossaryTerm, MeetingSummary, SpeechLanguage,
+    GlossaryScope, GlossaryTerm, MeetingSummary, Speaker, SpeechLanguage,
 };
 use rusqlite::{Connection, params};
 use thiserror::Error;
@@ -101,6 +101,14 @@ impl AudioManifestStore {
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique
                 ON glossary_terms(surface, language, scope, ifnull(meeting_id, ''));
+            CREATE TABLE IF NOT EXISTS speakers (
+                id TEXT PRIMARY KEY NOT NULL,
+                meeting_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                sort_index INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_speakers_meeting
+                ON speakers(meeting_id, sort_index);
             ",
         )?;
         Ok(Self {
@@ -449,6 +457,52 @@ impl AudioManifestStore {
         })?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Вернуть спикеров встречи в порядке sort_index.
+    pub fn list_speakers(&self, meeting_id: &str) -> Result<Vec<Speaker>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, meeting_id, display_name, sort_index
+             FROM speakers
+             WHERE meeting_id = ?1
+             ORDER BY sort_index, id",
+        )?;
+        let rows = statement.query_map(params![meeting_id], |row| {
+            Ok(Speaker {
+                id: row.get(0)?,
+                meeting_id: row.get(1)?,
+                display_name: row.get(2)?,
+                sort_index: row.get(3)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Добавить или обновить спикера по id.
+    pub fn upsert_speaker(&mut self, speaker: &Speaker) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "INSERT INTO speakers (id, meeting_id, display_name, sort_index)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+                 meeting_id = excluded.meeting_id,
+                 display_name = excluded.display_name,
+                 sort_index = excluded.sort_index",
+            params![
+                speaker.id,
+                speaker.meeting_id,
+                speaker.display_name,
+                speaker.sort_index
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Удалить спикера по id.
+    pub fn delete_speaker(&mut self, id: &str) -> Result<(), AudioManifestError> {
+        self.conn
+            .execute("DELETE FROM speakers WHERE id = ?1", params![id])?;
+        Ok(())
     }
 
     /// Слить импортированные термины одной транзакцией.
@@ -826,6 +880,80 @@ mod tests {
 
             store.delete_glossary_term("term-1").unwrap();
             assert!(store.list_glossary_terms().unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn speakers_crud_and_meeting_isolation() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let a = domain::Speaker {
+                id: "s1".into(),
+                meeting_id: "m1".into(),
+                display_name: "Алиса".into(),
+                sort_index: 0,
+            };
+            let b = domain::Speaker {
+                id: "s2".into(),
+                meeting_id: "m2".into(),
+                display_name: "Bob".into(),
+                sort_index: 0,
+            };
+            store.upsert_speaker(&a).unwrap();
+            store.upsert_speaker(&b).unwrap();
+            assert_eq!(store.list_speakers("m1").unwrap(), vec![a.clone()]);
+            let mut renamed = a.clone();
+            renamed.display_name = "Алиса К.".into();
+            store.upsert_speaker(&renamed).unwrap();
+            assert_eq!(
+                store.list_speakers("m1").unwrap()[0].display_name,
+                "Алиса К."
+            );
+            store.delete_speaker("s1").unwrap();
+            assert!(store.list_speakers("m1").unwrap().is_empty());
+            assert_eq!(store.list_speakers("m2").unwrap().len(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn speakers_ordered_by_sort_index() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let speakers = [
+                domain::Speaker {
+                    id: "s2".into(),
+                    meeting_id: "m1".into(),
+                    display_name: "Second".into(),
+                    sort_index: 2,
+                },
+                domain::Speaker {
+                    id: "s0".into(),
+                    meeting_id: "m1".into(),
+                    display_name: "First".into(),
+                    sort_index: 0,
+                },
+                domain::Speaker {
+                    id: "s1".into(),
+                    meeting_id: "m1".into(),
+                    display_name: "Middle".into(),
+                    sort_index: 1,
+                },
+            ];
+            for speaker in &speakers {
+                store.upsert_speaker(speaker).unwrap();
+            }
+            let listed = store.list_speakers("m1").unwrap();
+            assert_eq!(
+                listed
+                    .iter()
+                    .map(|speaker| speaker.sort_index)
+                    .collect::<Vec<_>>(),
+                vec![0, 1, 2]
+            );
         }
         let _ = fs::remove_dir_all(&root);
     }

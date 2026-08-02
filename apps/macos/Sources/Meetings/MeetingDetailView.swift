@@ -7,6 +7,7 @@ struct MeetingDetailView: View {
     let meeting: FfiMeetingSummary
     @Bindable var viewModel: MeetingsViewModel
     @Environment(ProviderSettingsStore.self) private var providerStore
+    @Environment(SessionLanguageStore.self) private var languageStore
 
     @State private var section: MeetingDetailSection = .live
 
@@ -27,6 +28,8 @@ struct MeetingDetailView: View {
                 liveCaptions
             case .final:
                 finalTranscript
+            case .speakers:
+                speakersPanel
             case .artifacts:
                 artifacts
             }
@@ -76,6 +79,54 @@ struct MeetingDetailView: View {
                     ContentUnavailableView(
                         "Live-транскрипт пуст",
                         systemImage: "captions.bubble"
+                    )
+                }
+            }
+        }
+    }
+
+    private var speakersPanel: some View {
+        VStack(spacing: 0) {
+            provenanceBanner("Ручные метки · diarization — скоро")
+
+            HStack {
+                Button("Add", systemImage: "person.badge.plus") {
+                    viewModel.addSpeaker(
+                        meetingId: meeting.id,
+                        primaryLanguage: languageStore.primary.rawValue
+                    )
+                }
+                Spacer()
+            }
+            .padding()
+
+            Divider()
+
+            List {
+                ForEach(viewModel.speakers, id: \.id) { speaker in
+                    SpeakerRow(
+                        speaker: speaker,
+                        onRename: { displayName in
+                            viewModel.renameSpeaker(
+                                meetingId: meeting.id,
+                                id: speaker.id,
+                                displayName: displayName
+                            )
+                        },
+                        onDelete: {
+                            viewModel.removeSpeaker(
+                                id: speaker.id,
+                                meetingId: meeting.id
+                            )
+                        }
+                    )
+                }
+            }
+            .overlay {
+                if viewModel.speakers.isEmpty {
+                    ContentUnavailableView(
+                        "Спикеров нет",
+                        systemImage: "person.3"
                     )
                 }
             }
@@ -287,6 +338,7 @@ struct MeetingDetailView: View {
 private enum MeetingDetailSection: String, CaseIterable, Identifiable {
     case live
     case final
+    case speakers
     case artifacts
 
     var id: String {
@@ -299,8 +351,45 @@ private enum MeetingDetailSection: String, CaseIterable, Identifiable {
             "Live"
         case .final:
             "Final"
+        case .speakers:
+            "Speakers"
         case .artifacts:
             "Artifacts"
+        }
+    }
+}
+
+private struct SpeakerRow: View {
+    let speaker: FfiSpeaker
+    let onRename: (String) -> Void
+    let onDelete: () -> Void
+
+    @State private var displayName: String
+
+    init(
+        speaker: FfiSpeaker,
+        onRename: @escaping (String) -> Void,
+        onDelete: @escaping () -> Void
+    ) {
+        self.speaker = speaker
+        self.onRename = onRename
+        self.onDelete = onDelete
+        _displayName = State(initialValue: speaker.displayName)
+    }
+
+    var body: some View {
+        HStack {
+            TextField("Speaker name", text: $displayName)
+                .onSubmit {
+                    onRename(displayName)
+                }
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                onDelete()
+            }
+            .labelStyle(.iconOnly)
+        }
+        .onChange(of: speaker.displayName) { _, newValue in
+            displayName = newValue
         }
     }
 }

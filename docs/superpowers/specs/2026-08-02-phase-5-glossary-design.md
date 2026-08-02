@@ -1,7 +1,7 @@
 # Phase 5 — Glossary MVP Design
 
-**Date:** 2026-08-02  
-**Status:** Draft for implementation planning  
+**Date:** 2026-08-02
+**Status:** Draft for implementation planning
 **Maps to:** Roadmap Phase 5, Epic 7 (subset), ADR-003 / ADR-005 / ADR-006
 
 ## Goal
@@ -98,7 +98,7 @@ Storage API (used by glossary engine / ffi): `list_terms`, `upsert_term`, `delet
 
 ## CSV import
 
-- Columns (header required): `surface,canonical,language,scope`  
+- Columns (header required): `surface,canonical,language,scope`
   Optional: `meeting_id` (required when `scope=meeting`).
 - `language` default `ru` if empty; `scope` default `global`.
 - Round-trip: export format = same columns (export can be Phase 5.1; **import** is required for exit criteria; tests use fixture string in Rust).
