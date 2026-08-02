@@ -93,7 +93,10 @@ A feature is not done until:
 - macOS tests: `xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -configuration Debug test CODE_SIGNING_ALLOWED=NO`
 - Lint Swift: `cd apps/macos && swiftformat Sources Tests --lint`
 - CI: `.github/workflows/ci.yml` — fmt, clippy, cargo test, xcodebuild build+test
-- UniFFI bindings: появятся в Phase 2 (см. `docs/roadmap.md`)
+- UniFFI bindings: `apps/macos/Scripts/generate-ffi.sh` (собирает
+  `meetingraft-ffi` dylib в `rust/target/debug` и обновляет
+  `apps/macos/Generated/`); перед Xcode: сначала скрипт, затем
+  `xcodegen generate`
 - Backend: появится в Phase 6 (ADR-007); контракт — `shared/openapi.yaml`
 - Docs: architecture и ADR — в `docs/`
 

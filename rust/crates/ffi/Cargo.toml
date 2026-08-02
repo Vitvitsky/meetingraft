@@ -1,0 +1,13 @@
+[package]
+name = "meetingraft-ffi"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meetingraft_ffi"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+meetingraft-session = { path = "../session" }
+uniffi = "0.32"

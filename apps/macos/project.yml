@@ -11,11 +11,20 @@ targets:
       - path: Sources
         excludes:
           - Info.plist
+      - path: Generated
+        excludes:
+          - "*.h"
+          - "*.modulemap"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vitvitsky.meetingraft
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         SWIFT_VERSION: "6.0"
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../rust/target/debug
+        OTHER_LDFLAGS: -lmeetingraft_ffi
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../../rust/target/debug"
+        OTHER_SWIFT_FLAGS: -Xcc -fmodule-map-file=$(SRCROOT)/Generated/meetingraft_ffiFFI.modulemap
+        HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
     info:
       path: Sources/Info.plist
       properties:
@@ -33,3 +42,8 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         SWIFT_VERSION: "6.0"
         GENERATE_INFOPLIST_FILE: YES
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../rust/target/debug
+        OTHER_LDFLAGS: -lmeetingraft_ffi
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../../rust/target/debug"
+        OTHER_SWIFT_FLAGS: -Xcc -fmodule-map-file=$(SRCROOT)/Generated/meetingraft_ffiFFI.modulemap
+        HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
