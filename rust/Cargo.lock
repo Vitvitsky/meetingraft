@@ -488,6 +488,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "meetingraft-glossary"
+version = "0.1.0"
+dependencies = [
+ "meetingraft-domain",
+ "uuid",
+]
+
+[[package]]
 name = "meetingraft-session"
 version = "0.1.0"
 dependencies = [
