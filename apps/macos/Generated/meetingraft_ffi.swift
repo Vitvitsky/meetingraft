@@ -465,6 +465,38 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
+    typealias FfiType = UInt32
+    typealias SwiftType = UInt32
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt32 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
+    typealias FfiType = UInt64
+    typealias SwiftType = UInt64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -508,6 +540,24 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return Data(try readBytes(&buf, count: Int(len)))
+    }
+
+    public static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
 
 
 
@@ -522,9 +572,24 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     func drainEvents()  -> [FfiCaptionEvent]
     
     /**
+     * Принять PCM i16 LE chunk.
+     */
+    func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt32, timestampMs: UInt64)  -> String
+    
+    /**
+     * Число чанков в manifest для session.
+     */
+    func manifestChunkCount(sessionId: String)  -> UInt64
+    
+    /**
      * Старт demo captions с политикой v1 (ru primary).
      */
     func startDemo() 
+    
+    /**
+     * Начать recording: создаёт session + SQLite store. Пустая строка = ok, иначе ошибка.
+     */
+    func startRecording(sessionId: String)  -> String
     
     /**
      * Состояние: idle | live | ended.
@@ -535,6 +600,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      * Остановка demo.
      */
     func stop() 
+    
+    /**
+     * Остановить recording.
+     */
+    func stopRecording() 
     
 }
 /**
@@ -599,6 +669,18 @@ public convenience init() {
     }
 
     
+    /**
+     * Конструктор с корнем Application Support.
+     */
+public static func withDataRoot(dataRoot: String) -> MeetingCore  {
+    return try!  FfiConverterTypeMeetingCore_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_constructor_meetingcore_with_data_root(
+        FfiConverterString.lower(dataRoot),uniffiCallStatus
+    )
+})
+}
+    
 
     
     /**
@@ -614,6 +696,35 @@ open func drainEvents() -> [FfiCaptionEvent]  {
 }
     
     /**
+     * Принять PCM i16 LE chunk.
+     */
+open func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt32, timestampMs: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_ingest_audio_chunk(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeFfiAudioChannel_lower(channel),
+        FfiConverterData.lower(pcm),
+        FfiConverterUInt32.lower(sampleRate),
+        FfiConverterUInt64.lower(timestampMs),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Число чанков в manifest для session.
+     */
+open func manifestChunkCount(sessionId: String) -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_manifest_chunk_count(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sessionId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Старт demo captions с политикой v1 (ru primary).
      */
 open func startDemo()  {try! rustCall() {
@@ -622,6 +733,19 @@ open func startDemo()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Начать recording: создаёт session + SQLite store. Пустая строка = ok, иначе ошибка.
+     */
+open func startRecording(sessionId: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_start_recording(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sessionId),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -642,6 +766,17 @@ open func state() -> String  {
 open func stop()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_stop(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Остановить recording.
+     */
+open func stopRecording()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_stop_recording(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
@@ -757,6 +892,75 @@ public func FfiConverterTypeFfiCaptionEvent_lower(_ value: FfiCaptionEvent) -> R
 
 
 /**
+ * Канал захвата для Swift (ADR-004).
+ */
+
+public enum FfiAudioChannel: Equatable, Hashable {
+    
+    case mic
+    case system
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension FfiAudioChannel: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiAudioChannel: FfiConverterRustBuffer {
+    typealias SwiftType = FfiAudioChannel
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiAudioChannel {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .mic
+        
+        case 2: return .system
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FfiAudioChannel, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .mic:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .system:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiAudioChannel_lift(_ buf: RustBuffer) throws -> FfiAudioChannel {
+    return try FfiConverterTypeFfiAudioChannel.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiAudioChannel_lower(_ value: FfiAudioChannel) -> RustBuffer {
+    return FfiConverterTypeFfiAudioChannel.lower(value)
+}
+
+
+
+/**
  * Фаза caption для Swift.
  */
 
@@ -867,7 +1071,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_events() != 43801) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_ingest_audio_chunk() != 29830) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_manifest_chunk_count() != 4353) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_demo() != 29228) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_recording() != 14503) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_state() != 12529) {
@@ -876,7 +1089,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_stop() != 43930) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_stop_recording() != 62064) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_constructor_meetingcore_new() != 7859) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_constructor_meetingcore_with_data_root() != 19678) {
         return InitializationResult.apiChecksumMismatch
     }
 

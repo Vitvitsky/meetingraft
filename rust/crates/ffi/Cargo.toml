@@ -10,4 +10,5 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 meetingraft-domain = { path = "../domain" }
 meetingraft-session = { path = "../session" }
+meetingraft-storage = { path = "../storage" }
 uniffi = "0.32"

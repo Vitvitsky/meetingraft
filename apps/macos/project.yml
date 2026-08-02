@@ -29,6 +29,8 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: MeetingRaft
+        NSMicrophoneUsageDescription: MeetingRaft записывает микрофон для субтитров встречи.
+        NSAudioCaptureUsageDescription: MeetingRaft записывает системный звук встречи (другие участники).
   MeetingRaftTests:
     type: bundle.unit-test
     platform: macOS

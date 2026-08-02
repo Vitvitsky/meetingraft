@@ -28,11 +28,12 @@
 - [x] Add integration smoke test
 
 ## Epic 5 — Audio Capture
-- Add AVFoundation capture manager
+- [x] Add AVFoundation capture manager
 - Add device selection
-- Add permissions flow
-- Add chunking pipeline
-- Add local raw recording manifest
+- [x] Add permissions flow
+- [x] Add chunking pipeline
+- [x] Add local raw recording manifest
+- System audio process tap (ADR-004) — follow-up wiring
 
 ## Epic 6 — Live Subtitle Flow
 - Open session with backend
