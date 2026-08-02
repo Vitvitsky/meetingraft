@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Окно настроек: язык сессии + статус STT-модели.
+/// Окно настроек: язык сессии, translation backend (ADR-008), статус STT.
 struct SettingsView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
+    @Environment(TranslationSettingsStore.self) private var translationStore
     @State private var modelPath: String = ""
     @State private var modelsDir: String = ""
 
@@ -15,6 +16,30 @@ struct SettingsView: View {
             }
             Text("Default is Russian (ADR-003).")
                 .foregroundStyle(.secondary)
+
+            Section("Live translation (ADR-008)") {
+                Toggle("Enable", isOn: Bindable(translationStore).enabled)
+                Picker("Target", selection: Bindable(translationStore).target) {
+                    ForEach(SpeechLanguage.allCases.filter { $0 != languageStore.primary }) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                Picker("Backend", selection: Bindable(translationStore).backend) {
+                    ForEach(translationStore.backends) { kind in
+                        Text(kind.displayName).tag(kind)
+                    }
+                }
+                if translationStore.backend == .backend || translationStore.backend == .auto {
+                    TextField("Backend base URL", text: Bindable(translationStore).backendBaseUrl)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Skeleton: POST {base}/v1/translate (NLLB later).")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+                Text("Apple uses host bridge (no Cocoa in Rust). Auto prefers Apple when available.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
 
             Section("Live STT (ADR-005)") {
                 if modelPath.isEmpty {
@@ -38,7 +63,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
         }
         .padding()
-        .frame(width: 480, height: 260)
+        .frame(width: 520, height: 420)
         .onAppear(perform: refreshModelStatus)
     }
 

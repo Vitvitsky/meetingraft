@@ -4,8 +4,9 @@ import SwiftUI
 /// Корневой shell: sidebar + detail + toolbar.
 struct AppShellView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
+    @Environment(TranslationSettingsStore.self) private var translationStore
     @State private var selection: AppDestination? = .liveCaptions
-    @State private var captionsViewModel = LiveCaptionsViewModel()
+    @State private var captionsViewModel: LiveCaptionsViewModel
     @State private var captureCoordinator: AudioCaptureCoordinator
     @State private var glossaryViewModel: GlossaryViewModel
     @State private var meetingsViewModel: MeetingsViewModel
@@ -19,6 +20,7 @@ struct AppShellView: View {
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let core = MeetingCore.withDataRoot(dataRoot: root.path)
         _captureCoordinator = State(initialValue: AudioCaptureCoordinator(core: core))
+        _captionsViewModel = State(initialValue: LiveCaptionsViewModel(core: core))
         _glossaryViewModel = State(initialValue: GlossaryViewModel(core: core))
         _meetingsViewModel = State(initialValue: MeetingsViewModel(core: core))
     }
@@ -64,6 +66,18 @@ struct AppShellView: View {
         .focusedValue(\.startCaptions) {
             startDemoCaptions()
         }
+        .onAppear {
+            captionsViewModel.applySessionLanguage(languageStore.primary)
+            captionsViewModel.applyTranslationSettings(translationStore)
+        }
+        .onChange(of: languageStore.primary) { _, newValue in
+            captionsViewModel.applySessionLanguage(newValue)
+            if translationStore.target == newValue {
+                translationStore.target =
+                    SpeechLanguage.allCases.first { $0 != newValue } ?? .en
+            }
+            captionsViewModel.applyTranslationSettings(translationStore)
+        }
         .alert(
             "Нет доступа к микрофону",
             isPresented: Binding(
@@ -83,11 +97,18 @@ struct AppShellView: View {
 
     private func startDemoCaptions() {
         selection = .liveCaptions
-        captionsViewModel.startDemo()
+        captionsViewModel.applySessionLanguage(languageStore.primary)
+        captionsViewModel.startDemo(translation: translationStore)
     }
 
     private func startLiveSession() {
         selection = .liveCaptions
-        Task { await captionsViewModel.startLive(capture: captureCoordinator) }
+        captionsViewModel.applySessionLanguage(languageStore.primary)
+        Task {
+            await captionsViewModel.startLive(
+                capture: captureCoordinator,
+                translation: translationStore
+            )
+        }
     }
 }

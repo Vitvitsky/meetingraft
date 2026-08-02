@@ -1,10 +1,10 @@
 import Foundation
 import Observation
 
-/// Stub политики языка сессии; в Phase 2 заменяется Rust/UniFFI.
+/// Stub политики языка сессии; primary прокидывается в MeetingCore через UI.
 @Observable
 final class SessionLanguageStore {
-    /// Primary language; по умолчанию русский.
+    /// Primary language распознавания; по умолчанию русский.
     var primary: SpeechLanguage = .ru
 
     /// Разрешённый набор v1.

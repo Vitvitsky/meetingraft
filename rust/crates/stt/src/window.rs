@@ -54,6 +54,10 @@ impl LiveCaptionPipeline {
         self.engine.set_initial_prompt(prompt);
     }
 
+    pub fn set_language_policy(&mut self, policy: LanguagePolicy) {
+        self.engine.set_language_policy(policy);
+    }
+
     pub fn push_pcm_bytes(&mut self, pcm: &[u8], sample_rate: u32) -> Vec<CaptionEvent> {
         let samples = pcm_bytes_to_i16(pcm);
         self.engine.push_pcm(&samples, sample_rate)

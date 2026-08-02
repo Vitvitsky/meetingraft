@@ -8,13 +8,16 @@ use whisper_rs::{
 };
 
 use crate::SttEngine;
+use crate::is_whisper_hallucination;
 
-/// Порог RMS для «есть речь».
-const ENERGY_THRESHOLD: f32 = 200.0;
+/// Порог RMS для «есть речь» (выше → меньше галлюцинаций на тишине).
+const ENERGY_THRESHOLD: f32 = 450.0;
 const SILENCE_FRAMES: usize = 16_000 * 3 / 10;
 const MIN_SPEECH_FRAMES: usize = 16_000 / 5;
 /// Не гоняем Whisper чаще чем раз в ~1 с на partial.
 const PARTIAL_MIN_FRAMES: usize = 16_000;
+/// Сегмент с no_speech_prob выше порога отбрасываем.
+const NO_SPEECH_PROB_MAX: f32 = 0.55;
 
 /// Whisper STT с energy-VAD сегментацией.
 pub struct WhisperSttEngine {
@@ -66,6 +69,15 @@ impl WhisperSttEngine {
         }
     }
 
+    fn accept_text(text: &str) -> Option<String> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() || is_whisper_hallucination(trimmed) {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
     fn transcribe(&self, pcm: &[i16]) -> Option<String> {
         if pcm.len() < MIN_SPEECH_FRAMES / 2 {
             return None;
@@ -79,6 +91,11 @@ impl WhisperSttEngine {
         params.set_print_timestamps(false);
         params.set_single_segment(true);
         params.set_no_context(true);
+        params.set_suppress_blank(true);
+        params.set_temperature(0.0);
+        // Документация whisper-rs: no_speech_thold historically stub — всё равно
+        // фильтруем по segment.no_speech_probability() ниже.
+        params.set_no_speech_thold(0.6);
         if !self.initial_prompt.is_empty() {
             params.set_initial_prompt(&self.initial_prompt);
         }
@@ -86,21 +103,23 @@ impl WhisperSttEngine {
         let mut audio = vec![0.0f32; pcm.len()];
         convert_integer_to_float_audio(pcm, &mut audio).ok()?;
         state.full(params, &audio).ok()?;
-        // whisper-rs 0.16: full_n_segments → i32, текст через get_segment().to_str()
         let n = state.full_n_segments();
         let mut parts = Vec::new();
         for i in 0..n {
-            if let Some(seg) = state.get_segment(i)
-                && let Ok(t) = seg.to_str()
-            {
-                let trimmed = t.trim();
-                if !trimmed.is_empty() {
-                    parts.push(trimmed.to_string());
+            if let Some(seg) = state.get_segment(i) {
+                if seg.no_speech_probability() > NO_SPEECH_PROB_MAX {
+                    continue;
+                }
+                if let Ok(t) = seg.to_str() {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() && !is_whisper_hallucination(trimmed) {
+                        parts.push(trimmed.to_string());
+                    }
                 }
             }
         }
-        let text = parts.join(" ").trim().to_string();
-        if text.is_empty() { None } else { Some(text) }
+        let text = parts.join(" ");
+        Self::accept_text(&text)
     }
 
     fn reset_segment(&mut self) {
@@ -159,12 +178,11 @@ impl SttEngine for WhisperSttEngine {
         }
         let text = self
             .transcribe(&self.buffer)
-            .unwrap_or_else(|| self.last_partial_text.clone());
+            .or_else(|| Self::accept_text(&self.last_partial_text));
         self.reset_segment();
-        if text.is_empty() {
-            Vec::new()
-        } else {
-            vec![Self::event(text, CaptionPhase::Final)]
+        match text {
+            Some(t) => vec![Self::event(t, CaptionPhase::Final)],
+            None => Vec::new(),
         }
     }
 }

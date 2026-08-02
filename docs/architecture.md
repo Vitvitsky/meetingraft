@@ -42,6 +42,7 @@ Rust Core via UniFFI
 ├─ session engine
 ├─ subtitle assembler
 ├─ glossary engine
+├─ live translation engines (ADR-008; Apple via Swift host bridge)
 ├─ sync client
 └─ local store facade
 

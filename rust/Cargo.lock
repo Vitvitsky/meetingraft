@@ -486,6 +486,7 @@ dependencies = [
  "meetingraft-session",
  "meetingraft-storage",
  "meetingraft-stt",
+ "meetingraft-translate",
  "uniffi",
  "uuid",
 ]
@@ -530,6 +531,14 @@ dependencies = [
  "meetingraft-domain",
  "uuid",
  "whisper-rs",
+]
+
+[[package]]
+name = "meetingraft-translate"
+version = "0.1.0"
+dependencies = [
+ "meetingraft-domain",
+ "uuid",
 ]
 
 [[package]]

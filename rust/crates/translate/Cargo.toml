@@ -1,0 +1,11 @@
+[package]
+name = "meetingraft-translate"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+uuid = { version = "1", features = ["v4"] }
+
+[lib]
+name = "translate"

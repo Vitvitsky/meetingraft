@@ -4,11 +4,13 @@ import SwiftUI
 @main
 struct MeetingRaftApp: App {
     @State private var languageStore = SessionLanguageStore()
+    @State private var translationStore = TranslationSettingsStore()
 
     var body: some Scene {
         WindowGroup {
             AppShellView()
                 .environment(languageStore)
+                .environment(translationStore)
         }
         .commands {
             SessionCommands()
@@ -17,6 +19,7 @@ struct MeetingRaftApp: App {
         Settings {
             SettingsView()
                 .environment(languageStore)
+                .environment(translationStore)
         }
     }
 }

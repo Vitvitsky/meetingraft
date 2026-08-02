@@ -600,6 +600,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      */
     func captionEventCount(sessionId: String)  -> UInt64
     
+    /**
+     * Ответ host bridge → в translation stream.
+     */
+    func completeHostTranslation(id: String, translatedText: String)  -> String
+    
     func deleteGlossaryTerm(id: String)  -> String
     
     /**
@@ -607,10 +612,22 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      */
     func drainEvents()  -> [FfiCaptionEvent]
     
+    func drainHostTranslationRequests()  -> [FfiHostTranslationRequest]
+    
     /**
      * Live STT captions, накопленные после ingest.
      */
     func drainLiveCaptions()  -> [FfiCaptionEvent]
+    
+    /**
+     * Отдельный поток sync-перевода (demo + live); пусто если выключен.
+     */
+    func drainLiveTranslations()  -> [FfiCaptionEvent]
+    
+    /**
+     * Фактический backend после резолва `auto` (для UI/debug).
+     */
+    func effectiveTranslationBackend()  -> String
     
     /**
      * Сгенерировать и сохранить локальный артефакт из final transcript.
@@ -643,12 +660,37 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      */
     func listMeetings()  -> [FfiMeetingSummary]
     
+    func liveTranslationTarget()  -> String
+    
     func manifestChunkCount(sessionId: String)  -> UInt64
     
     /**
      * Каталог моделей: `{data_root}/models`.
      */
     func modelsDirectory()  -> String
+    
+    func sessionLanguage()  -> String
+    
+    /**
+     * Swift: host bridge готов (Apple Translation или stub).
+     */
+    func setHostTranslationAvailable(available: Bool) 
+    
+    /**
+     * Включить/выключить sync-перевод и задать target (`ru`|`en`|`es`).
+     */
+    func setLiveTranslation(enabled: Bool, targetCode: String)  -> String
+    
+    /**
+     * Primary язык распознавания (`ru` | `en` | `es`). Не включает перевод.
+     */
+    func setSessionLanguage(primaryCode: String)  -> String
+    
+    /**
+     * Backend: `off` | `auto` | `stub` | `apple` | `backend` | `local_llm`.
+     * `base_url` используется для `backend` / `auto→backend`.
+     */
+    func setTranslationBackend(kindCode: String, baseUrl: String)  -> String
     
     /**
      * Старт demo captions (scripted, без аудио).
@@ -670,6 +712,8 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      * `idle` | `mock` | `whisper`.
      */
     func sttBackend()  -> String
+    
+    func translationBackend()  -> String
     
     func upsertGlossaryTerm(term: FfiGlossaryTerm)  -> String
     
@@ -778,6 +822,20 @@ open func captionEventCount(sessionId: String) -> UInt64  {
 })
 }
     
+    /**
+     * Ответ host bridge → в translation stream.
+     */
+open func completeHostTranslation(id: String, translatedText: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_complete_host_translation(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(translatedText),uniffiCallStatus
+    )
+})
+}
+    
 open func deleteGlossaryTerm(id: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -800,6 +858,15 @@ open func drainEvents() -> [FfiCaptionEvent]  {
 })
 }
     
+open func drainHostTranslationRequests() -> [FfiHostTranslationRequest]  {
+    return try!  FfiConverterSequenceTypeFfiHostTranslationRequest.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_drain_host_translation_requests(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
     /**
      * Live STT captions, накопленные после ingest.
      */
@@ -807,6 +874,30 @@ open func drainLiveCaptions() -> [FfiCaptionEvent]  {
     return try!  FfiConverterSequenceTypeFfiCaptionEvent.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_drain_live_captions(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Отдельный поток sync-перевода (demo + live); пусто если выключен.
+     */
+open func drainLiveTranslations() -> [FfiCaptionEvent]  {
+    return try!  FfiConverterSequenceTypeFfiCaptionEvent.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_drain_live_translations(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Фактический backend после резолва `auto` (для UI/debug).
+     */
+open func effectiveTranslationBackend() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_effective_translation_backend(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -909,6 +1000,15 @@ open func listMeetings() -> [FfiMeetingSummary]  {
 })
 }
     
+open func liveTranslationTarget() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_live_translation_target(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
 open func manifestChunkCount(sessionId: String) -> UInt64  {
     return try!  FfiConverterUInt64.lift(try! rustCall() {
         uniffiCallStatus in
@@ -927,6 +1027,69 @@ open func modelsDirectory() -> String  {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_models_directory(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func sessionLanguage() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_session_language(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Swift: host bridge готов (Apple Translation или stub).
+     */
+open func setHostTranslationAvailable(available: Bool)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_set_host_translation_available(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(available),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Включить/выключить sync-перевод и задать target (`ru`|`en`|`es`).
+     */
+open func setLiveTranslation(enabled: Bool, targetCode: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_set_live_translation(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(enabled),
+        FfiConverterString.lower(targetCode),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Primary язык распознавания (`ru` | `en` | `es`). Не включает перевод.
+     */
+open func setSessionLanguage(primaryCode: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_set_session_language(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(primaryCode),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Backend: `off` | `auto` | `stub` | `apple` | `backend` | `local_llm`.
+     * `base_url` используется для `backend` / `auto→backend`.
+     */
+open func setTranslationBackend(kindCode: String, baseUrl: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_set_translation_backend(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(kindCode),
+        FfiConverterString.lower(baseUrl),uniffiCallStatus
     )
 })
 }
@@ -987,6 +1150,15 @@ open func sttBackend() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_stt_backend(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func translationBackend() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_translation_backend(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -1453,6 +1625,75 @@ public func FfiConverterTypeFfiGlossaryTerm_lower(_ value: FfiGlossaryTerm) -> R
 
 
 /**
+ * Запрос на host (Apple) перевод — Swift drain → complete.
+ */
+public struct FfiHostTranslationRequest: Equatable, Hashable {
+    public var id: String
+    public var text: String
+    public var sourceCode: String
+    public var targetCode: String
+    public var phase: FfiCaptionPhase
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, text: String, sourceCode: String, targetCode: String, phase: FfiCaptionPhase) {
+        self.id = id
+        self.text = text
+        self.sourceCode = sourceCode
+        self.targetCode = targetCode
+        self.phase = phase
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiHostTranslationRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiHostTranslationRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiHostTranslationRequest {
+        return
+            try FfiHostTranslationRequest(
+                id: FfiConverterString.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf), 
+                sourceCode: FfiConverterString.read(from: &buf), 
+                targetCode: FfiConverterString.read(from: &buf), 
+                phase: FfiConverterTypeFfiCaptionPhase.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiHostTranslationRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterString.write(value.sourceCode, into: &buf)
+        FfiConverterString.write(value.targetCode, into: &buf)
+        FfiConverterTypeFfiCaptionPhase.write(value.phase, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiHostTranslationRequest_lift(_ buf: RustBuffer) throws -> FfiHostTranslationRequest {
+    return try FfiConverterTypeFfiHostTranslationRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiHostTranslationRequest_lower(_ value: FfiHostTranslationRequest) -> RustBuffer {
+    return FfiConverterTypeFfiHostTranslationRequest.lower(value)
+}
+
+
+/**
  * Краткая запись встречи для списка истории.
  */
 public struct FfiMeetingSummary: Equatable, Hashable {
@@ -1870,6 +2111,31 @@ fileprivate struct FfiConverterSequenceTypeFfiGlossaryTerm: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeFfiHostTranslationRequest: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiHostTranslationRequest]
+
+    public static func write(_ value: [FfiHostTranslationRequest], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiHostTranslationRequest.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiHostTranslationRequest] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiHostTranslationRequest]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiHostTranslationRequest.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeFfiMeetingSummary: FfiConverterRustBuffer {
     typealias SwiftType = [FfiMeetingSummary]
 
@@ -1913,13 +2179,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_caption_event_count() != 34674) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_complete_host_translation() != 44481) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_delete_glossary_term() != 55034) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_events() != 7822) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_host_translation_requests() != 46694) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_live_captions() != 11166) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_live_translations() != 55055) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_effective_translation_backend() != 10333) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_generate_artifact() != 30508) {
@@ -1946,10 +2224,28 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_meetings() != 58213) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_live_translation_target() != 56766) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_manifest_chunk_count() != 286) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_models_directory() != 25600) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_session_language() != 62667) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_host_translation_available() != 23454) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_live_translation() != 28202) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_session_language() != 29416) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_translation_backend() != 27048) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_demo() != 15831) {
@@ -1968,6 +2264,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_stt_backend() != 61625) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_translation_backend() != 52068) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_upsert_glossary_term() != 40376) {
