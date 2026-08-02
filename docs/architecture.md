@@ -3,10 +3,24 @@
 ## Overview
 
 BriefLane is a native-first macOS application for meeting assistance.
+Repository name on GitHub: `meetingraft`.
 
 The product uses a two-stage flow:
 1. live subtitles during the meeting;
 2. post-call refinement for transcript cleanup, speaker assignment, brief generation, and follow-up drafting.
+
+### Supported speech languages
+
+| Priority | Code | Role |
+|----------|------|------|
+| 1 (default) | `ru` | Primary recognition and default session language |
+| 2 | `en` | Supported |
+| 3 | `es` | Supported |
+
+- Session opens with primary language `ru` unless the user overrides.
+- Live STT and post-call refinement receive the same language policy (primary + allowed set).
+- Glossary terms may be language-tagged; Russian terms are the default scope.
+- Mixed-language meetings are in scope; Russian quality is optimized first.
 
 ## High-level architecture
 
@@ -52,7 +66,7 @@ The backend handles long-running and heavy post-call processing.
 ## Main domains
 
 ### Live session
-- open meeting session
+- open meeting session (language policy: primary `ru`, allowed `ru|en|es`)
 - capture audio
 - stream audio chunks
 - receive partial and final subtitle events
@@ -79,3 +93,4 @@ The backend handles long-running and heavy post-call processing.
 - Post-call pipeline optimizes quality.
 - Native UX is a product requirement, not a nice-to-have.
 - State machine boundaries must be explicit.
+- Russian is the default and highest-priority speech language (`ru` > `en` > `es`).

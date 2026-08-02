@@ -12,6 +12,7 @@ GitHub repository for **BriefLane** — a native-first macOS meeting companion f
 - Stage 1: live streaming subtitles without speaker identification.
 - Stage 2: post-call diarization, speaker assignment, brief filling, and follow-up generation.
 - Glossary support for slang, abbreviations, internal terms, and product names.
+- Speech languages: **Russian (primary)**, English, Spanish — default session language is Russian.
 
 ## Suggested stack
 

@@ -11,6 +11,9 @@ This repository contains BriefLane, a native-first macOS meeting companion with 
 - Post-call mode may assign or recognize speakers.
 - Glossary support is a first-class feature.
 - Native UX on macOS is required.
+- Speech recognition languages: Russian (primary), English, Spanish.
+- Default session language is Russian; EN/ES are supported for mixed and multilingual meetings.
+- Language hints (session primary + allowed set) travel with live and post-call pipelines.
 
 ## Architecture rules
 

@@ -36,10 +36,12 @@
 
 ## Epic 6 — Live Subtitle Flow
 - Open session with backend
+- Pass language policy: primary `ru`, allowed `{ru, en, es}`
 - Stream chunks
 - Render partial captions
 - Merge final captions
 - Save local caption events
+- Settings: session language override (default Russian)
 
 ## Epic 7 — Glossary
 - Create glossary domain model
@@ -49,7 +51,7 @@
 - Attach glossary to live session
 
 ## Epic 8 — Post-call Intelligence
-- Trigger refinement after meeting end
+- Trigger refinement after meeting end (same language policy as live)
 - Fetch final transcript
 - Show transcript review screen
 - Generate brief draft
