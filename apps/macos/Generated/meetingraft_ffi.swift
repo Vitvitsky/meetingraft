@@ -571,6 +571,8 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      */
     func captionEventCount(sessionId: String)  -> UInt64
     
+    func deleteGlossaryTerm(id: String)  -> String
+    
     /**
      * Demo script events (не STT).
      */
@@ -581,7 +583,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      */
     func drainLiveCaptions()  -> [FfiCaptionEvent]
     
+    func importGlossaryCsv(csv: String)  -> FfiGlossaryImportResult
+    
     func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt32, timestampMs: UInt64)  -> String
+    
+    func listGlossaryTerms()  -> [FfiGlossaryTerm]
     
     func manifestChunkCount(sessionId: String)  -> UInt64
     
@@ -610,6 +616,8 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      * `idle` | `mock` | `whisper`.
      */
     func sttBackend()  -> String
+    
+    func upsertGlossaryTerm(term: FfiGlossaryTerm)  -> String
     
     /**
      * Абсолютный путь к найденной ggml-модели или пустая строка.
@@ -703,6 +711,16 @@ open func captionEventCount(sessionId: String) -> UInt64  {
 })
 }
     
+open func deleteGlossaryTerm(id: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_delete_glossary_term(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
+    )
+})
+}
+    
     /**
      * Demo script events (не STT).
      */
@@ -727,6 +745,16 @@ open func drainLiveCaptions() -> [FfiCaptionEvent]  {
 })
 }
     
+open func importGlossaryCsv(csv: String) -> FfiGlossaryImportResult  {
+    return try!  FfiConverterTypeFfiGlossaryImportResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_import_glossary_csv(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(csv),uniffiCallStatus
+    )
+})
+}
+    
 open func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt32, timestampMs: UInt64) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -736,6 +764,15 @@ open func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt
         FfiConverterData.lower(pcm),
         FfiConverterUInt32.lower(sampleRate),
         FfiConverterUInt64.lower(timestampMs),uniffiCallStatus
+    )
+})
+}
+    
+open func listGlossaryTerms() -> [FfiGlossaryTerm]  {
+    return try!  FfiConverterSequenceTypeFfiGlossaryTerm.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_list_glossary_terms(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -819,6 +856,16 @@ open func sttBackend() -> String  {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_stt_backend(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func upsertGlossaryTerm(term: FfiGlossaryTerm) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_upsert_glossary_term(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeFfiGlossaryTerm_lower(term),uniffiCallStatus
     )
 })
 }
@@ -941,6 +988,140 @@ public func FfiConverterTypeFfiCaptionEvent_lift(_ buf: RustBuffer) throws -> Ff
 #endif
 public func FfiConverterTypeFfiCaptionEvent_lower(_ value: FfiCaptionEvent) -> RustBuffer {
     return FfiConverterTypeFfiCaptionEvent.lower(value)
+}
+
+
+/**
+ * Результат CSV-импорта глоссария.
+ */
+public struct FfiGlossaryImportResult: Equatable, Hashable {
+    public var imported: UInt32
+    public var skipped: UInt32
+    public var error: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(imported: UInt32, skipped: UInt32, error: String) {
+        self.imported = imported
+        self.skipped = skipped
+        self.error = error
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiGlossaryImportResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiGlossaryImportResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiGlossaryImportResult {
+        return
+            try FfiGlossaryImportResult(
+                imported: FfiConverterUInt32.read(from: &buf), 
+                skipped: FfiConverterUInt32.read(from: &buf), 
+                error: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiGlossaryImportResult, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.imported, into: &buf)
+        FfiConverterUInt32.write(value.skipped, into: &buf)
+        FfiConverterString.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiGlossaryImportResult_lift(_ buf: RustBuffer) throws -> FfiGlossaryImportResult {
+    return try FfiConverterTypeFfiGlossaryImportResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiGlossaryImportResult_lower(_ value: FfiGlossaryImportResult) -> RustBuffer {
+    return FfiConverterTypeFfiGlossaryImportResult.lower(value)
+}
+
+
+/**
+ * Термин глоссария для Swift.
+ */
+public struct FfiGlossaryTerm: Equatable, Hashable {
+    public var id: String
+    public var surface: String
+    public var canonical: String
+    public var language: String
+    public var scope: FfiGlossaryScope
+    public var meetingId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, surface: String, canonical: String, language: String, scope: FfiGlossaryScope, meetingId: String) {
+        self.id = id
+        self.surface = surface
+        self.canonical = canonical
+        self.language = language
+        self.scope = scope
+        self.meetingId = meetingId
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiGlossaryTerm: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiGlossaryTerm: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiGlossaryTerm {
+        return
+            try FfiGlossaryTerm(
+                id: FfiConverterString.read(from: &buf), 
+                surface: FfiConverterString.read(from: &buf), 
+                canonical: FfiConverterString.read(from: &buf), 
+                language: FfiConverterString.read(from: &buf), 
+                scope: FfiConverterTypeFfiGlossaryScope.read(from: &buf), 
+                meetingId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiGlossaryTerm, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.surface, into: &buf)
+        FfiConverterString.write(value.canonical, into: &buf)
+        FfiConverterString.write(value.language, into: &buf)
+        FfiConverterTypeFfiGlossaryScope.write(value.scope, into: &buf)
+        FfiConverterString.write(value.meetingId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiGlossaryTerm_lift(_ buf: RustBuffer) throws -> FfiGlossaryTerm {
+    return try FfiConverterTypeFfiGlossaryTerm.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiGlossaryTerm_lower(_ value: FfiGlossaryTerm) -> RustBuffer {
+    return FfiConverterTypeFfiGlossaryTerm.lower(value)
 }
 
 
@@ -1081,6 +1262,75 @@ public func FfiConverterTypeFfiCaptionPhase_lower(_ value: FfiCaptionPhase) -> R
 }
 
 
+
+/**
+ * Область действия термина для Swift.
+ */
+
+public enum FfiGlossaryScope: Equatable, Hashable {
+    
+    case global
+    case meeting
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension FfiGlossaryScope: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiGlossaryScope: FfiConverterRustBuffer {
+    typealias SwiftType = FfiGlossaryScope
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiGlossaryScope {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .global
+        
+        case 2: return .meeting
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FfiGlossaryScope, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .global:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .meeting:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiGlossaryScope_lift(_ buf: RustBuffer) throws -> FfiGlossaryScope {
+    return try FfiConverterTypeFfiGlossaryScope.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiGlossaryScope_lower(_ value: FfiGlossaryScope) -> RustBuffer {
+    return FfiConverterTypeFfiGlossaryScope.lower(value)
+}
+
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -1106,6 +1356,31 @@ fileprivate struct FfiConverterSequenceTypeFfiCaptionEvent: FfiConverterRustBuff
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFfiGlossaryTerm: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiGlossaryTerm]
+
+    public static func write(_ value: [FfiGlossaryTerm], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiGlossaryTerm.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiGlossaryTerm] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiGlossaryTerm]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiGlossaryTerm.read(from: &buf))
+        }
+        return seq
+    }
+}
+
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
@@ -1124,13 +1399,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_caption_event_count() != 34674) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_delete_glossary_term() != 55034) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_events() != 7822) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_live_captions() != 11166) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_import_glossary_csv() != 58875) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_ingest_audio_chunk() != 34068) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_glossary_terms() != 37764) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_manifest_chunk_count() != 286) {
@@ -1155,6 +1439,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_stt_backend() != 61625) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_upsert_glossary_term() != 40376) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_whisper_model_path() != 14470) {

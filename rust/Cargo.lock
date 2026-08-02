@@ -481,6 +481,7 @@ name = "meetingraft-ffi"
 version = "0.1.0"
 dependencies = [
  "meetingraft-domain",
+ "meetingraft-glossary",
  "meetingraft-session",
  "meetingraft-storage",
  "meetingraft-stt",

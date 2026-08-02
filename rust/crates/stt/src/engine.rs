@@ -6,6 +6,9 @@ use domain::{CaptionEvent, LanguagePolicy};
 pub trait SttEngine: Send {
     fn set_language_policy(&mut self, policy: LanguagePolicy);
 
+    /// Установить подсказку с терминами для движков, которые её поддерживают.
+    fn set_initial_prompt(&mut self, _prompt: &str) {}
+
     /// Принять PCM i16 mono @ sample_rate; вернуть новые caption events.
     fn push_pcm(&mut self, pcm: &[i16], sample_rate: u32) -> Vec<CaptionEvent>;
 

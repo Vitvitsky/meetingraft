@@ -7,9 +7,13 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use domain::{AudioChannel, CaptionPhase, LanguagePolicy, SessionState};
+use domain::{
+    AudioChannel, CaptionPhase, GlossaryScope, GlossaryTerm, LanguagePolicy, SessionState,
+    SpeechLanguage,
+};
+use glossary::{GlossaryEngine, active_terms, parse_csv};
 use session::MeetingSession;
-use storage::AudioManifestStore;
+use storage::{AudioManifestError, AudioManifestStore};
 use stt::{LiveCaptionPipeline, SttBackendKind, models_dir, resolve_whisper_model};
 
 /// Фаза caption для Swift.
@@ -34,6 +38,32 @@ pub enum FfiAudioChannel {
     System,
 }
 
+/// Область действия термина для Swift.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum FfiGlossaryScope {
+    Global,
+    Meeting,
+}
+
+/// Термин глоссария для Swift.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiGlossaryTerm {
+    pub id: String,
+    pub surface: String,
+    pub canonical: String,
+    pub language: String,
+    pub scope: FfiGlossaryScope,
+    pub meeting_id: String,
+}
+
+/// Результат CSV-импорта глоссария.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiGlossaryImportResult {
+    pub imported: u32,
+    pub skipped: u32,
+    pub error: String,
+}
+
 struct MeetingCoreInner {
     session: MeetingSession,
     started_at: Option<Instant>,
@@ -42,6 +72,7 @@ struct MeetingCoreInner {
     data_root: PathBuf,
     stt: Option<LiveCaptionPipeline>,
     stt_backend: String,
+    glossary: GlossaryEngine,
     pending_live_captions: VecDeque<FfiCaptionEvent>,
 }
 
@@ -73,6 +104,79 @@ fn to_ffi(event: domain::CaptionEvent) -> FfiCaptionEvent {
     }
 }
 
+fn glossary_term_to_ffi(term: GlossaryTerm) -> FfiGlossaryTerm {
+    let (scope, meeting_id) = match term.scope {
+        GlossaryScope::Global => (FfiGlossaryScope::Global, String::new()),
+        GlossaryScope::Meeting { meeting_id } => (FfiGlossaryScope::Meeting, meeting_id),
+    };
+    FfiGlossaryTerm {
+        id: term.id,
+        surface: term.surface,
+        canonical: term.canonical,
+        language: term.language.code().to_owned(),
+        scope,
+        meeting_id,
+    }
+}
+
+fn glossary_term_from_ffi(term: FfiGlossaryTerm) -> Result<GlossaryTerm, String> {
+    let language = match term.language.as_str() {
+        "ru" => SpeechLanguage::Ru,
+        "en" => SpeechLanguage::En,
+        "es" => SpeechLanguage::Es,
+        value => return Err(format!("unsupported glossary language: {value}")),
+    };
+    let scope = match term.scope {
+        FfiGlossaryScope::Global => GlossaryScope::Global,
+        FfiGlossaryScope::Meeting if !term.meeting_id.is_empty() => GlossaryScope::Meeting {
+            meeting_id: term.meeting_id,
+        },
+        FfiGlossaryScope::Meeting => return Err("meeting glossary term requires meeting_id".into()),
+    };
+    Ok(GlossaryTerm {
+        id: term.id,
+        surface: term.surface,
+        canonical: term.canonical,
+        language,
+        scope,
+    })
+}
+
+fn list_glossary_terms(inner: &MeetingCoreInner) -> Result<Vec<GlossaryTerm>, AudioManifestError> {
+    if let Some(store) = inner.store.as_ref() {
+        store.list_glossary_terms()
+    } else {
+        AudioManifestStore::open(&inner.data_root)?.list_glossary_terms()
+    }
+}
+
+fn refresh_glossary(inner: &mut MeetingCoreInner) -> Result<(), String> {
+    let terms = list_glossary_terms(inner).map_err(|error| error.to_string())?;
+    inner.glossary =
+        GlossaryEngine::from_terms(active_terms(&terms, inner.recording_session_id.as_deref()));
+    if inner.stt_backend == "whisper" {
+        let prompt = inner.glossary.build_whisper_prompt(800);
+        if let Some(pipeline) = inner.stt.as_mut() {
+            pipeline.set_initial_prompt(&prompt);
+        }
+    }
+    Ok(())
+}
+
+fn mutate_glossary(
+    inner: &mut MeetingCoreInner,
+    mutate: impl FnOnce(&mut AudioManifestStore) -> Result<(), AudioManifestError>,
+) -> Result<(), String> {
+    if let Some(store) = inner.store.as_mut() {
+        mutate(store).map_err(|error| error.to_string())?;
+    } else {
+        let mut store =
+            AudioManifestStore::open(&inner.data_root).map_err(|error| error.to_string())?;
+        mutate(&mut store).map_err(|error| error.to_string())?;
+    }
+    refresh_glossary(inner)
+}
+
 #[uniffi::export]
 impl MeetingCore {
     #[uniffi::constructor]
@@ -91,6 +195,7 @@ impl MeetingCore {
                 data_root: PathBuf::from(data_root),
                 stt: None,
                 stt_backend: "idle".to_string(),
+                glossary: GlossaryEngine::from_terms(Vec::new()),
                 pending_live_captions: VecDeque::new(),
             }),
         })
@@ -143,6 +248,60 @@ impl MeetingCore {
         guard.pending_live_captions.drain(..).collect()
     }
 
+    pub fn list_glossary_terms(&self) -> Vec<FfiGlossaryTerm> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        list_glossary_terms(&guard)
+            .unwrap_or_default()
+            .into_iter()
+            .map(glossary_term_to_ffi)
+            .collect()
+    }
+
+    pub fn upsert_glossary_term(&self, term: FfiGlossaryTerm) -> String {
+        let term = match glossary_term_from_ffi(term) {
+            Ok(term) => term,
+            Err(error) => return error,
+        };
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        mutate_glossary(&mut guard, |store| {
+            store.upsert_glossary_term(&term, now_ms())
+        })
+        .err()
+        .unwrap_or_default()
+    }
+
+    pub fn delete_glossary_term(&self, id: String) -> String {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        mutate_glossary(&mut guard, |store| store.delete_glossary_term(&id))
+            .err()
+            .unwrap_or_default()
+    }
+
+    pub fn import_glossary_csv(&self, csv: String) -> FfiGlossaryImportResult {
+        let (terms, skipped) = match parse_csv(&csv) {
+            Ok(result) => result,
+            Err(error) => {
+                return FfiGlossaryImportResult {
+                    imported: 0,
+                    skipped: 0,
+                    error,
+                };
+            }
+        };
+        let imported = terms.len() as u32;
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        let error = mutate_glossary(&mut guard, |store| {
+            store.replace_glossary_from_import(&terms, now_ms())
+        })
+        .err()
+        .unwrap_or_default();
+        FfiGlossaryImportResult {
+            imported: if error.is_empty() { imported } else { 0 },
+            skipped,
+            error,
+        }
+    }
+
     /// Recording + live STT (Whisper если модель есть и feature включён, иначе Mock).
     pub fn start_recording(&self, session_id: String) -> String {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
@@ -152,8 +311,16 @@ impl MeetingCore {
                 if let Err(err) = store.begin_session(&session_id, now_ms()) {
                     return err.to_string();
                 }
-                let pipeline =
+                let terms = match store.list_glossary_terms() {
+                    Ok(terms) => active_terms(&terms, Some(&session_id)),
+                    Err(error) => return error.to_string(),
+                };
+                let glossary = GlossaryEngine::from_terms(terms);
+                let mut pipeline =
                     LiveCaptionPipeline::from_data_root(&root, LanguagePolicy::default_v1());
+                if pipeline.backend() == SttBackendKind::Whisper {
+                    pipeline.set_initial_prompt(&glossary.build_whisper_prompt(800));
+                }
                 guard.stt_backend = match pipeline.backend() {
                     SttBackendKind::Mock => "mock".to_string(),
                     SttBackendKind::Whisper => "whisper".to_string(),
@@ -161,6 +328,7 @@ impl MeetingCore {
                 guard.store = Some(store);
                 guard.recording_session_id = Some(session_id);
                 guard.stt = Some(pipeline);
+                guard.glossary = glossary;
                 guard.pending_live_captions.clear();
                 String::new()
             }
@@ -217,7 +385,8 @@ impl MeetingCore {
                 .map(|p| p.push_pcm_bytes(&pcm, sample_rate))
                 .unwrap_or_default();
             if let Some(sid) = session_id {
-                for event in events {
+                for mut event in events {
+                    event.text = guard.glossary.normalize_caption(&event.text);
                     if let Some(store) = guard.store.as_mut() {
                         let _ = store.append_caption(&sid, &event, now_ms());
                     }
@@ -233,7 +402,8 @@ impl MeetingCore {
         let sid = guard.recording_session_id.clone();
         let flushed = guard.stt.as_mut().map(|p| p.flush()).unwrap_or_default();
         if let Some(sid) = sid {
-            for event in flushed {
+            for mut event in flushed {
+                event.text = guard.glossary.normalize_caption(&event.text);
                 if let Some(store) = guard.store.as_mut() {
                     let _ = store.append_caption(&sid, &event, now_ms());
                 }
@@ -357,6 +527,53 @@ mod tests {
                 .any(|e| matches!(e.phase, FfiCaptionPhase::Final))
         );
         assert!(core.caption_event_count("live-1".into()) >= 1);
+        core.stop_recording();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn glossary_normalizes_live_mock_captions() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-glossary-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.upsert_glossary_term(FfiGlossaryTerm {
+                id: "term-uniffi".into(),
+                surface: "униффи".into(),
+                canonical: "UniFFI".into(),
+                language: "ru".into(),
+                scope: FfiGlossaryScope::Global,
+                meeting_id: String::new(),
+            })
+            .is_empty()
+        );
+        assert!(core.start_recording("glossary-1".into()).is_empty());
+
+        let mut loud = Vec::new();
+        for _ in 0..4000 {
+            loud.extend_from_slice(&3000_i16.to_le_bytes());
+        }
+        assert!(
+            core.ingest_audio_chunk(FfiAudioChannel::Mic, loud, 16_000, 0)
+                .is_empty()
+        );
+        let mut silence = Vec::new();
+        for _ in 0..6000 {
+            silence.extend_from_slice(&0_i16.to_le_bytes());
+        }
+        assert!(
+            core.ingest_audio_chunk(FfiAudioChannel::Mic, silence, 16_000, 500)
+                .is_empty()
+        );
+
+        let finals = core.drain_live_captions();
+        assert!(
+            finals.iter().any(|event| event.text.contains("UniFFI")),
+            "expected normalized UniFFI token, got {finals:?}"
+        );
         core.stop_recording();
         let _ = std::fs::remove_dir_all(&root);
     }
