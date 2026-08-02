@@ -78,7 +78,6 @@ struct MeetingDetailView: View {
         }
     }
 
-    @ViewBuilder
     private var finalTranscript: some View {
         VStack(spacing: 0) {
             provenanceBanner(

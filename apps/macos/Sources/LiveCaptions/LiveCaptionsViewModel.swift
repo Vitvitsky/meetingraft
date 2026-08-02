@@ -17,9 +17,9 @@ final class LiveCaptionsViewModel {
 
     init(core: MeetingCore) {
         self.core = core
-        self.stream = RustCaptionStream(core: core)
-        self.hostBridge = HostTranslationBridge(core: core)
-        self.hostBridge.start()
+        stream = RustCaptionStream(core: core)
+        hostBridge = HostTranslationBridge(core: core)
+        hostBridge.start()
     }
 
     /// Прокинуть primary из Settings / toolbar в Rust STT/demo.
@@ -84,8 +84,8 @@ final class LiveCaptionsViewModel {
         livePollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.ingestLiveEvents(capture.drainLiveCaptions(), intoCaptions: true)
-                self.ingestLiveEvents(self.core.drainLiveTranslations(), intoCaptions: false)
+                ingestLiveEvents(capture.drainLiveCaptions(), intoCaptions: true)
+                ingestLiveEvents(core.drainLiveTranslations(), intoCaptions: false)
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
         }

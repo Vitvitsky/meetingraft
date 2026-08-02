@@ -17,10 +17,10 @@ final class HostTranslationBridge {
         task = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let requests = self.core.drainHostTranslationRequests()
+                let requests = core.drainHostTranslationRequests()
                 for request in requests {
                     let translated = Self.stubTranslate(request)
-                    _ = self.core.completeHostTranslation(
+                    _ = core.completeHostTranslation(
                         id: request.id,
                         translatedText: translated
                     )
