@@ -96,7 +96,7 @@ persist live caption events, session language override in settings.
 English terms; defined latency budget measured and met; caption events
 replayable from local store.
 
-Maps to: Epic 6. Status: **in progress** on `feat/phase-4-live-stt`
+Maps to: Epic 6. Status: **done** on `feat/phase-4-live-stt`
 (Mock STT + caption_events + UI Start Live; Whisper behind `--features whisper`).
 
 ## Phase 5 — Glossary
@@ -109,7 +109,9 @@ with Russian as default scope.
 **Exit criteria:** glossary terms demonstrably affect caption output;
 normalization covered by unit tests; import round-trips a real CSV.
 
-Maps to: Epic 7.
+Maps to: Epic 7. Status: **done** on `feat/phase-5-glossary`
+(normalize on live captions, SQLite `glossary_terms`, CSV import, sidebar CRUD;
+scopes MVP: global + meeting only).
 
 ## Phase 6 — Post-call intelligence (Stage 2)
 

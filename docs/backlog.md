@@ -17,7 +17,7 @@
 ## Epic 3 — Rust Core
 - [x] Create domain crate
 - [x] Create session engine crate
-- Create glossary engine crate
+- [x] Create glossary engine crate
 - Create sync client crate
 - [x] Create UniFFI facade crate
 
@@ -46,11 +46,11 @@
 - Whisper Metal + model download script (opt-in `--features whisper`)
 
 ## Epic 7 — Glossary
-- Create glossary domain model
-- Add glossary UI
-- Add import from CSV/TXT
-- Add scope: global/workspace/project/meeting
-- Attach glossary to live session
+- [x] Create glossary domain model
+- [x] Add glossary UI
+- [x] Add import from CSV/TXT
+- Add scope: global/workspace/project/meeting — **partial:** global + meeting in MVP
+- [x] Attach glossary to live session
 - Glossary candidates from transcript corrections (review feedback loop)
 - Post-call mining of candidates (acronyms, code-switching terms) with
   approval queue
