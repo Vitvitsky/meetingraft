@@ -8,7 +8,9 @@ targets:
     type: application
     platform: macOS
     sources:
-      - Sources
+      - path: Sources
+        excludes:
+          - Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vitvitsky.meetingraft
@@ -18,3 +20,16 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: MeetingRaft
+  MeetingRaftTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests
+    dependencies:
+      - target: MeetingRaft
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vitvitsky.meetingraft.tests
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
