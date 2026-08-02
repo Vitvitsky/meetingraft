@@ -49,13 +49,20 @@
 - Add import from CSV/TXT
 - Add scope: global/workspace/project/meeting
 - Attach glossary to live session
+- Glossary candidates from transcript corrections (review feedback loop)
+- Post-call mining of candidates (acronyms, code-switching terms) with
+  approval queue
 
 ## Epic 8 — Post-call Intelligence
 - Trigger refinement after meeting end (same language policy as live)
 - Fetch final transcript
 - Show transcript review screen
-- Generate brief draft
-- Generate follow-up draft
+- Artifact template system: built-in templates (brief, follow-up email,
+  technical requirements, meeting minutes, action items)
+- User-defined markdown templates (prompt + placeholders: transcript,
+  brief, glossary, participants)
+- Template picker, regeneration and versioning of generated artifacts
+- Export artifacts (copy, .md file, mail draft)
 
 ## Epic 9 — Speaker Assignment
 - Add speaker entities

@@ -111,14 +111,17 @@ Maps to: Epic 7.
 ## Phase 6 — Post-call intelligence (Stage 2)
 
 Refinement trigger on meeting end (same language policy), final transcript
-fetch, transcript review screen, brief draft, follow-up email draft, speaker
-entities with correction screen, versioned refined transcripts, live vs
-final comparison. Live and final transcripts remain separate domain models
-(ADR-002).
+fetch, transcript review screen, speaker entities with correction screen,
+versioned refined transcripts, live vs final comparison. Artifact
+generation is template-driven: built-in templates (brief, follow-up email,
+technical requirements, meeting minutes, action items) plus user-defined
+markdown templates; template engine details are fixed in an ADR during this
+phase's detailed planning. Live and final transcripts remain separate
+domain models (ADR-002).
 
 **Exit criteria:** end-to-end flow: finish meeting → refined transcript →
-speaker assignment → brief + follow-up drafts; transcript versions
-comparable in UI.
+speaker assignment → artifacts from at least two built-in templates and one
+user-defined template; transcript versions comparable in UI.
 
 Maps to: Epics 8, 9.
 

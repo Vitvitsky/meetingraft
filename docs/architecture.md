@@ -76,8 +76,10 @@ The backend handles long-running and heavy post-call processing.
 - upload or finalize raw audio artifact
 - refine transcript
 - assign speakers
-- generate brief
-- generate follow-up email draft
+- generate artifacts from templates: built-in (brief, follow-up email,
+  technical requirements, meeting minutes, action items) and user-defined
+  markdown templates with placeholders (transcript, brief, glossary,
+  participants); artifacts are versioned and regenerable
 
 ### Glossary
 - meeting glossary
