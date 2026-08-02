@@ -15,17 +15,17 @@
 - [x] Add fake subtitle stream screen
 
 ## Epic 3 — Rust Core
-- Create domain crate
-- Create session engine crate
+- [x] Create domain crate
+- [x] Create session engine crate
 - Create glossary engine crate
 - Create sync client crate
-- Create UniFFI facade crate
+- [x] Create UniFFI facade crate
 
 ## Epic 4 — Swift ↔ Rust Boundary
-- Define UniFFI contracts
-- Wire generated Swift bindings into Xcode
-- Expose simple DTO-based interfaces
-- Add integration smoke test
+- [x] Define UniFFI contracts
+- [x] Wire generated Swift bindings into Xcode
+- [x] Expose simple DTO-based interfaces
+- [x] Add integration smoke test
 
 ## Epic 5 — Audio Capture
 - Add AVFoundation capture manager

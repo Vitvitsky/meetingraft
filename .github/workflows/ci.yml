@@ -30,6 +30,12 @@ jobs:
         working-directory: apps/macos
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Собрать Rust FFI (dylib)
+        working-directory: rust
+        run: |
+          export CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/rust/target"
+          cargo build -p meetingraft-ffi
       - name: Установить XcodeGen и SwiftFormat
         run: brew install xcodegen swiftformat
       - name: Линт Swift

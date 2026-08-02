@@ -71,7 +71,7 @@ proving the event path UI ← UniFFI ← core.
 Swift ↔ Rust integration smoke test passes; captions on screen originate in
 Rust.
 
-Maps to: Epics 3, 4.
+Maps to: Epics 3, 4. Status: **done** on `feat/phase-2-rust-uniffi`.
 
 ## Phase 3 — Audio capture
 

@@ -8,7 +8,7 @@ final class LiveCaptionsViewModel {
     private(set) var lines: [CaptionLine] = []
     private let stream: CaptionStreaming
 
-    init(stream: CaptionStreaming = FakeCaptionStream()) {
+    init(stream: CaptionStreaming = RustCaptionStream()) {
         self.stream = stream
     }
 
