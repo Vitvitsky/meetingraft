@@ -15,7 +15,9 @@ whisper = ["meetingraft-stt/whisper"]
 [dependencies]
 meetingraft-domain = { path = "../domain" }
 meetingraft-glossary = { path = "../glossary" }
+meetingraft-postcall = { path = "../postcall" }
 meetingraft-session = { path = "../session" }
 meetingraft-storage = { path = "../storage" }
 meetingraft-stt = { path = "../stt" }
 uniffi = "0.32"
+uuid = { version = "1", features = ["v4"] }

@@ -8,13 +8,15 @@ use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use domain::{
-    AudioChannel, CaptionPhase, GlossaryScope, GlossaryTerm, LanguagePolicy, SessionState,
-    SpeechLanguage,
+    Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryScope,
+    GlossaryTerm, LanguagePolicy, MeetingSummary, SessionState, SpeechLanguage,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
+use postcall::{assemble_final, make_artifact, render_brief, render_follow_up};
 use session::MeetingSession;
 use storage::{AudioManifestError, AudioManifestStore};
 use stt::{LiveCaptionPipeline, SttBackendKind, models_dir, resolve_whisper_model};
+use uuid::Uuid;
 
 /// Фаза caption для Swift.
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -61,6 +63,49 @@ pub struct FfiGlossaryTerm {
 pub struct FfiGlossaryImportResult {
     pub imported: u32,
     pub skipped: u32,
+    pub error: String,
+}
+
+/// Краткая запись встречи для списка истории.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiMeetingSummary {
+    pub id: String,
+    pub started_at_ms: u64,
+    pub has_final: bool,
+    pub artifact_count: u64,
+}
+
+/// Финальная версия транскрипта; пустой `meeting_id` означает отсутствие.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiFinalTranscript {
+    pub meeting_id: String,
+    pub version: u32,
+    pub body_markdown: String,
+    pub created_at_ms: u64,
+}
+
+/// Вид локального post-call артефакта.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum FfiArtifactKind {
+    Brief,
+    FollowUp,
+}
+
+/// Сохранённый post-call артефакт.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiArtifact {
+    pub id: String,
+    pub meeting_id: String,
+    pub kind: FfiArtifactKind,
+    pub template_id: String,
+    pub body_markdown: String,
+    pub created_at_ms: u64,
+}
+
+/// Результат генерации без исключения через границу UniFFI.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiGenerateArtifactResult {
+    pub artifact: FfiArtifact,
     pub error: String,
 }
 
@@ -148,6 +193,99 @@ fn glossary_term_from_ffi(term: FfiGlossaryTerm) -> Result<GlossaryTerm, String>
         language,
         scope,
     })
+}
+
+fn meeting_summary_to_ffi(summary: MeetingSummary) -> FfiMeetingSummary {
+    FfiMeetingSummary {
+        id: summary.id,
+        started_at_ms: summary.started_at_ms,
+        has_final: summary.has_final,
+        artifact_count: summary.artifact_count,
+    }
+}
+
+fn final_transcript_to_ffi(transcript: FinalTranscript) -> FfiFinalTranscript {
+    FfiFinalTranscript {
+        meeting_id: transcript.meeting_id,
+        version: transcript.version,
+        body_markdown: transcript.body_markdown,
+        created_at_ms: transcript.created_at_ms,
+    }
+}
+
+fn empty_final_transcript() -> FfiFinalTranscript {
+    FfiFinalTranscript {
+        meeting_id: String::new(),
+        version: 0,
+        body_markdown: String::new(),
+        created_at_ms: 0,
+    }
+}
+
+fn artifact_to_ffi(artifact: Artifact) -> FfiArtifact {
+    FfiArtifact {
+        id: artifact.id,
+        meeting_id: artifact.meeting_id,
+        kind: match artifact.kind {
+            ArtifactKind::Brief => FfiArtifactKind::Brief,
+            ArtifactKind::FollowUp => FfiArtifactKind::FollowUp,
+        },
+        template_id: artifact.template_id,
+        body_markdown: artifact.body_markdown,
+        created_at_ms: artifact.created_at_ms,
+    }
+}
+
+fn empty_artifact() -> FfiArtifact {
+    FfiArtifact {
+        id: String::new(),
+        meeting_id: String::new(),
+        kind: FfiArtifactKind::Brief,
+        template_id: String::new(),
+        body_markdown: String::new(),
+        created_at_ms: 0,
+    }
+}
+
+fn read_store<T>(
+    inner: &MeetingCoreInner,
+    read: impl FnOnce(&AudioManifestStore) -> Result<T, AudioManifestError>,
+) -> Result<T, AudioManifestError> {
+    if let Some(store) = inner.store.as_ref() {
+        read(store)
+    } else {
+        let store = AudioManifestStore::open(&inner.data_root)?;
+        read(&store)
+    }
+}
+
+fn write_store<T>(
+    inner: &mut MeetingCoreInner,
+    write: impl FnOnce(&mut AudioManifestStore) -> Result<T, AudioManifestError>,
+) -> Result<T, AudioManifestError> {
+    if let Some(store) = inner.store.as_mut() {
+        write(store)
+    } else {
+        let mut store = AudioManifestStore::open(&inner.data_root)?;
+        write(&mut store)
+    }
+}
+
+fn assemble_and_store_final(
+    store: &mut AudioManifestStore,
+    meeting_id: &str,
+) -> Result<FinalTranscript, AudioManifestError> {
+    let captions = store.list_captions(meeting_id)?;
+    let terms = store.list_glossary_terms()?;
+    let glossary = GlossaryEngine::from_terms(active_terms(&terms, Some(meeting_id)));
+    let transcript = assemble_final(
+        meeting_id,
+        &captions,
+        |text| glossary.normalize_caption(text),
+        now_ms(),
+    );
+    store.upsert_final_transcript(&transcript)?;
+    Ok(transcript)
 }
 
 fn list_glossary_terms(inner: &MeetingCoreInner) -> Result<Vec<GlossaryTerm>, AudioManifestError> {
@@ -310,6 +448,107 @@ impl MeetingCore {
         }
     }
 
+    /// Встречи, доступные в локальной истории.
+    pub fn list_meetings(&self) -> Vec<FfiMeetingSummary> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        read_store(&guard, AudioManifestStore::list_meeting_summaries)
+            .unwrap_or_default()
+            .into_iter()
+            .map(meeting_summary_to_ffi)
+            .collect()
+    }
+
+    /// Сохранённые live captions выбранной встречи.
+    pub fn list_captions(&self, meeting_id: String) -> Vec<FfiCaptionEvent> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        read_store(&guard, |store| store.list_captions(&meeting_id))
+            .unwrap_or_default()
+            .into_iter()
+            .map(to_ffi)
+            .collect()
+    }
+
+    /// Последний финальный транскрипт или пустой DTO.
+    pub fn get_final_transcript(&self, meeting_id: String) -> FfiFinalTranscript {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        read_store(&guard, |store| store.get_final_transcript(&meeting_id))
+            .ok()
+            .flatten()
+            .map(final_transcript_to_ffi)
+            .unwrap_or_else(empty_final_transcript)
+    }
+
+    /// Сохранённые post-call артефакты выбранной встречи.
+    pub fn list_artifacts(&self, meeting_id: String) -> Vec<FfiArtifact> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        read_store(&guard, |store| store.list_artifacts(&meeting_id))
+            .unwrap_or_default()
+            .into_iter()
+            .map(artifact_to_ffi)
+            .collect()
+    }
+
+    /// Пересобрать финальный транскрипт из сохранённых captions.
+    pub fn assemble_final_now(&self, meeting_id: String) -> String {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        write_store(&mut guard, |store| {
+            assemble_and_store_final(store, &meeting_id).map(|_| ())
+        })
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default()
+    }
+
+    /// Сгенерировать и сохранить локальный артефакт из final transcript.
+    pub fn generate_artifact(
+        &self,
+        meeting_id: String,
+        kind: FfiArtifactKind,
+    ) -> FfiGenerateArtifactResult {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        let final_transcript =
+            match read_store(&guard, |store| store.get_final_transcript(&meeting_id)) {
+                Ok(Some(transcript)) => transcript,
+                Ok(None) => {
+                    return FfiGenerateArtifactResult {
+                        artifact: empty_artifact(),
+                        error: "final transcript not found".to_string(),
+                    };
+                }
+                Err(error) => {
+                    return FfiGenerateArtifactResult {
+                        artifact: empty_artifact(),
+                        error: error.to_string(),
+                    };
+                }
+            };
+        let domain_kind = match kind {
+            FfiArtifactKind::Brief => ArtifactKind::Brief,
+            FfiArtifactKind::FollowUp => ArtifactKind::FollowUp,
+        };
+        let body = match domain_kind {
+            ArtifactKind::Brief => {
+                render_brief(&final_transcript.body_markdown, SpeechLanguage::Ru)
+            }
+            ArtifactKind::FollowUp => {
+                render_follow_up(&final_transcript.body_markdown, SpeechLanguage::Ru, "")
+            }
+        };
+        let mut artifact = make_artifact(&meeting_id, domain_kind, &body, now_ms());
+        artifact.id = Uuid::new_v4().to_string();
+        let insert_result = write_store(&mut guard, |store| store.insert_artifact(&artifact));
+        match insert_result {
+            Ok(()) => FfiGenerateArtifactResult {
+                artifact: artifact_to_ffi(artifact),
+                error: String::new(),
+            },
+            Err(error) => FfiGenerateArtifactResult {
+                artifact: empty_artifact(),
+                error: error.to_string(),
+            },
+        }
+    }
+
     /// Recording + live STT (Whisper если модель есть и feature включён, иначе Mock).
     pub fn start_recording(&self, session_id: String) -> String {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
@@ -416,6 +655,9 @@ impl MeetingCore {
                     let _ = store.append_caption(&sid, &event, now_ms());
                 }
                 guard.pending_live_captions.push_back(to_ffi(event));
+            }
+            if let Some(store) = guard.store.as_mut() {
+                let _ = assemble_and_store_final(store, &sid);
             }
         }
         if let Some(store) = guard.store.as_mut() {
@@ -661,6 +903,70 @@ mod tests {
             "expected live glossary reload, got {captions:?}"
         );
         core.stop_recording();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stop_recording_persists_final_and_exposes_postcall_api() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-postcall-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let meeting_id = "postcall-1".to_string();
+        assert!(core.start_recording(meeting_id.clone()).is_empty());
+
+        let mut loud = Vec::new();
+        for _ in 0..4000 {
+            loud.extend_from_slice(&3000_i16.to_le_bytes());
+        }
+        assert!(
+            core.ingest_audio_chunk(FfiAudioChannel::Mic, loud, 16_000, 0)
+                .is_empty()
+        );
+        let mut silence = Vec::new();
+        for _ in 0..6000 {
+            silence.extend_from_slice(&0_i16.to_le_bytes());
+        }
+        assert!(
+            core.ingest_audio_chunk(FfiAudioChannel::Mic, silence, 16_000, 500)
+                .is_empty()
+        );
+
+        core.stop_recording();
+
+        let final_transcript = core.get_final_transcript(meeting_id.clone());
+        assert_eq!(final_transcript.meeting_id, meeting_id);
+        assert!(!final_transcript.body_markdown.is_empty());
+        assert!(!core.list_captions(meeting_id.clone()).is_empty());
+        let meetings = core.list_meetings();
+        assert_eq!(meetings.len(), 1);
+        assert!(meetings[0].has_final);
+
+        let result = core.generate_artifact(meeting_id.clone(), FfiArtifactKind::Brief);
+        assert!(result.error.is_empty(), "{}", result.error);
+        assert!(result.artifact.body_markdown.contains("# Brief"));
+        assert_eq!(core.list_artifacts(meeting_id.clone()).len(), 1);
+        assert!(core.assemble_final_now(meeting_id).is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generate_artifact_reports_missing_final() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-postcall-error-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let result = core.generate_artifact("missing".into(), FfiArtifactKind::FollowUp);
+
+        assert!(!result.error.is_empty());
+        assert!(result.artifact.id.is_empty());
+        assert!(core.list_artifacts("missing".into()).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

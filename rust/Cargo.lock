@@ -482,10 +482,12 @@ version = "0.1.0"
 dependencies = [
  "meetingraft-domain",
  "meetingraft-glossary",
+ "meetingraft-postcall",
  "meetingraft-session",
  "meetingraft-storage",
  "meetingraft-stt",
  "uniffi",
+ "uuid",
 ]
 
 [[package]]

@@ -497,6 +497,30 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterBool : FfiConverter {
+    typealias FfiType = Int8
+    typealias SwiftType = Bool
+
+    public static func lift(_ value: Int8) throws -> Bool {
+        return value != 0
+    }
+
+    public static func lower(_ value: Bool) -> Int8 {
+        return value ? 1 : 0
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bool {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Bool, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -567,6 +591,11 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol MeetingCoreProtocol: AnyObject, Sendable {
     
     /**
+     * Пересобрать финальный транскрипт из сохранённых captions.
+     */
+    func assembleFinalNow(meetingId: String)  -> String
+    
+    /**
      * Число сохранённых live captions.
      */
     func captionEventCount(sessionId: String)  -> UInt64
@@ -583,11 +612,36 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      */
     func drainLiveCaptions()  -> [FfiCaptionEvent]
     
+    /**
+     * Сгенерировать и сохранить локальный артефакт из final transcript.
+     */
+    func generateArtifact(meetingId: String, kind: FfiArtifactKind)  -> FfiGenerateArtifactResult
+    
+    /**
+     * Последний финальный транскрипт или пустой DTO.
+     */
+    func getFinalTranscript(meetingId: String)  -> FfiFinalTranscript
+    
     func importGlossaryCsv(csv: String)  -> FfiGlossaryImportResult
     
     func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt32, timestampMs: UInt64)  -> String
     
+    /**
+     * Сохранённые post-call артефакты выбранной встречи.
+     */
+    func listArtifacts(meetingId: String)  -> [FfiArtifact]
+    
+    /**
+     * Сохранённые live captions выбранной встречи.
+     */
+    func listCaptions(meetingId: String)  -> [FfiCaptionEvent]
+    
     func listGlossaryTerms()  -> [FfiGlossaryTerm]
+    
+    /**
+     * Встречи, доступные в локальной истории.
+     */
+    func listMeetings()  -> [FfiMeetingSummary]
     
     func manifestChunkCount(sessionId: String)  -> UInt64
     
@@ -699,6 +753,19 @@ public static func withDataRoot(dataRoot: String) -> MeetingCore  {
 
     
     /**
+     * Пересобрать финальный транскрипт из сохранённых captions.
+     */
+open func assembleFinalNow(meetingId: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_assemble_final_now(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Число сохранённых live captions.
      */
 open func captionEventCount(sessionId: String) -> UInt64  {
@@ -745,6 +812,33 @@ open func drainLiveCaptions() -> [FfiCaptionEvent]  {
 })
 }
     
+    /**
+     * Сгенерировать и сохранить локальный артефакт из final transcript.
+     */
+open func generateArtifact(meetingId: String, kind: FfiArtifactKind) -> FfiGenerateArtifactResult  {
+    return try!  FfiConverterTypeFfiGenerateArtifactResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_generate_artifact(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),
+        FfiConverterTypeFfiArtifactKind_lower(kind),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Последний финальный транскрипт или пустой DTO.
+     */
+open func getFinalTranscript(meetingId: String) -> FfiFinalTranscript  {
+    return try!  FfiConverterTypeFfiFinalTranscript_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_get_final_transcript(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),uniffiCallStatus
+    )
+})
+}
+    
 open func importGlossaryCsv(csv: String) -> FfiGlossaryImportResult  {
     return try!  FfiConverterTypeFfiGlossaryImportResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -768,10 +862,48 @@ open func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt
 })
 }
     
+    /**
+     * Сохранённые post-call артефакты выбранной встречи.
+     */
+open func listArtifacts(meetingId: String) -> [FfiArtifact]  {
+    return try!  FfiConverterSequenceTypeFfiArtifact.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_list_artifacts(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Сохранённые live captions выбранной встречи.
+     */
+open func listCaptions(meetingId: String) -> [FfiCaptionEvent]  {
+    return try!  FfiConverterSequenceTypeFfiCaptionEvent.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_list_captions(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),uniffiCallStatus
+    )
+})
+}
+    
 open func listGlossaryTerms() -> [FfiGlossaryTerm]  {
     return try!  FfiConverterSequenceTypeFfiGlossaryTerm.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_list_glossary_terms(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Встречи, доступные в локальной истории.
+     */
+open func listMeetings() -> [FfiMeetingSummary]  {
+    return try!  FfiConverterSequenceTypeFfiMeetingSummary.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_list_meetings(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -931,6 +1063,79 @@ public func FfiConverterTypeMeetingCore_lower(_ value: MeetingCore) -> UInt64 {
 
 
 /**
+ * Сохранённый post-call артефакт.
+ */
+public struct FfiArtifact: Equatable, Hashable {
+    public var id: String
+    public var meetingId: String
+    public var kind: FfiArtifactKind
+    public var templateId: String
+    public var bodyMarkdown: String
+    public var createdAtMs: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, meetingId: String, kind: FfiArtifactKind, templateId: String, bodyMarkdown: String, createdAtMs: UInt64) {
+        self.id = id
+        self.meetingId = meetingId
+        self.kind = kind
+        self.templateId = templateId
+        self.bodyMarkdown = bodyMarkdown
+        self.createdAtMs = createdAtMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiArtifact: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiArtifact: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiArtifact {
+        return
+            try FfiArtifact(
+                id: FfiConverterString.read(from: &buf), 
+                meetingId: FfiConverterString.read(from: &buf), 
+                kind: FfiConverterTypeFfiArtifactKind.read(from: &buf), 
+                templateId: FfiConverterString.read(from: &buf), 
+                bodyMarkdown: FfiConverterString.read(from: &buf), 
+                createdAtMs: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiArtifact, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.meetingId, into: &buf)
+        FfiConverterTypeFfiArtifactKind.write(value.kind, into: &buf)
+        FfiConverterString.write(value.templateId, into: &buf)
+        FfiConverterString.write(value.bodyMarkdown, into: &buf)
+        FfiConverterUInt64.write(value.createdAtMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiArtifact_lift(_ buf: RustBuffer) throws -> FfiArtifact {
+    return try FfiConverterTypeFfiArtifact.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiArtifact_lower(_ value: FfiArtifact) -> RustBuffer {
+    return FfiConverterTypeFfiArtifact.lower(value)
+}
+
+
+/**
  * Caption event DTO для Swift.
  */
 public struct FfiCaptionEvent: Equatable, Hashable {
@@ -988,6 +1193,128 @@ public func FfiConverterTypeFfiCaptionEvent_lift(_ buf: RustBuffer) throws -> Ff
 #endif
 public func FfiConverterTypeFfiCaptionEvent_lower(_ value: FfiCaptionEvent) -> RustBuffer {
     return FfiConverterTypeFfiCaptionEvent.lower(value)
+}
+
+
+/**
+ * Финальная версия транскрипта; пустой `meeting_id` означает отсутствие.
+ */
+public struct FfiFinalTranscript: Equatable, Hashable {
+    public var meetingId: String
+    public var version: UInt32
+    public var bodyMarkdown: String
+    public var createdAtMs: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(meetingId: String, version: UInt32, bodyMarkdown: String, createdAtMs: UInt64) {
+        self.meetingId = meetingId
+        self.version = version
+        self.bodyMarkdown = bodyMarkdown
+        self.createdAtMs = createdAtMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiFinalTranscript: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiFinalTranscript: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiFinalTranscript {
+        return
+            try FfiFinalTranscript(
+                meetingId: FfiConverterString.read(from: &buf), 
+                version: FfiConverterUInt32.read(from: &buf), 
+                bodyMarkdown: FfiConverterString.read(from: &buf), 
+                createdAtMs: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiFinalTranscript, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.meetingId, into: &buf)
+        FfiConverterUInt32.write(value.version, into: &buf)
+        FfiConverterString.write(value.bodyMarkdown, into: &buf)
+        FfiConverterUInt64.write(value.createdAtMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiFinalTranscript_lift(_ buf: RustBuffer) throws -> FfiFinalTranscript {
+    return try FfiConverterTypeFfiFinalTranscript.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiFinalTranscript_lower(_ value: FfiFinalTranscript) -> RustBuffer {
+    return FfiConverterTypeFfiFinalTranscript.lower(value)
+}
+
+
+/**
+ * Результат генерации без исключения через границу UniFFI.
+ */
+public struct FfiGenerateArtifactResult: Equatable, Hashable {
+    public var artifact: FfiArtifact
+    public var error: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(artifact: FfiArtifact, error: String) {
+        self.artifact = artifact
+        self.error = error
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiGenerateArtifactResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiGenerateArtifactResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiGenerateArtifactResult {
+        return
+            try FfiGenerateArtifactResult(
+                artifact: FfiConverterTypeFfiArtifact.read(from: &buf), 
+                error: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiGenerateArtifactResult, into buf: inout [UInt8]) {
+        FfiConverterTypeFfiArtifact.write(value.artifact, into: &buf)
+        FfiConverterString.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiGenerateArtifactResult_lift(_ buf: RustBuffer) throws -> FfiGenerateArtifactResult {
+    return try FfiConverterTypeFfiGenerateArtifactResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiGenerateArtifactResult_lower(_ value: FfiGenerateArtifactResult) -> RustBuffer {
+    return FfiConverterTypeFfiGenerateArtifactResult.lower(value)
 }
 
 
@@ -1123,6 +1450,140 @@ public func FfiConverterTypeFfiGlossaryTerm_lift(_ buf: RustBuffer) throws -> Ff
 public func FfiConverterTypeFfiGlossaryTerm_lower(_ value: FfiGlossaryTerm) -> RustBuffer {
     return FfiConverterTypeFfiGlossaryTerm.lower(value)
 }
+
+
+/**
+ * Краткая запись встречи для списка истории.
+ */
+public struct FfiMeetingSummary: Equatable, Hashable {
+    public var id: String
+    public var startedAtMs: UInt64
+    public var hasFinal: Bool
+    public var artifactCount: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, startedAtMs: UInt64, hasFinal: Bool, artifactCount: UInt64) {
+        self.id = id
+        self.startedAtMs = startedAtMs
+        self.hasFinal = hasFinal
+        self.artifactCount = artifactCount
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiMeetingSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiMeetingSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiMeetingSummary {
+        return
+            try FfiMeetingSummary(
+                id: FfiConverterString.read(from: &buf), 
+                startedAtMs: FfiConverterUInt64.read(from: &buf), 
+                hasFinal: FfiConverterBool.read(from: &buf), 
+                artifactCount: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiMeetingSummary, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterUInt64.write(value.startedAtMs, into: &buf)
+        FfiConverterBool.write(value.hasFinal, into: &buf)
+        FfiConverterUInt64.write(value.artifactCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiMeetingSummary_lift(_ buf: RustBuffer) throws -> FfiMeetingSummary {
+    return try FfiConverterTypeFfiMeetingSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiMeetingSummary_lower(_ value: FfiMeetingSummary) -> RustBuffer {
+    return FfiConverterTypeFfiMeetingSummary.lower(value)
+}
+
+
+/**
+ * Вид локального post-call артефакта.
+ */
+
+public enum FfiArtifactKind: Equatable, Hashable {
+    
+    case brief
+    case followUp
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension FfiArtifactKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiArtifactKind: FfiConverterRustBuffer {
+    typealias SwiftType = FfiArtifactKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiArtifactKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .brief
+        
+        case 2: return .followUp
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FfiArtifactKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .brief:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .followUp:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiArtifactKind_lift(_ buf: RustBuffer) throws -> FfiArtifactKind {
+    return try FfiConverterTypeFfiArtifactKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiArtifactKind_lower(_ value: FfiArtifactKind) -> RustBuffer {
+    return FfiConverterTypeFfiArtifactKind.lower(value)
+}
+
 
 
 /**
@@ -1334,6 +1795,31 @@ public func FfiConverterTypeFfiGlossaryScope_lower(_ value: FfiGlossaryScope) ->
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeFfiArtifact: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiArtifact]
+
+    public static func write(_ value: [FfiArtifact], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiArtifact.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiArtifact] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiArtifact]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiArtifact.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeFfiCaptionEvent: FfiConverterRustBuffer {
     typealias SwiftType = [FfiCaptionEvent]
 
@@ -1381,6 +1867,31 @@ fileprivate struct FfiConverterSequenceTypeFfiGlossaryTerm: FfiConverterRustBuff
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFfiMeetingSummary: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiMeetingSummary]
+
+    public static func write(_ value: [FfiMeetingSummary], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiMeetingSummary.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiMeetingSummary] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiMeetingSummary]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiMeetingSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
@@ -1396,6 +1907,9 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_assemble_final_now() != 55670) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_caption_event_count() != 34674) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1408,13 +1922,28 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_drain_live_captions() != 11166) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_generate_artifact() != 30508) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_get_final_transcript() != 22715) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_import_glossary_csv() != 58875) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_ingest_audio_chunk() != 34068) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_artifacts() != 37417) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_captions() != 46525) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_glossary_terms() != 37764) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_meetings() != 58213) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_manifest_chunk_count() != 286) {
