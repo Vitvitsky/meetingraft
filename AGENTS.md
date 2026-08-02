@@ -84,13 +84,16 @@ A feature is not done until:
 
 ## Setup
 
-Scaffolding monorepo — crates/app targets appear as they are added under the map below.
-
-- macOS shell: open `apps/macos` in Xcode (or `xcodebuild` once a project exists)
-- Rust core: from `rust/`, `cargo test` / `cargo build` (workspace `Cargo.toml` when present)
-- UniFFI bindings: regenerate via the crate’s documented `uniffi-bindgen` / build script before Swift consume
-- Backend: follow `backend/` README when services land (`docker compose up` if compose is added)
-- Docs: architecture and ADRs live in `docs/`
+- Rust core: `cd rust && cargo test` (workspace; крейты в `rust/crates/`)
+- Lint Rust: `cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings`
+- macOS shell: `cd apps/macos && xcodegen generate`, затем открыть
+  `MeetingRaft.xcodeproj` в Xcode или
+  `xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -configuration Debug build CODE_SIGNING_ALLOWED=NO`
+  (`.xcodeproj` генерируется, в git не трекается — источник `project.yml`)
+- CI: `.github/workflows/ci.yml` — fmt, clippy, cargo test, xcodebuild
+- UniFFI bindings: появятся в Phase 2 (см. `docs/roadmap.md`)
+- Backend: появится в Phase 6 (ADR-007); контракт — `shared/openapi.yaml`
+- Docs: architecture и ADR — в `docs/`
 
 ## Stack & conventions
 
