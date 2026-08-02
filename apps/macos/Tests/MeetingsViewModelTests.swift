@@ -219,6 +219,28 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.errorMessage)
     }
 
+    func testApplyProviderConfigUpdatesCoreBeforeGenerate() {
+        let generated = makeArtifact(id: "artifact-1", meetingId: "meeting-1")
+        let core = MeetingsCoreSpy()
+        core.generateResult = FfiGenerateArtifactResult(artifact: generated, error: "")
+        core.artifactsAfterGenerate = [generated]
+        let viewModel = MeetingsViewModel(core: core)
+
+        viewModel.applyProviderConfig(
+            apiBaseUrl: "http://localhost:8080",
+            apiToken: "test-token",
+            llmEngineCode: "backend",
+            llmModelId: "gpt-test"
+        )
+        viewModel.generate(meetingId: "meeting-1", kind: .brief)
+
+        XCTAssertEqual(core.apiBaseUrl, "http://localhost:8080")
+        XCTAssertEqual(core.apiToken, "test-token")
+        XCTAssertEqual(core.llmEngineCode, "backend")
+        XCTAssertEqual(core.llmModelId, "gpt-test")
+        XCTAssertEqual(viewModel.selectedArtifact, generated)
+    }
+
     private func makeMeeting(
         id: String,
         artifactCount: UInt64 = 0
@@ -272,6 +294,10 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
     private(set) var submitBackendJobCallCount = 0
     private(set) var getBackendJobCallCount = 0
     private(set) var getBackendArtifactCallCount = 0
+    private(set) var apiBaseUrl = ""
+    private(set) var apiToken = ""
+    private(set) var llmEngineCode = ""
+    private(set) var llmModelId = ""
     private var getJobIndex = 0
 
     init(
@@ -331,6 +357,16 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
         kind _: FfiArtifactKind
     ) -> FfiGenerateArtifactResult {
         generateResult
+    }
+
+    func setApiConfig(baseUrl: String, token: String) {
+        apiBaseUrl = baseUrl
+        apiToken = token
+    }
+
+    func setLlmConfig(engineCode: String, modelId: String) {
+        llmEngineCode = engineCode
+        llmModelId = modelId
     }
 
     func submitBackendJob(meetingId _: String, kindCode _: String) -> FfiBackendJob {

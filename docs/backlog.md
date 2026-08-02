@@ -68,8 +68,10 @@
   Follow-up in UI; versioning deferred
 - Export artifacts — **partial:** copy to clipboard; .md file and mail draft
   deferred
-- Real LLM generation (`LlmClient` → Ollama/LM Studio/Gemma) — **deferred**
-  (stub trait only; heuristic templates in local MVP)
+- Real LLM generation (`LlmClient` → Ollama/LM Studio/Gemma) — **partial:**
+  backend stub jobs for Brief/Follow-up via Settings LLM=Backend (`POST /v1/jobs`
+  kind `brief`/`follow_up`); Ollama/LM Studio/Gemma still **deferred**
+  (local MVP: builtin templates + `NullLlmClient`)
 - [x] Backend HTTP (ADR-007) — **slice A:** OpenAPI + FastAPI stub jobs +
   `meetingraft-sync` + Settings Test API (`feat/phase-6-backend-stub`)
 - [x] Meetings UI: Submit refine (stub) → poll → show artifact
