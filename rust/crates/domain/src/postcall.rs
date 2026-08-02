@@ -13,7 +13,7 @@ pub struct FinalTranscript {
     pub meeting_id: String,
     pub version: u32,
     pub body_markdown: String,
-    pub created_at_ms: i64,
+    pub created_at_ms: u64,
 }
 
 /// Post-call артефакт (brief, follow-up и т.д.).
@@ -24,16 +24,16 @@ pub struct Artifact {
     pub kind: ArtifactKind,
     pub template_id: String,
     pub body_markdown: String,
-    pub created_at_ms: i64,
+    pub created_at_ms: u64,
 }
 
 /// Краткая сводка встречи для списка/истории.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeetingSummary {
     pub id: String,
-    pub started_at_ms: i64,
+    pub started_at_ms: u64,
     pub has_final: bool,
-    pub artifact_count: u32,
+    pub artifact_count: u64,
 }
 
 #[cfg(test)]
