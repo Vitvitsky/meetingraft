@@ -33,10 +33,14 @@ jobs:
       - name: Установить XcodeGen и SwiftFormat
         run: brew install xcodegen swiftformat
       - name: Линт Swift
-        run: swiftformat --lint Sources
+        run: swiftformat Sources Tests --lint
       - name: Сгенерировать проект
         run: xcodegen generate
       - name: Собрать приложение
         run: >
           xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft
           -configuration Debug build CODE_SIGNING_ALLOWED=NO
+      - name: Юнит-тесты
+        run: >
+          xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft
+          -configuration Debug test CODE_SIGNING_ALLOWED=NO

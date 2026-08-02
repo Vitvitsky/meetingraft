@@ -8,11 +8,11 @@
 - Add contribution and coding conventions
 
 ## Epic 2 — Native macOS Shell
-- Create SwiftUI app shell
-- Add sidebar and toolbar
-- Add settings scene
-- Add menu commands and keyboard shortcuts
-- Add fake subtitle stream screen
+- [x] Create SwiftUI app shell
+- [x] Add sidebar and toolbar
+- [x] Add settings scene
+- [x] Add menu commands and keyboard shortcuts
+- [x] Add fake subtitle stream screen
 
 ## Epic 3 — Rust Core
 - Create domain crate

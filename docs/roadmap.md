@@ -58,7 +58,7 @@ business rules in views.
 partial/final visual states; settings scene shows session language selector
 (default `ru`) backed by a stub.
 
-Maps to: Epic 2.
+Maps to: Epic 2. Status: **done** on `feat/phase-1-swiftui-shell`.
 
 ## Phase 2 — Rust core and UniFFI boundary
 
