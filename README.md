@@ -1,6 +1,11 @@
-# BriefLane
+# meetingraft
 
-BriefLane is a native-first macOS meeting companion for live subtitles, post-call refinement, brief generation, and follow-up email drafting.
+GitHub repository for **BriefLane** — a native-first macOS meeting companion for live subtitles, post-call refinement, brief generation, and follow-up email drafting.
+
+| | |
+|---|---|
+| Repository | [`meetingraft`](https://github.com/Vitvitsky/meetingraft) |
+| Product name | BriefLane |
 
 ## Product idea
 
