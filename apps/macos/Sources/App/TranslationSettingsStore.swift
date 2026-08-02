@@ -23,7 +23,9 @@ enum TranslationBackendKind: String, CaseIterable, Identifiable, Hashable, Senda
     case stub
     case off
 
-    var id: String { rawValue }
+    var id: String {
+        rawValue
+    }
 
     var displayName: String {
         switch self {

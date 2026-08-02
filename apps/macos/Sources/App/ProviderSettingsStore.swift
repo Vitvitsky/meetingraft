@@ -25,7 +25,7 @@ final class ProviderSettingsStore {
     /// Bearer token; не коммитить секреты — default только для local docker.
     var apiToken: String = "dev-token"
     var apiConnectionMessage: String = ""
-    var apiConnectionOk: Bool? = nil
+    var apiConnectionOk: Bool?
     /// Ollama / OpenAI-compat base; показывается когда LLM станет available.
     var llmBaseUrl: String = "http://127.0.0.1:11434"
     var llmModelId: String = "gemma2"
@@ -52,7 +52,9 @@ enum PostCallSttEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
     case localFinal = "local_final"
     case backendWhisperX = "backend_whisperx"
 
-    var id: String { rawValue }
+    var id: String {
+        rawValue
+    }
 
     var isAvailable: Bool {
         switch self {
@@ -79,7 +81,9 @@ enum LlmEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
     case openaiCompat = "openai_compat"
     case backend
 
-    var id: String { rawValue }
+    var id: String {
+        rawValue
+    }
 
     var isAvailable: Bool {
         switch self {

@@ -102,7 +102,6 @@ struct LiveCaptionsView: View {
         }
     }
 
-    @ViewBuilder
     private func captionList(title: String, lines: [CaptionLine]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(title)

@@ -1,5 +1,5 @@
-import XCTest
 @testable import MeetingRaft
+import XCTest
 
 @MainActor
 final class TranslationSettingsStoreTests: XCTestCase {
