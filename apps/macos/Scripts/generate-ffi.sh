@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Собирает meetingraft-ffi и генерирует Swift-биндинги UniFFI.
+# Собирает meetingraft-ffi, генерирует Swift-биндинги UniFFI и Xcode-проект.
+# Запуск из корня репо: apps/macos/Scripts/generate-ffi.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+MACOS_DIR="$ROOT/apps/macos"
 RUST_DIR="$ROOT/rust"
-OUT_DIR="$ROOT/apps/macos/Generated"
+OUT_DIR="$MACOS_DIR/Generated"
 # Всегда пишем dylib туда, куда смотрит XcodeGen (не sandbox CARGO_TARGET_DIR).
 TARGET_DIR="$RUST_DIR/target"
 
@@ -19,3 +21,7 @@ test -f "$LIB"
 cargo run -p uniffi-bindgen -- generate --library "$LIB" --language swift --out-dir "$OUT_DIR"
 echo "Generated Swift bindings in $OUT_DIR"
 echo "dylib: $LIB"
+
+cd "$MACOS_DIR"
+xcodegen generate
+echo "Xcode project: $MACOS_DIR/MeetingRaft.xcodeproj"
