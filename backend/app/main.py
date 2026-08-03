@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,10 +14,28 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from app.llm import LlmError, complete_chat
-from app.registry import RegistryError, load_registry, provider_settings, public_models
+from app.registry import Registry, RegistryError, load_registry, provider_settings, public_models
 
-app = FastAPI(title="MeetingRaft Backend", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Fail-fast: невалидный PROVIDERS_JSON / файл — процесс не стартует."""
+    load_registry()
+    yield
+
+
+app = FastAPI(title="MeetingRaft Backend", version="0.1.0", lifespan=lifespan)
 security = HTTPBearer(auto_error=False)
+
+
+def get_registry() -> Registry:
+    """Читает env на каждый запрос (monkeypatch в тестах).
+
+    Lifespan уже проверил валидность при старте. Смена env mid-process без
+    рестарта может разойтись со startup-check — для stub допустимо.
+    """
+    return load_registry()
+
 
 EXPECTED_TOKEN = os.environ.get("MEETINGRAFT_API_TOKEN", "dev-token")
 
@@ -52,7 +72,13 @@ def health() -> HealthResponse:
 @app.get("/v1/models", dependencies=[Depends(require_bearer)])
 def list_models() -> dict[str, Any]:
     """Публичный каталог моделей из реестра (без секретов)."""
-    return {"models": public_models(load_registry())}
+    try:
+        return {"models": public_models(get_registry())}
+    except RegistryError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
 
 
 @app.post("/v1/jobs", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_bearer)])
@@ -63,7 +89,7 @@ def create_job(body: CreateJobRequest) -> dict[str, Any]:
 
     job_id = str(uuid.uuid4())
     created_at = datetime.now(UTC).isoformat()
-    registry = load_registry()
+    registry = get_registry()
     llm_ready = any(provider.base_url for provider in registry.providers)
 
     if body.kind in {"brief", "follow_up"} and llm_ready:

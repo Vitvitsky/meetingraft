@@ -1,12 +1,46 @@
+import asyncio
 import json
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import app, lifespan
+from app.registry import RegistryError
 
 client = TestClient(app)
 AUTH = {"Authorization": "Bearer dev-token"}
+
+
+def test_lifespan_fails_fast_on_invalid_providers_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Невалидный реестр при старте — lifespan поднимает RegistryError."""
+    monkeypatch.setenv("PROVIDERS_JSON", "{not-json")
+
+    async def _run() -> None:
+        async with lifespan(app):
+            pass
+
+    with pytest.raises(RegistryError, match="Невалидный JSON"):
+        asyncio.run(_run())
+
+
+def test_testclient_fails_on_invalid_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TestClient с плохим PROVIDERS_JSON не поднимает приложение."""
+    monkeypatch.setenv("PROVIDERS_JSON", "{not-json")
+    with pytest.raises(RegistryError):
+        with TestClient(app):
+            pass
+
+
+def test_list_models_registry_error_returns_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """После старта битый env mid-process → 503 вместо необработанного 500."""
+    monkeypatch.setenv("PROVIDERS_JSON", "{not-json")
+    response = client.get("/v1/models", headers=AUTH)
+    assert response.status_code == 503
+    assert "Невалидный JSON" in response.json()["detail"]
 
 
 def test_list_models_from_registry(monkeypatch: pytest.MonkeyPatch) -> None:

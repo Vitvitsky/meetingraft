@@ -253,7 +253,10 @@ docker compose up --build
 ```
 
 При валидном реестре `LLM_*` **игнорируются**. Невалидный JSON / дубликаты
-`provider.id` — backend не стартует (fail-fast).
+`provider.id` — backend не стартует (fail-fast при lifespan: `load_registry()`).
+Handlers читают env на каждый запрос (удобно для тестов); смена
+`PROVIDERS_JSON` mid-process без рестарта может разойтись со startup-check —
+для stub допустимо, в проде меняйте env и перезапускайте процесс.
 
 ```bash
 # Вариант B — локально через uv
