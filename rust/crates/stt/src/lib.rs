@@ -13,10 +13,7 @@ mod whisper;
 #[cfg(feature = "whisper")]
 mod whisper_batch;
 
-pub use batch::{
-    BatchTranscribeError, BatchTranscriber, MockBatchTranscriber, TranscriptSegment,
-    normalize_segments,
-};
+pub use batch::{BatchTranscribeError, BatchTranscriber, MockBatchTranscriber, normalize_segments};
 pub use engine::SttEngine;
 pub use hallucination::is_whisper_hallucination;
 pub use local_agreement::{

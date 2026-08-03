@@ -7,23 +7,7 @@
 //! окнами. Смешивать это с live-движком значило бы тащить в него
 //! неприменимые там компромиссы.
 
-/// Сегмент распознанного текста с положением во времени.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TranscriptSegment {
-    pub start_ms: u64,
-    pub end_ms: u64,
-    pub text: String,
-}
-
-impl TranscriptSegment {
-    pub fn new(start_ms: u64, end_ms: u64, text: impl Into<String>) -> Self {
-        Self {
-            start_ms,
-            end_ms,
-            text: text.into(),
-        }
-    }
-}
+use domain::TranscriptSegment;
 
 /// Почему пакетный проход не состоялся.
 #[derive(Debug, Clone, PartialEq, Eq)]

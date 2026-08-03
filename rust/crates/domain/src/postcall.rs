@@ -50,6 +50,29 @@ impl MeetingSummary {
     }
 }
 
+/// Сегмент распознанного текста: результат работы движка, ещё без
+/// порядкового номера, канала и спикера.
+///
+/// Живёт в домене, а не в `stt`: это общий словарь между движком, который
+/// его производит, и post-call сборкой, которая его потребляет. Иначе
+/// одному крейту пришлось бы зависеть от другого без необходимости.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptSegment {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+
+impl TranscriptSegment {
+    pub fn new(start_ms: u64, end_ms: u64, text: impl Into<String>) -> Self {
+        Self {
+            start_ms,
+            end_ms,
+            text: text.into(),
+        }
+    }
+}
+
 /// Сегмент финального транскрипта: текст с положением во времени и
 /// каналом. В отличие от live, канал здесь известен точно — post-call
 /// распознаёт дорожки раздельно (ADR-009).

@@ -9,13 +9,13 @@
 
 use std::path::Path;
 
-use domain::LanguagePolicy;
+use domain::{LanguagePolicy, TranscriptSegment};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
     convert_integer_to_float_audio,
 };
 
-use crate::batch::{BatchTranscribeError, BatchTranscriber, TranscriptSegment, normalize_segments};
+use crate::batch::{BatchTranscribeError, BatchTranscriber, normalize_segments};
 use crate::is_whisper_hallucination;
 use crate::model_path::resolve_whisper_model;
 
