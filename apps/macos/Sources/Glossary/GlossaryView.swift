@@ -1,7 +1,11 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Список терминов глоссария с CRUD и CSV-импортом.
+/// Глоссарий: области, поиск, термины (ТЗ редизайна §4.5).
+///
+/// Глоссарий — то, что накапливается годами и делает переход к другому
+/// продукту дорогим. Поэтому здесь важнее не красота строки, а то, чтобы
+/// нужный термин находился среди сотен.
 struct GlossaryView: View {
     @Bindable var viewModel: GlossaryViewModel
     let liveSessionId: String?
@@ -9,32 +13,23 @@ struct GlossaryView: View {
     @State private var editorDraft: GlossaryEditorDraft?
     @State private var isImportPresented = false
 
+    private var visible: [FfiGlossaryTerm] {
+        viewModel.visibleTerms(liveSessionId: liveSessionId)
+    }
+
     var body: some View {
-        List {
-            ForEach(viewModel.terms, id: \.id) { term in
-                glossaryRow(term)
-                    .contextMenu {
-                        Button("Edit") {
-                            editorDraft = GlossaryEditorDraft(term: term)
-                        }
-                        .disabled(!viewModel.canEdit(term, liveSessionId: liveSessionId))
-                        Button("Delete", role: .destructive) {
-                            viewModel.delete(id: term.id)
-                        }
-                        .disabled(!viewModel.canEdit(term, liveSessionId: liveSessionId))
-                    }
-            }
+        VStack(spacing: 0) {
+            scopeBar
+            Divider().overlay(Theme.borderSubtle)
+            termList
         }
-        .overlay {
-            if viewModel.terms.isEmpty {
-                ContentUnavailableView(
-                    "Glossary is empty",
-                    systemImage: "book",
-                    description: Text("Add a term or import a CSV file")
-                )
-            }
-        }
+        .background(Theme.surfaceRoot)
         .navigationTitle("Glossary")
+        .searchable(
+            text: $viewModel.query,
+            placement: .toolbar,
+            prompt: Text("Search terms")
+        )
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("Import CSV", systemImage: "square.and.arrow.down") {
@@ -95,36 +90,117 @@ struct GlossaryView: View {
         }
     }
 
-    private func glossaryRow(_ term: FfiGlossaryTerm) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(term.surface)
-                    .font(.headline)
-                Image(systemName: "arrow.right")
-                    .foregroundStyle(.secondary)
-                Text(term.canonical)
-                Spacer()
-                Text(term.language.uppercased())
-                    .foregroundStyle(.secondary)
+    // MARK: - Области
+
+    private var scopeBar: some View {
+        HStack(spacing: Theme.Space.xs) {
+            ForEach(GlossaryFilter.allCases) { item in
+                let count = viewModel.count(for: item, liveSessionId: liveSessionId)
+                Button {
+                    viewModel.filter = item
+                } label: {
+                    Chip(
+                        text: count > 0 ? "\(item.title) \(count)" : item.title,
+                        isSelected: viewModel.filter == item
+                    )
+                }
+                .buttonStyle(.plain)
+                // «Эта встреча» без записи пуста по определению — гасим,
+                // чтобы не выглядело поломкой.
+                .disabled(count == 0 && item != .all)
+                .opacity(count == 0 && item != .all ? 0.4 : 1)
             }
-            Text(scopeDescription(term))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Spacer()
         }
+        .padding(.horizontal, Theme.Space.md)
+        .padding(.vertical, Theme.Space.xs)
+        .background(Theme.surface)
+    }
+
+    // MARK: - Термины
+
+    private var termList: some View {
+        List {
+            ForEach(visible, id: \.id) { term in
+                glossaryRow(term)
+                    .contextMenu {
+                        Button("Edit") {
+                            editorDraft = GlossaryEditorDraft(term: term)
+                        }
+                        .disabled(!viewModel.canEdit(term, liveSessionId: liveSessionId))
+                        Button("Delete", role: .destructive) {
+                            viewModel.delete(id: term.id)
+                        }
+                        .disabled(!viewModel.canEdit(term, liveSessionId: liveSessionId))
+                    }
+            }
+        }
+        .overlay {
+            if visible.isEmpty {
+                emptyState
+            }
+        }
+    }
+
+    /// Пустой словарь, пустая выборка и пустой поиск — три разных
+    /// сообщения: одинаковый текст на них вводит в заблуждение.
+    @ViewBuilder
+    private var emptyState: some View {
+        if viewModel.terms.isEmpty {
+            ContentUnavailableView(
+                "Glossary is empty",
+                systemImage: "book",
+                description: Text("Add a term or import a CSV file")
+            )
+        } else if !viewModel.query.isEmpty {
+            ContentUnavailableView.search(text: viewModel.query)
+        } else {
+            ContentUnavailableView(
+                "Nothing in this scope",
+                systemImage: "line.3.horizontal.decrease.circle",
+                description: Text("Pick another scope")
+            )
+        }
+    }
+
+    private func glossaryRow(_ term: FfiGlossaryTerm) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                HStack(spacing: Theme.Space.xs) {
+                    Text(term.surface)
+                        .font(Theme.Text.body)
+                        .foregroundStyle(Theme.textSecondary)
+                    Image(systemName: "arrow.right")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(term.canonical)
+                        .font(Theme.Text.body.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                }
+                Text(scopeDescription(term))
+                    .font(Theme.Text.caption)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            Spacer()
+            Chip(text: term.language.uppercased())
+        }
+        .padding(.vertical, Theme.Space.xxs)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
             if viewModel.canEdit(term, liveSessionId: liveSessionId) {
                 editorDraft = GlossaryEditorDraft(term: term)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(term.surface) → \(term.canonical), \(term.language.uppercased())")
     }
 
     private func scopeDescription(_ term: FfiGlossaryTerm) -> String {
         switch term.scope {
         case .global:
-            "Global"
+            String(localized: "Global")
         case .meeting:
-            "Meeting · \(term.meetingId)"
+            String(localized: "This meeting only")
         }
     }
 
@@ -223,10 +299,12 @@ private struct GlossaryEditorView: View {
                 Button("Cancel", role: .cancel) {
                     dismiss()
                 }
+                .buttonStyle(.themedSecondary)
                 Button("Save") {
                     onSave(makeTerm())
                     dismiss()
                 }
+                .buttonStyle(.themedPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canSave)
             }

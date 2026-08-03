@@ -19,6 +19,12 @@ struct SettingsView: View {
                 Label(section.title, systemImage: section.systemImage)
                     .tag(section)
             }
+            // Содержимое сайдбара уходит под заголовок окна, и кнопки
+            // закрытия оказываются вплотную к первому пункту. Отступ
+            // сверху освобождает под них полосу.
+            .safeAreaInset(edge: .top) {
+                Color.clear.frame(height: Theme.Space.lg)
+            }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
         } detail: {
             ScrollView {
