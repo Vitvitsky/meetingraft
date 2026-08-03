@@ -12,6 +12,8 @@ struct AppShellView: View {
     @State private var glossaryViewModel: GlossaryViewModel
     @State private var meetingsViewModel: MeetingsViewModel
     @State private var modelBootstrap = FirstRunModelBootstrap()
+    @State private var overlay = OverlayWindowController()
+    @Environment(PresenceSettingsStore.self) private var presenceStore
     private let core: MeetingCore
 
     init() {
@@ -85,6 +87,23 @@ struct AppShellView: View {
             // Модель качается на старте, а не при заходе в Settings.
             await modelBootstrap.ensureModel(core: core)
         }
+        // Накладка следует за состоянием записи и за настройками: их
+        // можно поменять посреди сессии, и решение должно пересчитаться.
+        .onChange(of: captureCoordinator.isRecording) { _, _ in
+            applyPresence()
+        }
+        .onChange(of: presenceStore.showsOverlay) { _, _ in
+            applyPresence()
+        }
+        .onChange(of: presenceStore.minimizesMainWindow) { _, _ in
+            applyPresence()
+        }
+        .onChange(of: captionsViewModel.lines) { _, _ in
+            // Содержимое накладки обновляется вместе с лентой.
+            if overlay.isVisible {
+                applyPresence()
+            }
+        }
         .onChange(of: languageStore.primary) { _, newValue in
             captionsViewModel.applySessionLanguage(newValue)
             if translationStore.target == newValue {
@@ -107,6 +126,35 @@ struct AppShellView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(captureCoordinator.lastError ?? "")
+        }
+    }
+
+    /// Привести окна в соответствие с состоянием записи.
+    private func applyPresence() {
+        let decision = PresenceDecision.make(
+            isRecording: captureCoordinator.isRecording,
+            settings: presenceStore
+        )
+
+        if decision.showsOverlay {
+            overlay.show(
+                content: CaptionOverlayView(
+                    lines: captionsViewModel.recentLines(limit: 2),
+                    isRecording: captureCoordinator.isRecording,
+                    showsSpeaker: captureCoordinator.systemAudioAvailable,
+                    opacity: presenceStore.overlayOpacity
+                ) {
+                    captionsViewModel.stopLive(capture: captureCoordinator)
+                }
+            )
+        } else {
+            overlay.hide()
+        }
+
+        if decision.hidesMainWindow {
+            overlay.hideMainWindow()
+        } else {
+            overlay.restoreMainWindow()
         }
     }
 

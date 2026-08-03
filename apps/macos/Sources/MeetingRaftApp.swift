@@ -6,6 +6,7 @@ struct MeetingRaftApp: App {
     @State private var languageStore = SessionLanguageStore()
     @State private var translationStore = TranslationSettingsStore()
     @State private var providerStore = ProviderSettingsStore()
+    @State private var presenceStore = PresenceSettingsStore()
 
     var body: some Scene {
         WindowGroup {
@@ -13,6 +14,7 @@ struct MeetingRaftApp: App {
                 .environment(languageStore)
                 .environment(translationStore)
                 .environment(providerStore)
+                .environment(presenceStore)
         }
         .commands {
             SessionCommands()
@@ -23,6 +25,7 @@ struct MeetingRaftApp: App {
                 .environment(languageStore)
                 .environment(translationStore)
                 .environment(providerStore)
+                .environment(presenceStore)
         }
     }
 }

@@ -47,6 +47,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
 
 struct GeneralSettingsSection: View {
     @Environment(SessionLanguageStore.self) private var languageStore
+    @Environment(PresenceSettingsStore.self) private var presenceStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.md) {
@@ -76,6 +77,34 @@ struct GeneralSettingsSection: View {
                         )
                     }
                 }
+            }
+
+            Divider().overlay(Theme.borderSubtle)
+
+            Text("While recording")
+                .font(Theme.Text.title)
+
+            SettingsRow(
+                title: String(localized: "Captions over other apps"),
+                caption: String(localized: "A floating strip stays visible above Zoom or Meet, including full screen.")
+            ) {
+                Toggle("", isOn: Bindable(presenceStore).showsOverlay)
+                    .labelsHidden()
+            }
+
+            SettingsRow(
+                title: String(localized: "Hide the main window"),
+                caption: String(localized: "Only while the floating strip is on — otherwise nothing would show that recording is running.")
+            ) {
+                Toggle("", isOn: Bindable(presenceStore).minimizesMainWindow)
+                    .labelsHidden()
+                    .disabled(!presenceStore.showsOverlay)
+            }
+
+            SettingsRow(title: String(localized: "Strip opacity")) {
+                Slider(value: Bindable(presenceStore).overlayOpacity, in: 0.2 ... 1)
+                    .frame(width: 160)
+                    .disabled(!presenceStore.showsOverlay)
             }
 
             Divider().overlay(Theme.borderSubtle)
