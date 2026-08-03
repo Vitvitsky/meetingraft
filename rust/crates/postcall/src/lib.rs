@@ -1,6 +1,7 @@
 //! Локальная сборка post-call транскриптов и артефактов.
 
 mod assemble;
+mod jobs;
 mod llm;
 mod llm_http;
 mod merge;
@@ -9,6 +10,9 @@ mod prompts;
 mod templates;
 
 pub use assemble::assemble_final;
+pub use jobs::{
+    InlineSpawner, JobHandle, RebuildJobs, RebuildProgress, RebuildState, Spawner, ThreadSpawner,
+};
 pub use llm::{LlmClient, LlmError, NullLlmClient};
 pub use llm_http::{OllamaNativeClient, OpenAiCompatLlmClient};
 pub use merge::{merge_channels, render_segments};
