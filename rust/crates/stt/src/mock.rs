@@ -47,11 +47,7 @@ impl MockSttEngine {
     }
 
     fn event(text: &str, phase: CaptionPhase) -> CaptionEvent {
-        CaptionEvent {
-            id: Uuid::new_v4().to_string(),
-            text: text.to_string(),
-            phase,
-        }
+        CaptionEvent::new(Uuid::new_v4().to_string(), text.to_string(), phase)
     }
 
     fn partial_placeholder(&self) -> String {

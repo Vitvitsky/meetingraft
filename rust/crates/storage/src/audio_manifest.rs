@@ -194,14 +194,15 @@ impl AudioManifestStore {
             domain::CaptionPhase::Final => "final",
         };
         self.conn.execute(
-            "INSERT INTO caption_events (id, session_id, text, phase, created_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO caption_events (id, session_id, text, phase, created_at_ms, channel)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 event.id,
                 session_id,
                 event.text,
                 phase,
-                created_at_ms as i64
+                created_at_ms as i64,
+                event.channel.code()
             ],
         )?;
         Ok(())
@@ -220,17 +221,19 @@ impl AudioManifestStore {
     /// Вернуть caption events сессии в хронологическом порядке.
     pub fn list_captions(&self, session_id: &str) -> Result<Vec<CaptionEvent>, AudioManifestError> {
         let mut statement = self.conn.prepare(
-            "SELECT id, text, phase
+            "SELECT id, text, phase, channel
              FROM caption_events
              WHERE session_id = ?1
              ORDER BY created_at_ms, id",
         )?;
         let rows = statement.query_map(params![session_id], |row| {
             let phase: String = row.get(2)?;
+            let channel: String = row.get(3)?;
             Ok(CaptionEvent {
                 id: row.get(0)?,
                 text: row.get(1)?,
                 phase: Self::parse_caption_phase(&phase)?,
+                channel: AudioChannel::from_code(&channel),
             })
         })?;
 
@@ -661,18 +664,25 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// Файл, созданный до версионирования: `user_version = 0` при готовых
-    /// таблицах. `open` обязан поднять схему и сохранить строки.
+    /// Файл, созданный до версионирования: схема шага 1, `user_version = 0`.
+    /// `open` обязан догнать схему и сохранить строки.
     #[test]
     fn open_upgrades_pre_versioning_database() {
         let root = tmp_root();
-        {
-            let mut store = AudioManifestStore::open(&root).unwrap();
-            store.begin_session("legacy", 7).unwrap();
-        }
+        fs::create_dir_all(&root).unwrap();
         {
             let conn = Connection::open(root.join("meetingraft.sqlite3")).unwrap();
-            conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+            conn.execute_batch(crate::migrations::baseline_schema())
+                .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, started_at_ms) VALUES (?1, ?2)",
+                params!["legacy", 7_i64],
+            )
+            .unwrap();
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 0, "база до версионирования");
         }
 
         {
@@ -710,13 +720,40 @@ mod tests {
         {
             let mut store = AudioManifestStore::open(&root).unwrap();
             store.begin_session("s1", 1).unwrap();
-            let event = domain::CaptionEvent {
-                id: "c1".into(),
-                text: "привет".into(),
-                phase: domain::CaptionPhase::Final,
-            };
+            let event = domain::CaptionEvent::new(
+                "c1".into(),
+                "привет".into(),
+                domain::CaptionPhase::Final,
+            );
             store.append_caption("s1", &event, 42).unwrap();
             assert_eq!(store.caption_count("s1").unwrap(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Канал говорящего переживает запись и переоткрытие базы (ADR-009).
+    #[test]
+    fn caption_channel_round_trips() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let mut mine = CaptionEvent::new("mine".into(), "я".into(), CaptionPhase::Final);
+            mine.channel = AudioChannel::Mic;
+            let mut theirs = CaptionEvent::new("theirs".into(), "они".into(), CaptionPhase::Final);
+            theirs.channel = AudioChannel::System;
+            store.append_caption("s1", &mine, 10).unwrap();
+            store.append_caption("s1", &theirs, 20).unwrap();
+        }
+
+        {
+            let store = AudioManifestStore::open(&root).unwrap();
+            let channels: Vec<AudioChannel> = store
+                .list_captions("s1")
+                .unwrap()
+                .iter()
+                .map(|event| event.channel)
+                .collect();
+            assert_eq!(channels, vec![AudioChannel::Mic, AudioChannel::System]);
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -729,22 +766,14 @@ mod tests {
             store
                 .append_caption(
                     "s1",
-                    &CaptionEvent {
-                        id: "later".into(),
-                        text: "готово".into(),
-                        phase: CaptionPhase::Final,
-                    },
+                    &CaptionEvent::new("later".into(), "готово".into(), CaptionPhase::Final),
                     20,
                 )
                 .unwrap();
             store
                 .append_caption(
                     "s1",
-                    &CaptionEvent {
-                        id: "earlier".into(),
-                        text: "черновик".into(),
-                        phase: CaptionPhase::Partial,
-                    },
+                    &CaptionEvent::new("earlier".into(), "черновик".into(), CaptionPhase::Partial),
                     10,
                 )
                 .unwrap();
@@ -755,16 +784,8 @@ mod tests {
             assert_eq!(
                 store.list_captions("s1").unwrap(),
                 vec![
-                    CaptionEvent {
-                        id: "earlier".into(),
-                        text: "черновик".into(),
-                        phase: CaptionPhase::Partial,
-                    },
-                    CaptionEvent {
-                        id: "later".into(),
-                        text: "готово".into(),
-                        phase: CaptionPhase::Final,
-                    },
+                    CaptionEvent::new("earlier".into(), "черновик".into(), CaptionPhase::Partial,),
+                    CaptionEvent::new("later".into(), "готово".into(), CaptionPhase::Final),
                 ]
             );
         }

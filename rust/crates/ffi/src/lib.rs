@@ -17,9 +17,11 @@ use postcall::{
     LlmClient, LlmError, OllamaNativeClient, OpenAiCompatLlmClient, assemble_final, brief_prompts,
     follow_up_prompts, make_artifact, render_brief, render_follow_up,
 };
-use session::MeetingSession;
+use session::{ChannelMixer, MeetingSession};
 use storage::{AudioManifestError, AudioManifestStore};
-use stt::{LiveCaptionPipeline, SttBackendKind, models_dir, resolve_whisper_model};
+use stt::{
+    LiveCaptionPipeline, SttBackendKind, models_dir, pcm_bytes_to_i16, resolve_whisper_model,
+};
 use sync::{CreateJobRequest, JobKind, SyncClient, wait_for_job_artifact};
 use translate::{
     EffectiveBackend, HostPendingQueue, TranslationBackendKind, TranslationPolicy,
@@ -40,6 +42,8 @@ pub struct FfiCaptionEvent {
     pub id: String,
     pub text: String,
     pub phase: FfiCaptionPhase,
+    /// `mic` — говорит пользователь, `system` — собеседники (ADR-009).
+    pub channel: String,
 }
 
 /// Канал захвата для Swift (ADR-004).
@@ -174,6 +178,8 @@ struct MeetingCoreInner {
     data_root: PathBuf,
     stt: Option<LiveCaptionPipeline>,
     stt_backend: String,
+    /// Выравнивание mic и system перед подачей в STT (ADR-009).
+    mixer: ChannelMixer,
     glossary: GlossaryEngine,
     pending_live_captions: VecDeque<FfiCaptionEvent>,
     /// Язык распознавания (captions); не путать с целевым языком перевода.
@@ -241,6 +247,39 @@ fn to_ffi(event: domain::CaptionEvent) -> FfiCaptionEvent {
             CaptionPhase::Partial => FfiCaptionPhase::Partial,
             CaptionPhase::Final => FfiCaptionPhase::Final,
         },
+        channel: event.channel.code().to_string(),
+    }
+}
+
+/// Частота дискретизации живого пути (ADR-005 / AudioChunkPipeline).
+const SAMPLE_RATE_HZ: u32 = 16_000;
+
+/// Прогнать выровненные кадры через STT.
+fn transcribe_frames(
+    inner: &mut MeetingCoreInner,
+    frames: &[session::MixedFrame],
+    sample_rate: u32,
+) -> Vec<domain::CaptionEvent> {
+    let Some(pipeline) = inner.stt.as_mut() else {
+        return Vec::new();
+    };
+    frames
+        .iter()
+        .flat_map(|frame| pipeline.push_frame(&frame.pcm, sample_rate, frame.dominant))
+        .collect()
+}
+
+/// Нормализовать глоссарием, сохранить и отдать в очередь UI.
+fn store_and_enqueue(inner: &mut MeetingCoreInner, events: Vec<domain::CaptionEvent>) {
+    let Some(session_id) = inner.recording_session_id.clone() else {
+        return;
+    };
+    for mut event in events {
+        event.text = inner.glossary.normalize_caption(&event.text);
+        if let Some(store) = inner.store.as_mut() {
+            let _ = store.append_caption(&session_id, &event, now_ms());
+        }
+        enqueue_caption(inner, event);
     }
 }
 
@@ -263,9 +302,13 @@ fn maybe_enqueue_translation(inner: &mut MeetingCoreInner, event: &domain::Capti
     match effective {
         EffectiveBackend::Off => {}
         EffectiveBackend::AppleHost => {
-            inner
-                .host_translation_queue
-                .enqueue(&event.text, source, target, event.phase);
+            inner.host_translation_queue.enqueue(
+                &event.text,
+                source,
+                target,
+                event.phase,
+                event.channel,
+            );
         }
         other => match translate_now(
             other,
@@ -275,11 +318,9 @@ fn maybe_enqueue_translation(inner: &mut MeetingCoreInner, event: &domain::Capti
             target,
         ) {
             Ok(text) => {
-                let translated = domain::CaptionEvent {
-                    id: Uuid::new_v4().to_string(),
-                    text,
-                    phase: event.phase,
-                };
+                let mut translated =
+                    domain::CaptionEvent::new(Uuid::new_v4().to_string(), text, event.phase);
+                translated.channel = event.channel;
                 inner.pending_translations.push_back(to_ffi(translated));
             }
             Err(_) => {
@@ -569,6 +610,7 @@ impl MeetingCore {
                 data_root: PathBuf::from(data_root),
                 stt: None,
                 stt_backend: "idle".to_string(),
+                mixer: ChannelMixer::new(),
                 glossary: GlossaryEngine::from_terms(Vec::new()),
                 pending_live_captions: VecDeque::new(),
                 language_policy: LanguagePolicy::default_v1(),
@@ -827,7 +869,7 @@ impl MeetingCore {
     /// Ответ host bridge → в translation stream.
     pub fn complete_host_translation(&self, id: String, translated_text: String) -> String {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
-        let Some(phase_final) = guard.host_translation_queue.take_awaiting(&id) else {
+        let Some((phase_final, channel)) = guard.host_translation_queue.take_awaiting(&id) else {
             return format!("unknown host translation id: {id}");
         };
         let text = translated_text.trim();
@@ -842,6 +884,7 @@ impl MeetingCore {
             } else {
                 FfiCaptionPhase::Partial
             },
+            channel: channel.code().to_string(),
         });
         String::new()
     }
@@ -1269,6 +1312,7 @@ impl MeetingCore {
                 guard.recording_session_id = Some(session_id);
                 guard.stt = Some(pipeline);
                 guard.glossary = glossary;
+                guard.mixer.reset();
                 guard.pending_live_captions.clear();
                 guard.pending_translations.clear();
                 guard.host_translation_queue.clear();
@@ -1358,30 +1402,32 @@ impl MeetingCore {
             }
         }
 
-        if matches!(channel, FfiAudioChannel::Mic) {
-            let session_id = guard.recording_session_id.clone();
-            let events = guard
-                .stt
-                .as_mut()
-                .map(|p| p.push_pcm_bytes(&pcm, sample_rate))
-                .unwrap_or_default();
-            if let Some(sid) = session_id {
-                for mut event in events {
-                    event.text = guard.glossary.normalize_caption(&event.text);
-                    if let Some(store) = guard.store.as_mut() {
-                        let _ = store.append_caption(&sid, &event, now_ms());
-                    }
-                    enqueue_caption(&mut guard, event);
-                }
-            }
-        }
+        // Оба канала идут в микшер; STT получает выровненный микс, а канал
+        // говорящего приезжает отдельным полем события (ADR-009).
+        let samples = pcm_bytes_to_i16(&pcm);
+        guard.mixer.push(domain_channel, &samples, timestamp_ms);
+        let frames = guard.mixer.drain();
+        let events = transcribe_frames(&mut guard, &frames, sample_rate);
+        store_and_enqueue(&mut guard, events);
         String::new()
+    }
+
+    /// Ждать ли системный канал: Swift сообщает это после старта tap.
+    /// Пока tap не запущен, микшер не должен простаивать допуск впустую.
+    pub fn set_system_audio_expected(&self, expected: bool) {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.mixer.set_system_expected(expected);
     }
 
     pub fn stop_recording(&self) {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
         let sid = guard.recording_session_id.clone();
-        let flushed = guard.stt.as_mut().map(|p| p.flush()).unwrap_or_default();
+        // Хвост микшера не должен ждать допуска — иначе теряются последние
+        // слоты речи; после него добираем хвост самого движка.
+        let pending = guard.mixer.flush();
+        let mut flushed = transcribe_frames(&mut guard, &pending, SAMPLE_RATE_HZ);
+        flushed.extend(guard.stt.as_mut().map(|p| p.flush()).unwrap_or_default());
+        guard.mixer.reset();
         if let Some(sid) = sid {
             for mut event in flushed {
                 event.text = guard.glossary.normalize_caption(&event.text);
@@ -1463,22 +1509,22 @@ mod tests {
         store
             .append_caption(
                 meeting_id,
-                &domain::CaptionEvent {
-                    id: "c1".into(),
-                    text: "Первая финальная фраза".into(),
-                    phase: CaptionPhase::Final,
-                },
+                &domain::CaptionEvent::new(
+                    "c1".into(),
+                    "Первая финальная фраза".into(),
+                    CaptionPhase::Final,
+                ),
                 10,
             )
             .expect("caption должен сохраниться");
         store
             .append_caption(
                 meeting_id,
-                &domain::CaptionEvent {
-                    id: "c2".into(),
-                    text: "Вторая финальная фраза".into(),
-                    phase: CaptionPhase::Final,
-                },
+                &domain::CaptionEvent::new(
+                    "c2".into(),
+                    "Вторая финальная фраза".into(),
+                    CaptionPhase::Final,
+                ),
                 20,
             )
             .expect("caption должен сохраниться");
