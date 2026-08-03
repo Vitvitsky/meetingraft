@@ -683,6 +683,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     func listGlossaryTerms()  -> [FfiGlossaryTerm]
     
     /**
+     * Имена `ggml-*.bin` в `{data_root}/models`, отсортированные.
+     */
+    func listLocalWhisperModels()  -> [String]
+    
+    /**
      * Встречи, доступные в локальной истории.
      */
     func listMeetings()  -> [FfiMeetingSummary]
@@ -700,6 +705,8 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      * Каталог моделей: `{data_root}/models`.
      */
     func modelsDirectory()  -> String
+    
+    func preferredWhisperModel()  -> String
     
     func sessionLanguage()  -> String
     
@@ -721,7 +728,12 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     /**
      * Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
      */
-    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String)
+    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String) 
+    
+    /**
+     * Предпочитаемая модель Whisper: `auto` | `base` | `small` | `large-v3-turbo`.
+     */
+    func setPreferredWhisperModel(modelId: String) 
     
     /**
      * Primary язык распознавания (`ru` | `en` | `es`). Не включает перевод.
@@ -1085,6 +1097,18 @@ open func listGlossaryTerms() -> [FfiGlossaryTerm]  {
 }
     
     /**
+     * Имена `ggml-*.bin` в `{data_root}/models`, отсортированные.
+     */
+open func listLocalWhisperModels() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_list_local_whisper_models(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Встречи, доступные в локальной истории.
      */
 open func listMeetings() -> [FfiMeetingSummary]  {
@@ -1135,6 +1159,15 @@ open func modelsDirectory() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_models_directory(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func preferredWhisperModel() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_preferred_whisper_model(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -1198,6 +1231,18 @@ open func setLlmConfig(engineCode: String, modelId: String, baseUrl: String)  {t
         FfiConverterString.lower(engineCode),
         FfiConverterString.lower(modelId),
         FfiConverterString.lower(baseUrl),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Предпочитаемая модель Whisper: `auto` | `base` | `small` | `large-v3-turbo`.
+     */
+open func setPreferredWhisperModel(modelId: String)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_set_preferred_whisper_model(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(modelId),uniffiCallStatus
     )
 }
 }
@@ -2665,6 +2710,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_glossary_terms() != 37764) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_local_whisper_models() != 57399) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_meetings() != 58213) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2680,6 +2728,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_models_directory() != 25600) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_preferred_whisper_model() != 63540) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_session_language() != 62667) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2693,6 +2744,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_llm_config() != 40973) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_preferred_whisper_model() != 32371) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_session_language() != 29416) {

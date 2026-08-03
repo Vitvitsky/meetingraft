@@ -33,8 +33,12 @@ impl LiveCaptionPipeline {
     }
 
     /// Whisper, если feature + файл модели; иначе Mock (+ stderr warning).
-    pub fn from_data_root(data_root: impl AsRef<Path>, policy: LanguagePolicy) -> Self {
-        match try_whisper(data_root.as_ref(), policy.clone()) {
+    pub fn from_data_root(
+        data_root: impl AsRef<Path>,
+        policy: LanguagePolicy,
+        preferred: Option<&str>,
+    ) -> Self {
+        match try_whisper(data_root.as_ref(), policy.clone(), preferred) {
             Some(pipeline) => pipeline,
             None => {
                 eprintln!(
@@ -68,8 +72,12 @@ impl LiveCaptionPipeline {
     }
 }
 
-fn try_whisper(data_root: &Path, policy: LanguagePolicy) -> Option<LiveCaptionPipeline> {
-    let model = resolve_whisper_model(data_root, None)?;
+fn try_whisper(
+    data_root: &Path,
+    policy: LanguagePolicy,
+    preferred: Option<&str>,
+) -> Option<LiveCaptionPipeline> {
+    let model = resolve_whisper_model(data_root, preferred)?;
     #[cfg(feature = "whisper")]
     {
         match WhisperSttEngine::open(&model) {
@@ -130,7 +138,7 @@ mod tests {
     fn from_data_root_without_model_is_mock() {
         let root = std::env::temp_dir().join("mr-stt-no-model");
         let _ = std::fs::remove_dir_all(&root);
-        let p = LiveCaptionPipeline::from_data_root(&root, LanguagePolicy::default_v1());
+        let p = LiveCaptionPipeline::from_data_root(&root, LanguagePolicy::default_v1(), None);
         assert_eq!(p.backend(), SttBackendKind::Mock);
     }
 }

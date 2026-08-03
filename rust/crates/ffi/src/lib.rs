@@ -179,6 +179,7 @@ struct MeetingCoreInner {
     llm_engine: String,
     llm_model_id: String,
     llm_base_url: String,
+    preferred_whisper_model: String,
 }
 
 /// Фасад сессии для macOS shell.
@@ -213,6 +214,14 @@ fn utc_date_label(timestamp_ms: u64) -> String {
 
 fn default_data_root() -> PathBuf {
     std::env::temp_dir().join("meetingraft-default")
+}
+
+/// Нормализует id модели Whisper; неизвестные → `"auto"`.
+fn normalize_whisper_model_id(model_id: &str) -> String {
+    match model_id {
+        "auto" | "base" | "small" | "large-v3-turbo" => model_id.to_owned(),
+        _ => "auto".to_owned(),
+    }
 }
 
 fn to_ffi(event: domain::CaptionEvent) -> FfiCaptionEvent {
@@ -560,6 +569,7 @@ impl MeetingCore {
                 llm_engine: "builtin_templates".to_string(),
                 llm_model_id: String::new(),
                 llm_base_url: String::new(),
+                preferred_whisper_model: "auto".to_string(),
             }),
         })
     }
@@ -1182,7 +1192,9 @@ impl MeetingCore {
                 };
                 let glossary = GlossaryEngine::from_terms(terms);
                 let policy = guard.language_policy.clone();
-                let mut pipeline = LiveCaptionPipeline::from_data_root(&root, policy);
+                let preferred = guard.preferred_whisper_model.clone();
+                let mut pipeline =
+                    LiveCaptionPipeline::from_data_root(&root, policy, Some(&preferred));
                 if pipeline.backend() == SttBackendKind::Whisper {
                     pipeline.set_initial_prompt(&glossary.build_whisper_prompt(800));
                 }
@@ -1212,9 +1224,48 @@ impl MeetingCore {
     /// Абсолютный путь к найденной ggml-модели или пустая строка.
     pub fn whisper_model_path(&self) -> String {
         let guard = self.inner.lock().expect("meeting core poisoned");
-        resolve_whisper_model(&guard.data_root, None)
+        resolve_whisper_model(&guard.data_root, Some(&guard.preferred_whisper_model))
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default()
+    }
+
+    /// Предпочитаемая модель Whisper: `auto` | `base` | `small` | `large-v3-turbo`.
+    pub fn set_preferred_whisper_model(&self, model_id: String) {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.preferred_whisper_model = normalize_whisper_model_id(&model_id);
+    }
+
+    pub fn preferred_whisper_model(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.preferred_whisper_model.clone()
+    }
+
+    /// Имена `ggml-*.bin` в `{data_root}/models`, отсортированные.
+    pub fn list_local_whisper_models(&self) -> Vec<String> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        let dir = models_dir(&guard.data_root);
+        if !dir.is_dir() {
+            return Vec::new();
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let path = e.path();
+                let name = path.file_name()?.to_str()?;
+                if path.extension().and_then(|ext| ext.to_str()) == Some("bin")
+                    && name.starts_with("ggml-")
+                {
+                    Some(name.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        names.sort();
+        names
     }
 
     /// Каталог моделей: `{data_root}/models`.
@@ -1348,6 +1399,70 @@ mod tests {
     fn utc_date_label_formats_calendar_date() {
         assert_eq!(utc_date_label(0), "1970-01-01");
         assert_eq!(utc_date_label(1_785_628_800_000), "2026-08-02");
+    }
+
+    fn seed_whisper_models(root: &std::path::Path, filenames: &[&str]) {
+        let models = models_dir(root);
+        std::fs::create_dir_all(&models).unwrap();
+        for name in filenames {
+            std::fs::write(models.join(name), b"x").unwrap();
+        }
+    }
+
+    #[test]
+    fn set_preferred_whisper_model_affects_whisper_model_path() {
+        let root = std::env::temp_dir().join(format!("mr-ffi-whisper-pref-{}", now_ms()));
+        seed_whisper_models(&root, &["ggml-base.bin", "ggml-large-v3-turbo.bin"]);
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert_eq!(core.preferred_whisper_model(), "auto");
+        core.set_preferred_whisper_model("base".into());
+        assert_eq!(core.preferred_whisper_model(), "base");
+        assert!(core.whisper_model_path().ends_with("ggml-base.bin"));
+        core.set_preferred_whisper_model("auto".into());
+        assert!(
+            core.whisper_model_path()
+                .ends_with("ggml-large-v3-turbo.bin")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn set_preferred_whisper_model_normalizes_unknown_to_auto() {
+        let core = MeetingCore::new();
+        core.set_preferred_whisper_model("unknown-model".into());
+        assert_eq!(core.preferred_whisper_model(), "auto");
+    }
+
+    #[test]
+    fn list_local_whisper_models_lists_ggml_bins() {
+        let root = std::env::temp_dir().join(format!("mr-ffi-whisper-list-{}", now_ms()));
+        seed_whisper_models(
+            &root,
+            &[
+                "ggml-small.bin",
+                "ggml-base.bin",
+                "readme.txt",
+                "ggml-large-v3-turbo.bin",
+            ],
+        );
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert_eq!(
+            core.list_local_whisper_models(),
+            vec![
+                "ggml-base.bin".to_owned(),
+                "ggml-large-v3-turbo.bin".to_owned(),
+                "ggml-small.bin".to_owned(),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn list_local_whisper_models_empty_when_dir_missing() {
+        let root = std::env::temp_dir().join(format!("mr-ffi-whisper-missing-{}", now_ms()));
+        let _ = std::fs::remove_dir_all(&root);
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(core.list_local_whisper_models().is_empty());
     }
 
     #[test]
