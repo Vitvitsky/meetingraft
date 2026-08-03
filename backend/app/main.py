@@ -11,6 +11,8 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+from app.llm import LlmError, complete_chat, load_llm_settings
+
 app = FastAPI(title="MeetingRaft Backend", version="0.1.0")
 security = HTTPBearer(auto_error=False)
 
@@ -52,14 +54,47 @@ def create_job(body: CreateJobRequest) -> dict[str, Any]:
         if lang not in {"ru", "en", "es"}:
             raise HTTPException(status_code=422, detail=f"unsupported language: {lang}")
 
-    artifact_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())
     created_at = datetime.now(UTC).isoformat()
-    body_md = (
-        f"# Stub {body.kind}\n\n"
-        f"meeting=`{body.meeting_id}` primary=`{body.primary_language}`\n\n"
-        "_In-memory ADR-007 slice A — no ML yet._\n"
-    )
+    settings = load_llm_settings()
+
+    if body.kind in {"brief", "follow_up"} and settings.base_url:
+        payload = body.payload or {}
+        model = payload.get("model", "")
+        system = payload.get("system")
+        user = payload.get("user")
+        try:
+            if not isinstance(model, str):
+                raise LlmError("Модель LLM должна быть строкой")
+            if not isinstance(system, str) or not system.strip():
+                raise LlmError("Не указан system prompt")
+            if not isinstance(user, str) or not user.strip():
+                raise LlmError("Не указан user prompt")
+            body_md = complete_chat(
+                settings,
+                model=model,
+                system=system,
+                user=user,
+            )
+        except LlmError as error:
+            job = {
+                "id": job_id,
+                "meeting_id": body.meeting_id,
+                "kind": body.kind,
+                "status": "failed",
+                "error": str(error),
+                "artifact_ids": [],
+            }
+            _jobs[job_id] = job
+            return job
+    else:
+        body_md = (
+            f"# Stub {body.kind}\n\n"
+            f"meeting=`{body.meeting_id}` primary=`{body.primary_language}`\n\n"
+            "_In-memory ADR-007 slice A — no ML yet._\n"
+        )
+
+    artifact_id = str(uuid.uuid4())
     _artifacts[artifact_id] = {
         "id": artifact_id,
         "kind": body.kind,

@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -25,7 +26,8 @@ def test_create_job_requires_auth() -> None:
     assert response.status_code == 401
 
 
-def test_job_roundtrip() -> None:
+def test_job_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
     created = client.post(
         "/v1/jobs",
         headers=AUTH,
