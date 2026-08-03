@@ -20,7 +20,6 @@ final class AudioCaptureCoordinator {
     private let systemAudio = SystemAudioCapture()
     private var micPipeline = AudioChunkPipeline()
     private var systemPipeline = AudioChunkPipeline()
-    private var startedAt: Date?
 
     init(core: MeetingCore) {
         self.core = core
@@ -65,7 +64,6 @@ final class AudioCaptureCoordinator {
             return
         }
         sessionId = id
-        startedAt = Date()
         micPipeline.reset()
         systemPipeline.reset()
         sttBackend = core.sttBackend()
@@ -105,7 +103,6 @@ final class AudioCaptureCoordinator {
         systemAudio.stop()
         core.stopRecording()
         isRecording = false
-        startedAt = nil
         sttBackend = "idle"
     }
 
@@ -125,8 +122,7 @@ final class AudioCaptureCoordinator {
 
     private func ingest(samples: [Float], channel: FfiAudioChannel) {
         guard isRecording, sessionId != nil, !samples.isEmpty else { return }
-        let timestampMs = UInt64(max(0, Date().timeIntervalSince(startedAt ?? Date()) * 1000))
-        let chunks: [Data] = switch channel {
+        let chunks: [AudioChunk] = switch channel {
         case .mic:
             micPipeline.push(samples: samples)
         case .system:
@@ -135,9 +131,9 @@ final class AudioCaptureCoordinator {
         for chunk in chunks {
             let err = core.ingestAudioChunk(
                 channel: channel,
-                pcm: chunk,
+                pcm: chunk.data,
                 sampleRate: UInt32(AudioChunkPipeline.targetSampleRate),
-                timestampMs: timestampMs
+                timestampMs: chunk.timestampMs()
             )
             if err.isEmpty {
                 chunkCount += 1
