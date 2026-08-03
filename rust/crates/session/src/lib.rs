@@ -2,6 +2,8 @@
 
 mod engine;
 mod fake_captions;
+mod mixer;
 
 pub use engine::{MeetingSession, SessionError};
 pub use fake_captions::FakeCaptionProducer;
+pub use mixer::{ChannelMixer, DEFAULT_SLOT_MS, DEFAULT_TOLERANCE_SLOTS, MixedFrame};
