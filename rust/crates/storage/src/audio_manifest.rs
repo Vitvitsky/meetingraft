@@ -50,67 +50,9 @@ impl AudioManifestStore {
         let conn = Connection::open(&db_path)?;
         // Снижает flaky SQLITE_BUSY при параллельных тестах / WAL checkpoint.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch(
-            "
-            PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY NOT NULL,
-                started_at_ms INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS audio_manifest (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                seq INTEGER NOT NULL,
-                path TEXT NOT NULL,
-                sample_rate INTEGER NOT NULL,
-                frame_count INTEGER NOT NULL,
-                timestamp_ms INTEGER NOT NULL,
-                UNIQUE(session_id, channel, seq)
-            );
-            CREATE TABLE IF NOT EXISTS caption_events (
-                id TEXT PRIMARY KEY NOT NULL,
-                session_id TEXT NOT NULL,
-                text TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                created_at_ms INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS final_transcripts (
-                meeting_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                body_markdown TEXT NOT NULL,
-                created_at_ms INTEGER NOT NULL,
-                PRIMARY KEY (meeting_id, version)
-            );
-            CREATE TABLE IF NOT EXISTS artifacts (
-                id TEXT PRIMARY KEY NOT NULL,
-                meeting_id TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                template_id TEXT NOT NULL,
-                body_markdown TEXT NOT NULL,
-                created_at_ms INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS glossary_terms (
-                id TEXT PRIMARY KEY NOT NULL,
-                surface TEXT NOT NULL,
-                canonical TEXT NOT NULL,
-                language TEXT NOT NULL,
-                scope TEXT NOT NULL,
-                meeting_id TEXT,
-                updated_at_ms INTEGER NOT NULL
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique
-                ON glossary_terms(surface, language, scope, ifnull(meeting_id, ''));
-            CREATE TABLE IF NOT EXISTS speakers (
-                id TEXT PRIMARY KEY NOT NULL,
-                meeting_id TEXT NOT NULL,
-                display_name TEXT NOT NULL,
-                sort_index INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_speakers_meeting
-                ON speakers(meeting_id, sort_index);
-            ",
-        )?;
+        // Вне migrate: journal_mode не выполняется внутри транзакции.
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        crate::migrations::migrate(&conn)?;
         Ok(Self {
             root,
             conn,
@@ -715,6 +657,36 @@ mod tests {
             assert!(list[0].path.exists());
             assert_eq!(list[0].channel, AudioChannel::Mic);
             assert_eq!(list[1].channel, AudioChannel::System);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Файл, созданный до версионирования: `user_version = 0` при готовых
+    /// таблицах. `open` обязан поднять схему и сохранить строки.
+    #[test]
+    fn open_upgrades_pre_versioning_database() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("legacy", 7).unwrap();
+        }
+        {
+            let conn = Connection::open(root.join("meetingraft.sqlite3")).unwrap();
+            conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        }
+
+        {
+            let store = AudioManifestStore::open(&root).unwrap();
+            let summaries = store.list_meeting_summaries().unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].id, "legacy");
+        }
+        {
+            let conn = Connection::open(root.join("meetingraft.sqlite3")).unwrap();
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version as u32, crate::migrations::schema_version());
         }
         let _ = fs::remove_dir_all(&root);
     }
