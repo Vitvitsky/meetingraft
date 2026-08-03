@@ -108,6 +108,70 @@ final class MeetingsViewModelTests: XCTestCase {
         viewModel.reload(meetingId: "meeting-1")
 
         XCTAssertNil(viewModel.finalTranscript)
+        XCTAssertTrue(viewModel.finalVersions.isEmpty)
+        XCTAssertNil(viewModel.selectedFinalVersion)
+    }
+
+    func testReloadLoadsFinalVersionsDescending() {
+        let v1 = FfiFinalTranscript(
+            meetingId: "meeting-1",
+            version: 1,
+            bodyMarkdown: "# v1",
+            createdAtMs: 100
+        )
+        let v2 = FfiFinalTranscript(
+            meetingId: "meeting-1",
+            version: 2,
+            bodyMarkdown: "# v2",
+            createdAtMs: 200
+        )
+        let core = MeetingsCoreSpy(finalTranscript: v2, finalVersions: [v2, v1])
+        let viewModel = MeetingsViewModel(core: core)
+
+        viewModel.reload(meetingId: "meeting-1")
+
+        XCTAssertEqual(viewModel.finalVersions.map(\.version), [2, 1])
+        XCTAssertEqual(viewModel.finalVersions[0].version, 2)
+        XCTAssertEqual(viewModel.selectedFinalVersion, 2)
+        XCTAssertEqual(viewModel.finalTranscript, v2)
+        XCTAssertEqual(viewModel.selectedFinalBody, "# v2")
+    }
+
+    func testSelectedFinalBodyUsesSelectedVersion() {
+        let v1 = FfiFinalTranscript(
+            meetingId: "meeting-1",
+            version: 1,
+            bodyMarkdown: "# v1",
+            createdAtMs: 100
+        )
+        let v2 = FfiFinalTranscript(
+            meetingId: "meeting-1",
+            version: 2,
+            bodyMarkdown: "# v2",
+            createdAtMs: 200
+        )
+        let core = MeetingsCoreSpy(finalTranscript: v2, finalVersions: [v2, v1])
+        let viewModel = MeetingsViewModel(core: core)
+        viewModel.reload(meetingId: "meeting-1")
+
+        viewModel.selectedFinalVersion = 1
+
+        XCTAssertEqual(viewModel.selectedFinalBody, "# v1")
+        XCTAssertEqual(viewModel.finalTranscript?.version, 2)
+    }
+
+    func testLiveFinalsTextJoinsFinalCaptions() {
+        let captions = [
+            FfiCaptionEvent(id: "1", text: "partial only", phase: .partial),
+            FfiCaptionEvent(id: "2", text: "first final", phase: .final),
+            FfiCaptionEvent(id: "3", text: "second final", phase: .final),
+        ]
+        let viewModel = MeetingsViewModel(core: MeetingsCoreSpy())
+
+        XCTAssertEqual(
+            viewModel.liveFinalsText(from: captions),
+            "first final\n\nsecond final"
+        )
     }
 
     func testGeneratePublishesCoreErrorWithoutReloading() {
@@ -444,6 +508,7 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
     var meetings: [FfiMeetingSummary]
     var captions: [FfiCaptionEvent]
     var finalTranscript: FfiFinalTranscript
+    var finalVersions: [FfiFinalTranscript]
     var artifacts: [FfiArtifact]
     var speakers: [FfiSpeaker]
     var generateResult: FfiGenerateArtifactResult
@@ -482,12 +547,20 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
             bodyMarkdown: "",
             createdAtMs: 0
         ),
+        finalVersions: [FfiFinalTranscript]? = nil,
         artifacts: [FfiArtifact] = [],
         speakers: [FfiSpeaker] = []
     ) {
         self.meetings = meetings
         self.captions = captions
         self.finalTranscript = finalTranscript
+        if let finalVersions {
+            self.finalVersions = finalVersions
+        } else if finalTranscript.meetingId.isEmpty {
+            self.finalVersions = []
+        } else {
+            self.finalVersions = [finalTranscript]
+        }
         self.artifacts = artifacts
         self.speakers = speakers
         generateResult = FfiGenerateArtifactResult(
@@ -517,6 +590,15 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
 
     func getFinalTranscript(meetingId _: String) -> FfiFinalTranscript {
         finalTranscript
+    }
+
+    func listFinalTranscripts(meetingId _: String) -> [FfiFinalTranscript] {
+        finalVersions
+    }
+
+    func getFinalTranscriptVersion(meetingId _: String, version: UInt32) -> FfiFinalTranscript {
+        finalVersions.first(where: { $0.version == version })
+            ?? FfiFinalTranscript(meetingId: "", version: 0, bodyMarkdown: "", createdAtMs: 0)
     }
 
     func listArtifacts(meetingId _: String) -> [FfiArtifact] {

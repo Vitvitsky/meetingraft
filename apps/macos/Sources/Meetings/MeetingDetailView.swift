@@ -28,6 +28,8 @@ struct MeetingDetailView: View {
                 liveCaptions
             case .final:
                 finalTranscript
+            case .compare:
+                comparePanel
             case .speakers:
                 speakersPanel
             case .artifacts:
@@ -138,20 +140,78 @@ struct MeetingDetailView: View {
             provenanceBanner(
                 "Источник: Live finals + glossary · вход для Brief / Follow-up"
             )
-            if let transcript = viewModel.finalTranscript {
-                ScrollView {
-                    Text(markdown(transcript.bodyMarkdown))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                }
-            } else {
+            if viewModel.finalVersions.isEmpty {
                 ContentUnavailableView(
                     "Финальный транскрипт недоступен",
                     systemImage: "doc.text.magnifyingglass"
                 )
+            } else {
+                finalVersionPicker
+                Divider()
+                ScrollView {
+                    Text(markdown(viewModel.selectedFinalBody))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
             }
         }
+    }
+
+    private var comparePanel: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                provenanceBanner("Live finals")
+                let liveText = viewModel.liveFinalsText(from: viewModel.captions)
+                ScrollView {
+                    Text(liveText)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
+                .overlay {
+                    if liveText.isEmpty {
+                        ContentUnavailableView(
+                            "Live finals пусты",
+                            systemImage: "captions.bubble"
+                        )
+                    }
+                }
+            }
+            .frame(minWidth: 220)
+
+            VStack(spacing: 0) {
+                provenanceBanner("Final")
+                if viewModel.finalVersions.isEmpty {
+                    ContentUnavailableView(
+                        "Финальный транскрипт недоступен",
+                        systemImage: "doc.text.magnifyingglass"
+                    )
+                } else {
+                    finalVersionPicker
+                    Divider()
+                    ScrollView {
+                        Text(markdown(viewModel.selectedFinalBody))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                    }
+                }
+            }
+            .frame(minWidth: 220)
+        }
+    }
+
+    private var finalVersionPicker: some View {
+        Picker("Версия Final", selection: $viewModel.selectedFinalVersion) {
+            ForEach(viewModel.finalVersions, id: \.version) { transcript in
+                Text("v\(transcript.version)").tag(Optional(transcript.version))
+            }
+        }
+        .pickerStyle(.menu)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var artifacts: some View {
@@ -415,6 +475,7 @@ struct MeetingDetailView: View {
 private enum MeetingDetailSection: String, CaseIterable, Identifiable {
     case live
     case final
+    case compare
     case speakers
     case artifacts
 
@@ -428,6 +489,8 @@ private enum MeetingDetailSection: String, CaseIterable, Identifiable {
             "Live"
         case .final:
             "Final"
+        case .compare:
+            "Compare"
         case .speakers:
             "Speakers"
         case .artifacts:

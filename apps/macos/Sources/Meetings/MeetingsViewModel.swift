@@ -17,6 +17,8 @@ protocol MeetingsCoreProviding: AnyObject {
     func listMeetings() -> [FfiMeetingSummary]
     func listCaptions(meetingId: String) -> [FfiCaptionEvent]
     func getFinalTranscript(meetingId: String) -> FfiFinalTranscript
+    func listFinalTranscripts(meetingId: String) -> [FfiFinalTranscript]
+    func getFinalTranscriptVersion(meetingId: String, version: UInt32) -> FfiFinalTranscript
     func listArtifacts(meetingId: String) -> [FfiArtifact]
     func listSpeakers(meetingId: String) -> [FfiSpeaker]
     func upsertSpeaker(meetingId: String, id: String, displayName: String, sortIndex: Int64) -> String
@@ -45,7 +47,12 @@ enum BackendRefineStatus: String, Equatable {
 final class MeetingsViewModel {
     private(set) var meetings: [FfiMeetingSummary] = []
     private(set) var captions: [FfiCaptionEvent] = []
+    /// Latest Final — Brief / Export / refine опираются только на него.
     private(set) var finalTranscript: FfiFinalTranscript?
+    /// Все версии Final (новые первыми); UI picker / Compare.
+    private(set) var finalVersions: [FfiFinalTranscript] = []
+    /// Выбранная версия для просмотра; `nil` → трактуем как latest.
+    var selectedFinalVersion: UInt32?
     private(set) var artifacts: [FfiArtifact] = []
     private(set) var speakers: [FfiSpeaker] = []
     private(set) var selectedArtifact: FfiArtifact?
@@ -59,6 +66,16 @@ final class MeetingsViewModel {
     private var backendRefineTask: Task<Void, Never>?
     private let maxPollAttempts: Int
     private let pollDelayNanoseconds: UInt64
+
+    /// Тело выбранной версии Final (кэш списка или latest).
+    var selectedFinalBody: String {
+        if let version = selectedFinalVersion,
+           let match = finalVersions.first(where: { $0.version == version })
+        {
+            return match.bodyMarkdown
+        }
+        return finalTranscript?.bodyMarkdown ?? ""
+    }
 
     init(
         core: any MeetingsCoreProviding,
@@ -80,6 +97,8 @@ final class MeetingsViewModel {
 
         let transcript = core.getFinalTranscript(meetingId: meetingId)
         finalTranscript = transcript.meetingId.isEmpty ? nil : transcript
+        finalVersions = core.listFinalTranscripts(meetingId: meetingId)
+        selectedFinalVersion = finalTranscript?.version
 
         artifacts = core.listArtifacts(meetingId: meetingId)
         speakers = core.listSpeakers(meetingId: meetingId)
@@ -91,6 +110,11 @@ final class MeetingsViewModel {
             selectedArtifact = artifacts.first
         }
         errorMessage = nil
+    }
+
+    /// Join raw live caption finals — колонка Compare, без line-diff.
+    func liveFinalsText(from captions: [FfiCaptionEvent]) -> String {
+        captions.filter { $0.phase == .final }.map(\.text).joined(separator: "\n\n")
     }
 
     func addSpeaker(meetingId: String, primaryLanguage: String) {
