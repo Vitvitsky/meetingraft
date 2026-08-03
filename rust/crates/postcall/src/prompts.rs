@@ -16,16 +16,17 @@ pub fn brief_prompts(final_md: &str, primary_lang: SpeechLanguage) -> (String, S
     (system, user)
 }
 
-/// Формирует инструкции для списка следующих действий.
+/// Формирует инструкции для follow-up письма по итогам встречи.
 pub fn follow_up_prompts(final_md: &str, primary_lang: SpeechLanguage) -> (String, String) {
     let system = format!(
-        "Extract follow-up actions in language `{}`. \
-         Return Markdown with owners and due dates only when explicitly stated. \
-         Do not invent missing assignments or deadlines.",
+        "You are a meeting assistant. Draft a follow-up email in language `{}` as Markdown. \
+         Start with the subject line in an HTML comment, then include a greeting, \
+         a concise meeting summary, explicitly stated next steps, and a closing. \
+         Do not invent facts, assignments, or deadlines absent from the transcript.",
         primary_lang.code()
     );
     let user = format!(
-        "Create follow-up actions from this final transcript:\n\n\
+        "Draft a follow-up email from this final transcript:\n\n\
          <transcript>\n{final_md}\n</transcript>"
     );
 
@@ -49,12 +50,19 @@ mod tests {
     }
 
     #[test]
-    fn follow_up_prompts_include_transcript_and_language() {
+    fn follow_up_prompts_request_email_with_expected_structure() {
         let (system, user) =
             follow_up_prompts("# Final transcript\nSchedule the demo.", SpeechLanguage::En);
 
         assert!(system.contains("Markdown"));
         assert!(system.contains("en"));
+        assert!(system.contains("follow-up email"));
+        assert!(system.contains("subject"));
+        assert!(system.contains("greeting"));
+        assert!(system.contains("summary"));
+        assert!(system.contains("closing"));
+        assert!(!system.contains("follow-up actions"));
+        assert!(user.contains("Draft a follow-up email"));
         assert!(user.contains("# Final transcript\nSchedule the demo."));
     }
 }

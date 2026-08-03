@@ -721,7 +721,7 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     /**
      * Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
      */
-    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String) 
+    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String)
     
     /**
      * Primary язык распознавания (`ru` | `en` | `es`). Не включает перевод.
