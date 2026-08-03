@@ -24,10 +24,16 @@ struct LiveCaptionsView: View {
             header
             Divider().overlay(Theme.borderSubtle)
             captionStage
-            controls
-            levelMeter
             Divider().overlay(Theme.borderSubtle)
-            statusBar
+            // Нижняя часть неприкосновенна: у неё приоритет раскладки,
+            // поэтому длинная реплика ужимает ленту субтитров, а не
+            // выдавливает управление за край окна.
+            VStack(spacing: 0) {
+                controls
+                levelMeter
+                statusBar
+            }
+            .layoutPriority(1)
         }
         .background(Theme.surfaceRoot)
         .navigationTitle("Live Captions")
@@ -92,21 +98,27 @@ struct LiveCaptionsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Лента прокручивается внутри себя и прижата к низу: свежая реплика
+    /// всегда видна, а высота блока не зависит от длины текста.
     private func stage(lines: [CaptionLine], placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Space.sm) {
-            if lines.isEmpty {
-                Text(placeholder)
-                    .font(Theme.Text.bodyLarge)
-                    .foregroundStyle(Theme.textTertiary)
-            } else {
-                ForEach(lines) { line in
-                    captionLine(line)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Space.sm) {
+                if lines.isEmpty {
+                    Text(placeholder)
+                        .font(Theme.Text.bodyLarge)
+                        .foregroundStyle(Theme.textTertiary)
+                } else {
+                    ForEach(lines) { line in
+                        captionLine(line)
+                    }
                 }
             }
+            .frame(maxWidth: 740, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(Theme.Space.lg)
         }
-        .frame(maxWidth: 740, alignment: .leading)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .padding(Theme.Space.lg)
+        .defaultScrollAnchor(.bottom)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func captionLine(_ line: CaptionLine) -> some View {
@@ -121,7 +133,9 @@ struct LiveCaptionsView: View {
             Text(line.text)
                 .font(Theme.Text.large)
                 .foregroundStyle(line.phase == .partial ? Theme.textSecondary : Theme.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
+                // Без предела строк одна длинная реплика требовала всю
+                // высоту окна и выдавливала кнопки.
+                .lineLimit(4)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(

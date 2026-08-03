@@ -53,6 +53,9 @@ struct AppShellView: View {
         // Тема принудительно тёмная: светлая палитра вынесена за скобки,
         // и смешение с системной светлой дало бы нечитаемый контраст.
         .background(Theme.surfaceRoot)
+        // Минимум окна: без него его можно сжать так, что управлению
+        // внизу экрана просто некуда поместиться.
+        .frame(minWidth: 880, minHeight: 560)
         .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
