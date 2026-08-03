@@ -504,11 +504,13 @@ fn assemble_and_store_final(
     let captions = store.list_captions(meeting_id)?;
     let terms = store.list_glossary_terms()?;
     let glossary = GlossaryEngine::from_terms(active_terms(&terms, Some(meeting_id)));
+    let version = store.next_final_version(meeting_id)?;
     let transcript = assemble_final(
         meeting_id,
         &captions,
         |text| glossary.normalize_caption(text),
         now_ms(),
+        version,
     );
     store.upsert_final_transcript(&transcript)?;
     Ok(transcript)
@@ -1029,6 +1031,32 @@ impl MeetingCore {
             .unwrap_or_else(empty_final_transcript)
     }
 
+    /// Все версии финального транскрипта (новые первыми).
+    pub fn list_final_transcripts(&self, meeting_id: String) -> Vec<FfiFinalTranscript> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        read_store(&guard, |store| store.list_final_transcripts(&meeting_id))
+            .unwrap_or_default()
+            .into_iter()
+            .map(final_transcript_to_ffi)
+            .collect()
+    }
+
+    /// Финальный транскрипт конкретной версии или пустой DTO.
+    pub fn get_final_transcript_version(
+        &self,
+        meeting_id: String,
+        version: u32,
+    ) -> FfiFinalTranscript {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        read_store(&guard, |store| {
+            store.get_final_transcript_version(&meeting_id, version)
+        })
+        .ok()
+        .flatten()
+        .map(final_transcript_to_ffi)
+        .unwrap_or_else(empty_final_transcript)
+    }
+
     /// Сохранённые post-call артефакты выбранной встречи.
     pub fn list_artifacts(&self, meeting_id: String) -> Vec<FfiArtifact> {
         let guard = self.inner.lock().expect("meeting core poisoned");
@@ -1428,6 +1456,59 @@ mod tests {
                 created_at_ms: 1_785_628_800_000,
             })
             .expect("final transcript должен сохраниться");
+    }
+
+    fn seed_final_captions(root: &std::path::Path, meeting_id: &str) {
+        let mut store = AudioManifestStore::open(root).expect("test store должен открыться");
+        store
+            .append_caption(
+                meeting_id,
+                &domain::CaptionEvent {
+                    id: "c1".into(),
+                    text: "Первая финальная фраза".into(),
+                    phase: CaptionPhase::Final,
+                },
+                10,
+            )
+            .expect("caption должен сохраниться");
+        store
+            .append_caption(
+                meeting_id,
+                &domain::CaptionEvent {
+                    id: "c2".into(),
+                    text: "Вторая финальная фраза".into(),
+                    phase: CaptionPhase::Final,
+                },
+                20,
+            )
+            .expect("caption должен сохраниться");
+    }
+
+    #[test]
+    fn assemble_final_now_increments_version() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-final-versions-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_final_captions(&root, "m-versions");
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let meeting_id = "m-versions".to_string();
+
+        assert!(core.assemble_final_now(meeting_id.clone()).is_empty());
+        let v1 = core.get_final_transcript(meeting_id.clone());
+        assert_eq!(v1.version, 1);
+        assert!(core.assemble_final_now(meeting_id.clone()).is_empty());
+        let latest = core.get_final_transcript(meeting_id.clone());
+        assert_eq!(latest.version, 2);
+        let list = core.list_final_transcripts(meeting_id.clone());
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].version, 2);
+        let old = core.get_final_transcript_version(meeting_id.clone(), 1);
+        assert_eq!(old.version, 1);
+        assert_eq!(old.body_markdown, v1.body_markdown);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

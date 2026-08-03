@@ -666,6 +666,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      */
     func getFinalTranscript(meetingId: String)  -> FfiFinalTranscript
     
+    /**
+     * Финальный транскрипт конкретной версии или пустой DTO.
+     */
+    func getFinalTranscriptVersion(meetingId: String, version: UInt32)  -> FfiFinalTranscript
+    
     func importGlossaryCsv(csv: String)  -> FfiGlossaryImportResult
     
     func ingestAudioChunk(channel: FfiAudioChannel, pcm: Data, sampleRate: UInt32, timestampMs: UInt64)  -> String
@@ -684,6 +689,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      * Сохранённые live captions выбранной встречи.
      */
     func listCaptions(meetingId: String)  -> [FfiCaptionEvent]
+    
+    /**
+     * Все версии финального транскрипта (новые первыми).
+     */
+    func listFinalTranscripts(meetingId: String)  -> [FfiFinalTranscript]
     
     func listGlossaryTerms()  -> [FfiGlossaryTerm]
     
@@ -1044,6 +1054,20 @@ open func getFinalTranscript(meetingId: String) -> FfiFinalTranscript  {
 })
 }
     
+    /**
+     * Финальный транскрипт конкретной версии или пустой DTO.
+     */
+open func getFinalTranscriptVersion(meetingId: String, version: UInt32) -> FfiFinalTranscript  {
+    return try!  FfiConverterTypeFfiFinalTranscript_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_get_final_transcript_version(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),
+        FfiConverterUInt32.lower(version),uniffiCallStatus
+    )
+})
+}
+    
 open func importGlossaryCsv(csv: String) -> FfiGlossaryImportResult  {
     return try!  FfiConverterTypeFfiGlossaryImportResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -1099,6 +1123,19 @@ open func listCaptions(meetingId: String) -> [FfiCaptionEvent]  {
     return try!  FfiConverterSequenceTypeFfiCaptionEvent.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_list_captions(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Все версии финального транскрипта (новые первыми).
+     */
+open func listFinalTranscripts(meetingId: String) -> [FfiFinalTranscript]  {
+    return try!  FfiConverterSequenceTypeFfiFinalTranscript.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_list_final_transcripts(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(meetingId),uniffiCallStatus
     )
@@ -2619,6 +2656,31 @@ fileprivate struct FfiConverterSequenceTypeFfiCaptionEvent: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeFfiFinalTranscript: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiFinalTranscript]
+
+    public static func write(_ value: [FfiFinalTranscript], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiFinalTranscript.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiFinalTranscript] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiFinalTranscript]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiFinalTranscript.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeFfiGlossaryTerm: FfiConverterRustBuffer {
     typealias SwiftType = [FfiGlossaryTerm]
 
@@ -2801,6 +2863,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_get_final_transcript() != 22715) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_get_final_transcript_version() != 61839) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_import_glossary_csv() != 58875) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2814,6 +2879,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_captions() != 46525) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_final_transcripts() != 50011) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_glossary_terms() != 37764) {
