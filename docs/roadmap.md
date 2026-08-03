@@ -265,9 +265,11 @@ WhisperX даёт word-level alignment, который потребуется Ph
 читается абзацами; Compare показывает осмысленную разницу; проход
 запускается фоново, с прогрессом и отменой, и не блокирует приложение.
 
-План: `docs/superpowers/plans/2026-08-03-phase-10-final-v2.md`.
-Maps to: Epic 8, Epic 10. Status: **planned**; T2 блокирован двумя
-решениями — когда качать вторую модель и где гонять проход.
+План: `docs/superpowers/plans/2026-08-03-phase-10-final-v2.md`;
+решение — `docs/adr/ADR-011-post-call-re-asr.md`.
+Maps to: Epic 8, Epic 10, новый Epic 13. Status: **Rust готов и проверен
+(T1–T6, T8, T10); Swift написан, ждёт прогона (T9); backend WhisperX
+отложен (T7)**.
 
 ## Phase 11 — Speakers: атрибуция и диаризация
 
