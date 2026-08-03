@@ -63,7 +63,7 @@ final class MeetingDetectorTests: XCTestCase {
 @MainActor
 final class MeetingDetectorPollingTests: XCTestCase {
     func testRefreshPicksUpRunningMeetingApp() {
-        var running: [String] = ["com.apple.Safari"]
+        var running = ["com.apple.Safari"]
         let detector = MeetingDetector(runningBundleIds: { running })
 
         detector.refresh()

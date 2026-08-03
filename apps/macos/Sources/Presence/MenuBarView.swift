@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Содержимое пункта в строке меню (ТЗ редизайна §4.7).
@@ -12,32 +13,30 @@ struct MenuBarView: View {
     let onOpenWindow: () -> Void
 
     var body: some View {
-        Group {
-            if let detectedApp, !isRecording {
-                Text("\(detectedApp.displayName) is running")
-                Button("Record this meeting") {
-                    onToggleRecording()
-                }
-            }
-
-            Button(isRecording ? "Stop recording" : "Start recording") {
+        if let detectedApp, !isRecording {
+            Text("\(detectedApp.displayName) is running")
+            Button("Record this meeting") {
                 onToggleRecording()
             }
-            .keyboardShortcut("r", modifiers: [.command, .shift])
-
-            Divider()
-
-            Button("Open MeetingRaft") {
-                onOpenWindow()
-            }
-
-            Divider()
-
-            Button("Quit") {
-                NSApplication.shared.terminate(nil)
-            }
-            .keyboardShortcut("q")
         }
+
+        Button(isRecording ? "Stop recording" : "Start recording") {
+            onToggleRecording()
+        }
+        .keyboardShortcut("r", modifiers: [.command, .shift])
+
+        Divider()
+
+        Button("Open MeetingRaft") {
+            onOpenWindow()
+        }
+
+        Divider()
+
+        Button("Quit") {
+            NSApplication.shared.terminate(nil)
+        }
+        .keyboardShortcut("q")
     }
 }
 
