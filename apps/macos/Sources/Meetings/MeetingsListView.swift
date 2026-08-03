@@ -6,6 +6,8 @@ extension FfiMeetingSummary: Identifiable {}
 /// Библиотека встреч: список, поиск, переименование, удаление.
 struct MeetingsListView: View {
     @Bindable var viewModel: MeetingsViewModel
+    /// Нужен детали встречи для пересбора Final; список его не использует.
+    let core: MeetingCore
 
     @State private var renaming: FfiMeetingSummary?
     @State private var renameDraft = ""
@@ -31,7 +33,7 @@ struct MeetingsListView: View {
                 prompt: Text("Search transcripts and artifacts")
             )
             .navigationDestination(for: FfiMeetingSummary.self) { meeting in
-                MeetingDetailView(meeting: meeting, viewModel: viewModel)
+                MeetingDetailView(meeting: meeting, viewModel: viewModel, core: core)
             }
             .onAppear {
                 viewModel.reload()

@@ -41,7 +41,7 @@ struct AppShellView: View {
                     primaryLanguage: languageStore.primary
                 )
             case .meetings:
-                MeetingsListView(viewModel: meetingsViewModel)
+                MeetingsListView(viewModel: meetingsViewModel, core: core)
             case .glossary:
                 GlossaryView(
                     viewModel: glossaryViewModel,
