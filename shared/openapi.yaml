@@ -54,6 +54,19 @@ paths:
                 $ref: "#/components/schemas/Job"
         "404":
           description: Not found
+  /v1/models:
+    get:
+      summary: List configured LLM models
+      operationId: listModels
+      responses:
+        "200":
+          description: Model catalog (no provider secrets)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListModelsResponse"
+        "401":
+          description: Unauthorized
   /v1/artifacts/{artifact_id}:
     get:
       summary: Fetch artifact body
@@ -123,6 +136,9 @@ components:
         payload:
           type: object
           additionalProperties: true
+          description: >
+            Job-specific options. For brief/follow_up kinds, preferred keys:
+            provider_id, model, system, user.
     Job:
       type: object
       required: [id, meeting_id, kind, status, artifact_ids]
@@ -142,6 +158,24 @@ components:
           type: array
           items:
             type: string
+    LlmModelRef:
+      type: object
+      required: [provider_id, model]
+      properties:
+        provider_id:
+          type: string
+        model:
+          type: string
+        display_name:
+          type: string
+    ListModelsResponse:
+      type: object
+      required: [models]
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/LlmModelRef"
     Artifact:
       type: object
       required: [id, kind, body_markdown, created_at]
