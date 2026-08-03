@@ -1,7 +1,7 @@
 # Providers map & Meetings provenance — Design
 
 **Date:** 2026-08-02
-**Status:** Draft for implementation planning; LLM `backend` wired on `feat/artifacts-via-backend-jobs`
+**Status:** Implemented; LLM `backend`, `ollama` and `openai_compat` wired
 **Maps to:** ADR-003, ADR-005, ADR-007, ADR-008; Phase 6 local post-call
 **Approved approach:** B — full provider map in Settings «на вырост» + provenance on Meetings tabs
 
@@ -55,7 +55,7 @@ Session language (ADR-003) остаётся **над** Providers, не смеш�
 | **Live STT** | `mock` \| `whisper` (resolved by model file) | `{Application Support}/meetingraft/models/ggml-*.bin` | — | Status only; download via script |
 | **Post-call STT** | `local_final` \| `backend_whisperx` | — | `POST {apiBase}/v1/jobs` | Only `local_final` enabled; WhisperX disabled «скоро» |
 | **Translation** | `auto` \| `apple` \| `backend` \| `local_llm` \| `stub` \| `off` | — | `{translateBase}/v1/translate` for `backend` / `auto→backend` | Existing ADR-008 wiring |
-| **LLM (Brief/Follow-up)** | `builtin_templates` \| `backend` \| `ollama` \| `openai_compat` | model id e.g. `gemma2` | Backend `{apiBase}/v1`; Ollama `http://127.0.0.1:11434`; OpenAI-compat `{base}/v1` | `builtin_templates` и `backend` enabled; Ollama/OpenAI-compat disabled «скоро» |
+| **LLM (Brief/Follow-up)** | `builtin_templates` \| `backend` \| `ollama` \| `openai_compat` | model id e.g. `gemma2` | Backend `{apiBase}`; Ollama/OpenAI-compat e.g. `http://127.0.0.1:11434` | All four engines enabled; local engines call `/api/chat` or `/v1/chat/completions` |
 | **Data roots** | read-only | App Support root, models dir, DB path | — | Copyable paths |
 
 ### URL field rules
@@ -72,7 +72,8 @@ Session language (ADR-003) остаётся **над** Providers, не смеш�
 - `translateBaseUrl` — override для translation, если отдельный сервис; иначе = `apiBaseUrl`.
 - `llmBaseUrl` — Ollama / OpenAI-compat local; не путать с `apiBaseUrl`.
 
-В v1 UI: Translation уже имеет `backendBaseUrl`; LLM URL fields появляются когда engine станет enabled.
+В v1 UI: Translation имеет `backendBaseUrl`; для enabled `ollama` и
+`openai_compat` показываются shared `llmBaseUrl` и model id.
 
 ## Architecture boundaries
 
@@ -103,8 +104,8 @@ Providers
 │ → POST {base}/v1/translate            │
 └───────────────────────────────────────┘
 ┌ LLM (Brief / Follow-up) ──────────────┐
-│ Engine: [ builtin_templates / backend ▾ ] │
-│ ollama / openai_compat — скоро        │
+│ Engine: [ builtin / backend / ollama / openai_compat ▾ ] │
+│ Local: Base URL + model id             │
 └───────────────────────────────────────┘
 ┌ Data roots ───────────────────────────┐
 │ App Support: …/meetingraft            │

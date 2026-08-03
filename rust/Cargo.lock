@@ -897,6 +897,10 @@ name = "meetingraft-postcall"
 version = "0.1.0"
 dependencies = [
  "meetingraft-domain",
+ "mockito",
+ "reqwest",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -930,7 +934,6 @@ dependencies = [
 name = "meetingraft-sync"
 version = "0.1.0"
 dependencies = [
- "meetingraft-domain",
  "mockito",
  "reqwest",
  "serde",

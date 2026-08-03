@@ -298,15 +298,17 @@ final class MeetingsViewModelTests: XCTestCase {
         viewModel.applyProviderConfig(
             apiBaseUrl: "http://localhost:8080",
             apiToken: "test-token",
-            llmEngineCode: "backend",
-            llmModelId: "gpt-test"
+            llmEngineCode: "ollama",
+            llmModelId: "gemma2",
+            llmBaseUrl: "http://127.0.0.1:11434"
         )
         viewModel.generate(meetingId: "meeting-1", kind: .brief)
 
         XCTAssertEqual(core.apiBaseUrl, "http://localhost:8080")
         XCTAssertEqual(core.apiToken, "test-token")
-        XCTAssertEqual(core.llmEngineCode, "backend")
-        XCTAssertEqual(core.llmModelId, "gpt-test")
+        XCTAssertEqual(core.lastLlmEngineCode, "ollama")
+        XCTAssertEqual(core.lastLlmModelId, "gemma2")
+        XCTAssertEqual(core.lastLlmBaseUrl, "http://127.0.0.1:11434")
         XCTAssertEqual(viewModel.selectedArtifact, generated)
     }
 
@@ -367,8 +369,9 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
     private(set) var getBackendArtifactCallCount = 0
     private(set) var apiBaseUrl = ""
     private(set) var apiToken = ""
-    private(set) var llmEngineCode = ""
-    private(set) var llmModelId = ""
+    private(set) var lastLlmEngineCode = ""
+    private(set) var lastLlmModelId = ""
+    private(set) var lastLlmBaseUrl = ""
     private(set) var lastUpsertId: String?
     private(set) var lastUpsertDisplayName: String?
     private(set) var lastUpsertSortIndex: Int64?
@@ -473,9 +476,10 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
         apiToken = token
     }
 
-    func setLlmConfig(engineCode: String, modelId: String) {
-        llmEngineCode = engineCode
-        llmModelId = modelId
+    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String) {
+        lastLlmEngineCode = engineCode
+        lastLlmModelId = modelId
+        lastLlmBaseUrl = baseUrl
     }
 
     func submitBackendJob(meetingId _: String, kindCode _: String) -> FfiBackendJob {

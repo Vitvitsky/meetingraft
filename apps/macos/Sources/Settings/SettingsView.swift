@@ -119,17 +119,15 @@ struct SettingsView: View {
                         Text(engine.pickerLabel).tag(engine)
                     }
                 }
-                Text("Builtin templates локально; Backend — jobs brief/follow_up (stub). Ollama — скоро.")
+                Text("Builtin templates локально; Ollama / OpenAI-compatible — локальный HTTP; Backend — jobs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if providerStore.llmEngine.needsUrl {
                     TextField("LLM base URL", text: Bindable(providerStore).llmBaseUrl)
                         .textFieldStyle(.roundedBorder)
-                        .disabled(!providerStore.llmEngine.isAvailable)
                     TextField("Model id", text: Bindable(providerStore).llmModelId)
                         .textFieldStyle(.roundedBorder)
-                        .disabled(!providerStore.llmEngine.isAvailable)
-                    Text("Ollama / OpenAI-compat — скоро")
+                    Text("Ollama: /api/chat · OpenAI-compatible: /v1/chat/completions")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -166,6 +164,9 @@ struct SettingsView: View {
         .onChange(of: providerStore.llmModelId) { _, _ in
             applyApiConfig()
         }
+        .onChange(of: providerStore.llmBaseUrl) { _, _ in
+            applyApiConfig()
+        }
     }
 
     private var liveSttEngineLabel: String {
@@ -188,7 +189,8 @@ struct SettingsView: View {
         core?.setApiConfig(baseUrl: providerStore.apiBaseUrl, token: providerStore.apiToken)
         core?.setLlmConfig(
             engineCode: providerStore.llmEngine.rawValue,
-            modelId: providerStore.llmModelId
+            modelId: providerStore.llmModelId,
+            baseUrl: providerStore.llmBaseUrl
         )
     }
 

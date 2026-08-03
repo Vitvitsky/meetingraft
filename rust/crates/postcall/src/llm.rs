@@ -5,6 +5,12 @@ use thiserror::Error;
 pub enum LlmError {
     #[error("LLM-клиент не настроен")]
     NotConfigured,
+    #[error("LLM-провайдер вернул HTTP {status}: {body}")]
+    Http { status: u16, body: String },
+    #[error("LLM-провайдер вернул пустой ответ")]
+    EmptyResponse,
+    #[error("Ошибка транспорта LLM: {0}")]
+    Transport(String),
 }
 
 /// Заменяемая граница для будущих Ollama, LM Studio или Gemma.
