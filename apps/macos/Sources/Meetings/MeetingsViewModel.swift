@@ -1,4 +1,16 @@
+import Foundation
 import Observation
+
+/// Ошибка экспорта markdown (Swift Result требует Error, не String).
+struct MarkdownExportFailure: Error, Equatable {
+    let message: String
+}
+
+/// Результат экспорта markdown в папку.
+struct MarkdownExportResult: Equatable {
+    var writtenFileNames: [String]
+    var folderPath: String
+}
 
 /// Контракт истории встреч для presentation model и тестов.
 protocol MeetingsCoreProviding: AnyObject {
@@ -41,6 +53,7 @@ final class MeetingsViewModel {
     private(set) var backendJobStatus: BackendRefineStatus = .idle
     private(set) var backendJobId = ""
     private(set) var backendArtifactMarkdown = ""
+    private(set) var exportStatusMessage = ""
 
     private let core: any MeetingsCoreProviding
     private var backendRefineTask: Task<Void, Never>?
@@ -146,6 +159,82 @@ final class MeetingsViewModel {
 
     func dismissError() {
         errorMessage = nil
+    }
+
+    func exportMarkdown(
+        meetingId: String,
+        startedAtMs: UInt64,
+        folderURL: URL
+    ) -> Result<MarkdownExportResult, MarkdownExportFailure> {
+        let transcript = core.getFinalTranscript(meetingId: meetingId)
+        guard !transcript.meetingId.isEmpty else {
+            let message = "Нужен Final transcript"
+            exportStatusMessage = message
+            return .failure(MarkdownExportFailure(message: message))
+        }
+
+        var writtenFileNames: [String] = []
+        do {
+            let finalName = MarkdownExport.fileName(
+                startedAtMs: startedAtMs,
+                meetingId: meetingId,
+                kind: .final
+            )
+            _ = try MarkdownExport.write(
+                folderURL: folderURL,
+                fileName: finalName,
+                body: transcript.bodyMarkdown
+            )
+            writtenFileNames.append(finalName)
+
+            let artifacts = core.listArtifacts(meetingId: meetingId)
+            if let latestBrief = artifacts
+                .filter({ $0.kind == .brief })
+                .max(by: { $0.createdAtMs < $1.createdAtMs })
+            {
+                let briefName = MarkdownExport.fileName(
+                    startedAtMs: startedAtMs,
+                    meetingId: meetingId,
+                    kind: .brief
+                )
+                _ = try MarkdownExport.write(
+                    folderURL: folderURL,
+                    fileName: briefName,
+                    body: latestBrief.bodyMarkdown
+                )
+                writtenFileNames.append(briefName)
+            }
+            if let latestFollowUp = artifacts
+                .filter({ $0.kind == .followUp })
+                .max(by: { $0.createdAtMs < $1.createdAtMs })
+            {
+                let followUpName = MarkdownExport.fileName(
+                    startedAtMs: startedAtMs,
+                    meetingId: meetingId,
+                    kind: .followUp
+                )
+                _ = try MarkdownExport.write(
+                    folderURL: folderURL,
+                    fileName: followUpName,
+                    body: latestFollowUp.bodyMarkdown
+                )
+                writtenFileNames.append(followUpName)
+            }
+
+            let folderPath = folderURL.path
+            let count = writtenFileNames.count
+            let message = "Exported \(count) file\(count == 1 ? "" : "s") → \(folderPath)"
+            exportStatusMessage = message
+            return .success(
+                MarkdownExportResult(
+                    writtenFileNames: writtenFileNames,
+                    folderPath: folderPath
+                )
+            )
+        } catch {
+            exportStatusMessage = error.localizedDescription
+            return .failure(MarkdownExportFailure(message: error.localizedDescription))
+        }
     }
 
     private func finishSpeakerMutation(error: String, meetingId: String) {

@@ -166,7 +166,7 @@ func testExportMarkdownWritesFinalAndLatestArtifacts() throws {
 
     let result = vm.exportMarkdown(
         meetingId: "abcd1234-rest",
-        startedAtMs: 1_754_179_200_000,
+        startedAtMs: 1_785_715_200_000,
         folderURL: dir
     )
     guard case let .success(ok) = result else { return XCTFail("\(result)") }
