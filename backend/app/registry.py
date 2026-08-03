@@ -45,9 +45,8 @@ def load_registry() -> Registry:
     providers_file = os.environ.get("LLM_PROVIDERS_FILE", "").strip()
     if providers_file:
         path = Path(providers_file)
-        if not path.is_file():
-            raise RegistryError(f"Файл реестра не найден: {providers_file}")
-        return _parse_providers_json(path.read_text(encoding="utf-8"), source="file")
+        if path.is_file():
+            return _parse_providers_json(path.read_text(encoding="utf-8"), source="file")
 
     base_url = os.environ.get("LLM_BASE_URL", "").strip()
     if base_url:

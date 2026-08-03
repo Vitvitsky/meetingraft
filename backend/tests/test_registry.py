@@ -181,3 +181,16 @@ def test_unknown_provider_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_MODEL", "m")
     with pytest.raises(RegistryError):
         provider_settings(load_registry(), "nope")
+
+
+def test_missing_providers_file_falls_through_to_compat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PROVIDERS_JSON", raising=False)
+    monkeypatch.setenv("LLM_PROVIDERS_FILE", "/nonexistent/providers.json")
+    monkeypatch.setenv("LLM_BASE_URL", "http://llm.test/")
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("LLM_MODEL", "Google/gemma")
+    registry = load_registry()
+    assert registry.source == "env_compat"
+    assert registry.providers[0].id == "default"
