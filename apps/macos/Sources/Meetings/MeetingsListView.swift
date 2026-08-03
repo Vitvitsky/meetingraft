@@ -19,13 +19,18 @@ struct MeetingsListView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
+            VStack(spacing: 0) {
+                if !isSearchActive {
+                    filterBar
+                    Divider().overlay(Theme.borderSubtle)
+                }
                 if isSearchActive {
                     searchResults
                 } else {
                     meetingList
                 }
             }
+            .background(Theme.surfaceRoot)
             .navigationTitle("Meetings")
             .searchable(
                 text: $viewModel.query,
@@ -66,8 +71,37 @@ struct MeetingsListView: View {
         }
     }
 
+    /// Фильтры — строка чипов над списком, а не отдельная колонка.
+    ///
+    /// ТЗ рисует Meetings как самостоятельное окно из трёх колонок, но у
+    /// нас первая колонка уже занята навигацией приложения. Ещё один
+    /// сайдбар дал бы четыре колонки и сжал бы содержимое; счёт колонок
+    /// в итоге тот же — навигация, список, деталь.
+    private var filterBar: some View {
+        HStack(spacing: Theme.Space.xs) {
+            ForEach(MeetingsFilter.allCases) { item in
+                let count = viewModel.count(for: item)
+                Button {
+                    viewModel.filter = item
+                } label: {
+                    Chip(
+                        text: count > 0 ? "\(item.title) \(count)" : item.title,
+                        isSelected: viewModel.filter == item
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(count == 0 && item != .all)
+                .opacity(count == 0 && item != .all ? 0.4 : 1)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, Theme.Space.md)
+        .padding(.vertical, Theme.Space.xs)
+        .background(Theme.surface)
+    }
+
     private var meetingList: some View {
-        List(viewModel.meetings, id: \.id) { meeting in
+        List(viewModel.filteredMeetings(), id: \.id) { meeting in
             NavigationLink(value: meeting) {
                 meetingRow(meeting)
             }
@@ -110,29 +144,30 @@ struct MeetingsListView: View {
     }
 
     private func meetingRow(_ meeting: FfiMeetingSummary) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
             Text(viewModel.displayTitle(for: meeting))
-                .font(.headline)
+                .font(Theme.Text.bodyLarge)
+                .foregroundStyle(Theme.textPrimary)
                 .lineLimit(1)
 
-            HStack(spacing: 8) {
+            HStack(spacing: Theme.Space.xs) {
                 Text(meetingDate(meeting.startedAtMs))
+                    .font(Theme.Text.bodySmall)
+                    .foregroundStyle(Theme.textTertiary)
                 if let duration = viewModel.duration(for: meeting) {
-                    Text("·")
                     Text(duration.formatted(.time(pattern: .hourMinute)))
+                        .font(Theme.Text.mono(size: 11))
+                        .foregroundStyle(Theme.textTertiary)
                 }
                 if meeting.hasFinal {
-                    Label("Final", systemImage: "checkmark.seal.fill")
-                        .foregroundStyle(.green)
+                    StatusBadge(text: "Final", kind: .success)
                 }
                 if meeting.artifactCount > 0 {
-                    Label("\(meeting.artifactCount)", systemImage: "doc.text.fill")
+                    Chip(text: "\(meeting.artifactCount)")
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, Theme.Space.xxs)
     }
 
     private func searchRow(_ hit: FfiSearchHit, meeting: FfiMeetingSummary?) -> some View {
