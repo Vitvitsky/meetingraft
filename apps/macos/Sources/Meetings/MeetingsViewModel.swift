@@ -174,18 +174,20 @@ final class MeetingsViewModel {
         }
 
         var writtenFileNames: [String] = []
+        var writtenURLs: [URL] = []
         do {
             let finalName = MarkdownExport.fileName(
                 startedAtMs: startedAtMs,
                 meetingId: meetingId,
                 kind: .final
             )
-            _ = try MarkdownExport.write(
+            let finalURL = try MarkdownExport.write(
                 folderURL: folderURL,
                 fileName: finalName,
                 body: transcript.bodyMarkdown
             )
             writtenFileNames.append(finalName)
+            writtenURLs.append(finalURL)
 
             let artifacts = core.listArtifacts(meetingId: meetingId)
             if let latestBrief = artifacts
@@ -197,12 +199,13 @@ final class MeetingsViewModel {
                     meetingId: meetingId,
                     kind: .brief
                 )
-                _ = try MarkdownExport.write(
+                let briefURL = try MarkdownExport.write(
                     folderURL: folderURL,
                     fileName: briefName,
                     body: latestBrief.bodyMarkdown
                 )
                 writtenFileNames.append(briefName)
+                writtenURLs.append(briefURL)
             }
             if let latestFollowUp = artifacts
                 .filter({ $0.kind == .followUp })
@@ -213,12 +216,13 @@ final class MeetingsViewModel {
                     meetingId: meetingId,
                     kind: .followUp
                 )
-                _ = try MarkdownExport.write(
+                let followUpURL = try MarkdownExport.write(
                     folderURL: folderURL,
                     fileName: followUpName,
                     body: latestFollowUp.bodyMarkdown
                 )
                 writtenFileNames.append(followUpName)
+                writtenURLs.append(followUpURL)
             }
 
             let folderPath = folderURL.path
@@ -232,6 +236,10 @@ final class MeetingsViewModel {
                 )
             )
         } catch {
+            // При ошибке I/O откатываем файлы, уже записанные в этой попытке экспорта.
+            for url in writtenURLs {
+                try? FileManager.default.removeItem(at: url)
+            }
             exportStatusMessage = error.localizedDescription
             return .failure(MarkdownExportFailure(message: error.localizedDescription))
         }

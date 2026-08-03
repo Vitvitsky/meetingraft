@@ -305,12 +305,7 @@ struct MeetingDetailView: View {
     }
 
     private func chooseExportFolderAndExport() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Export"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = DirectoryPicker.chooseDirectory(prompt: "Export") else { return }
         providerStore.exportFolderPath = url.path
         exportMarkdown(to: url)
     }

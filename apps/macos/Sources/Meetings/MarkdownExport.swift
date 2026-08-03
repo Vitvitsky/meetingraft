@@ -28,7 +28,11 @@ enum MarkdownExport {
         cal.timeZone = timeZone
         let date = Date(timeIntervalSince1970: TimeInterval(startedAtMs) / 1000)
         let components = cal.dateComponents([.year, .month, .day], from: date)
-        let datePart = String(format: "%04d-%02d-%02d", components.year!, components.month!, components.day!)
+        let datePart = if let year = components.year, let month = components.month, let day = components.day {
+            String(format: "%04d-%02d-%02d", year, month, day)
+        } else {
+            "unknown-date"
+        }
         return "\(datePart)-\(shortId(meetingId: meetingId))-\(kind.rawValue).md"
     }
 

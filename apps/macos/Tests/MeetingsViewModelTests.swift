@@ -329,6 +329,34 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: finalURL, encoding: .utf8), "# Final body")
     }
 
+    func testExportMarkdownWritesOnlyFinalWhenNoArtifacts() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mr-vm-export-final-only-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcript = FfiFinalTranscript(
+            meetingId: "abcd1234-rest",
+            version: 1,
+            bodyMarkdown: "# Final only",
+            createdAtMs: 1
+        )
+        let core = MeetingsCoreSpy(finalTranscript: transcript, artifacts: [])
+        let vm = MeetingsViewModel(core: core)
+
+        let result = vm.exportMarkdown(
+            meetingId: "abcd1234-rest",
+            startedAtMs: 1_785_715_200_000,
+            folderURL: dir
+        )
+
+        guard case let .success(ok) = result else {
+            return XCTFail("\(result)")
+        }
+        XCTAssertEqual(ok.writtenFileNames.count, 1)
+        XCTAssertTrue(ok.writtenFileNames[0].contains("final"))
+        let finalURL = dir.appendingPathComponent(ok.writtenFileNames[0])
+        XCTAssertEqual(try String(contentsOf: finalURL, encoding: .utf8), "# Final only")
+    }
+
     func testExportMarkdownFailsWithoutFinal() {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("mr-vm-export-empty-\(UUID().uuidString)", isDirectory: true)

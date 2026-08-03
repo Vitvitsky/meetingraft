@@ -212,14 +212,8 @@ struct SettingsView: View {
     }
 
     private func chooseExportFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        if panel.runModal() == .OK, let url = panel.url {
-            providerStore.exportFolderPath = url.path
-        }
+        guard let url = DirectoryPicker.chooseDirectory(prompt: "Choose") else { return }
+        providerStore.exportFolderPath = url.path
     }
 
     private func testApiConnection() {
