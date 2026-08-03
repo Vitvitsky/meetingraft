@@ -121,11 +121,14 @@ impl WhisperSttEngine {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
-        // Тайм-коды нужны для обрезки буфера, контекст — для связности
-        // между итерациями (LocalAgreement, ADR-010).
+        // Тайм-коды нужны для обрезки буфера.
         params.set_single_segment(false);
-        params.set_no_context(false);
         params.set_token_timestamps(true);
+        // Контекст между итерациями НЕ переносим: на коротком буфере
+        // Whisper пересказывает промпт, и зафиксированный текст возвращался
+        // бы как новая гипотеза — одна фраза повторялась бы бесконечно
+        // (ADR-010, раздел «Откат»).
+        params.set_no_context(true);
         params.set_suppress_blank(true);
         params.set_temperature(0.0);
         // Документация whisper-rs: no_speech_thold historically stub — всё равно
@@ -186,27 +189,14 @@ impl WhisperSttEngine {
         words
     }
 
-    /// Глоссарий плюс хвост зафиксированного текста.
-    ///
-    /// Порядок важен: термины должны пережить обрезку по длине промпта,
-    /// поэтому контекст добавляется после них.
-    fn decoding_prompt(&self) -> String {
-        let tail = self.agreement.committed_tail();
-        match (self.initial_prompt.is_empty(), tail.is_empty()) {
-            (true, true) => String::new(),
-            (true, false) => tail,
-            (false, true) => self.initial_prompt.clone(),
-            (false, false) => format!("{} {tail}", self.initial_prompt),
-        }
-    }
-
     /// Прогнать текущий буфер через переиспользуемое состояние.
     fn current_hypothesis(&mut self) -> Vec<HypothesisWord> {
         if self.state.is_none() {
             self.state = self.ctx.create_state().ok();
         }
         let language = self.policy.primary.code();
-        let prompt = self.decoding_prompt();
+        // Только глоссарий: зафиксированный текст в промпт не идёт.
+        let prompt = self.initial_prompt.clone();
         let special_token_floor = self.ctx.token_eot();
         // Расщепление заимствований по полям: state — мутабельно,
         // buffer — нет.

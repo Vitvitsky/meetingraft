@@ -70,9 +70,6 @@ pub struct LocalAgreement {
     /// Потолок неустойчивого хвоста: если согласие не наступает, фиксируем
     /// принудительно, иначе латентность уходит в бесконечность.
     max_pending_words: usize,
-    /// Хвост зафиксированного текста — контекст для декодирования.
-    committed_tail: Vec<String>,
-    max_tail_words: usize,
 }
 
 impl LocalAgreement {
@@ -80,8 +77,6 @@ impl LocalAgreement {
         Self {
             previous: Vec::new(),
             max_pending_words: max_pending_words.max(1),
-            committed_tail: Vec::new(),
-            max_tail_words: 32,
         }
     }
 
@@ -104,7 +99,6 @@ impl LocalAgreement {
         let committed_text = join_words(&committed);
         let pending_text = join_words(&pending);
 
-        self.remember_tail(&committed);
         self.previous = pending;
 
         Stabilized {
@@ -122,7 +116,6 @@ impl LocalAgreement {
         }
         let committed_until_ms = remaining.last().map(|word| word.end_ms);
         let committed_text = join_words(&remaining);
-        self.remember_tail(&remaining);
         Stabilized {
             committed_text,
             pending_text: String::new(),
@@ -137,25 +130,9 @@ impl LocalAgreement {
         }
     }
 
-    /// Хвост зафиксированного текста для контекста декодирования.
-    pub fn committed_tail(&self) -> String {
-        self.committed_tail.join(" ")
-    }
-
-    /// Новый сегмент речи: прошлый контекст не переносим.
+    /// Новый сегмент речи.
     pub fn reset(&mut self) {
         self.previous.clear();
-        self.committed_tail.clear();
-    }
-
-    fn remember_tail(&mut self, words: &[HypothesisWord]) {
-        for word in words {
-            self.committed_tail.push(word.text.clone());
-        }
-        if self.committed_tail.len() > self.max_tail_words {
-            let excess = self.committed_tail.len() - self.max_tail_words;
-            self.committed_tail.drain(0..excess);
-        }
     }
 }
 
@@ -440,23 +417,12 @@ mod tests {
     }
 
     #[test]
-    fn committed_tail_feeds_decoding_context() {
+    fn reset_drops_pending_of_the_previous_segment() {
         let mut agreement = LocalAgreement::new(16);
-        agreement.push(words(&[("первое", 100), ("слово", 200)]));
-        agreement.push(words(&[("первое", 100), ("слово", 200), ("дальше", 300)]));
-
-        assert_eq!(agreement.committed_tail(), "первое слово");
-    }
-
-    #[test]
-    fn reset_drops_context_of_the_previous_segment() {
-        let mut agreement = LocalAgreement::new(16);
-        agreement.push(words(&[("старое", 100)]));
         agreement.push(words(&[("старое", 100), ("ещё", 200)]));
 
         agreement.reset();
 
-        assert!(agreement.committed_tail().is_empty());
         assert!(agreement.flush().is_empty());
     }
 }
