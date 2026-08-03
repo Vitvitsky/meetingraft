@@ -96,6 +96,7 @@ The backend handles long-running and heavy post-call processing.
 | Final caption after segment end | ≤ 5.0 s |
 | Session start with warm model | ≤ 3 s |
 | Cold model load (first run) | ≤ 15 s |
+| Фиксация final после согласия двух гипотез | ≤ 1 шаг инференса (~1 s) |
 
 Budgets are measured in roadmap Phase 4 on real meetings; regressions block
 the phase exit. VAD window tuning (ADR-005) is the primary latency lever.

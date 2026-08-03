@@ -49,3 +49,24 @@ targets:
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../../rust/target/debug"
         OTHER_SWIFT_FLAGS: -Xcc -fmodule-map-file=$(SRCROOT)/Generated/meetingraft_ffiFFI.modulemap
         HEADER_SEARCH_PATHS: $(SRCROOT)/Generated
+schemes:
+  MeetingRaft:
+    # Схема описана явно, иначе после xcodegen generate её в проекте нет:
+    # Xcode создаёт свою в xcuserdata, которая не попадает в репозиторий,
+    # и `xcodebuild -scheme` на чистом клоне падает.
+    build:
+      targets:
+        MeetingRaft: all
+        MeetingRaftTests: [test]
+    run:
+      config: Debug
+      # Замеры латентности STT (ADR-010). Выключено по умолчанию —
+      # включается галочкой в Edit Scheme → Run → Arguments.
+      environmentVariables:
+        - variable: MEETINGRAFT_STT_TIMING
+          value: "1"
+          isEnabled: false
+    test:
+      config: Debug
+      targets:
+        - MeetingRaftTests

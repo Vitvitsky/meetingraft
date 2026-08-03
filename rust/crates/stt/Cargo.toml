@@ -5,13 +5,25 @@ edition.workspace = true
 
 [features]
 default = []
-# On-device Whisper (Metal). Включать при локальной сборке macOS / generate-ffi.
+# On-device Whisper. Включать при локальной сборке macOS / generate-ffi.
 whisper = ["dep:whisper-rs"]
 
 [dependencies]
 meetingraft-domain = { path = "../domain" }
 uuid = { version = "1", features = ["v4"] }
-whisper-rs = { version = "0.16", optional = true, default-features = false, features = ["metal"] }
+
+# Ускоритель выбирается по платформе, а не по фиче: Metal существует только
+# на Apple, и без этого разделения крейт с `--features whisper` вообще не
+# собирается на Linux — то есть движок нельзя даже проверить компилятором
+# вне Mac.
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", optional = true, default-features = false, features = [
+    "metal",
+] }
+
+# CPU-сборка whisper.cpp. Требует cmake в системе.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+whisper-rs = { version = "0.16", optional = true, default-features = false }
 
 [lib]
 name = "stt"
