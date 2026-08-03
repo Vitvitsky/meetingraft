@@ -65,6 +65,13 @@ The backend handles long-running and heavy post-call processing.
 - receive partial and final subtitle events
 - persist live caption events
 
+### Speakers
+- спикер по умолчанию на канал: `mic` — владелец машины, `system` —
+  собеседник; для звонка один на один этого достаточно
+- имя задаётся один раз и расходится по всем репликам канала
+- отдельную реплику можно переназначить, не ломая остальные
+- кластеризация голосов внутри системного канала отложена (ADR-012)
+
 ### Post-call processing
 - **re-ASR**: сохранённые PCM-чанки распознаются заново большой моделью,
   дорожки — раздельно, поэтому канал сегмента известен точно (ADR-011)
@@ -73,6 +80,9 @@ The backend handles long-running and heavy post-call processing.
 - сегменты живут в `final_segments`; `body_markdown` — производный рендер
 - проход идёт фоновым джобом с прогрессом и отменой, уступая записи
 - пословная диффа Live против Final для вкладки Compare
+- атрибуция говорящих по каналам (ADR-012): спикер заводится на канал,
+  назначается массово и правится точечно; ручная правка переживает
+  переназначение канала
 - upload or finalize raw audio artifact
 - assign speakers
 - generate artifacts from templates: built-in (brief, follow-up email,
