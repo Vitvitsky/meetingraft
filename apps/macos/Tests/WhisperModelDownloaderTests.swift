@@ -183,4 +183,19 @@ final class WhisperModelDownloaderTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    func testDownloadPreservesHTTPStatusOnTransportFailure() async {
+        let downloader = WhisperModelDownloader(downloadTransport: { _, _ in
+            throw WhisperModelDownloaderError.downloadFailed(statusCode: 404)
+        })
+
+        do {
+            _ = try await downloader.download(id: .base, modelsDirectory: tempDir) { _ in }
+            XCTFail("Expected downloadFailed")
+        } catch WhisperModelDownloaderError.downloadFailed(statusCode: 404) {
+            // ok
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
 }

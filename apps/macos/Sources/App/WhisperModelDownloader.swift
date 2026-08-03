@@ -84,6 +84,9 @@ struct WhisperModelDownloader: WhisperDownloading {
 
         do {
             try await downloadTransport(sourceURL, partial)
+        } catch let error as WhisperModelDownloaderError {
+            try? fileManager.removeItem(at: partial)
+            throw error
         } catch {
             try? fileManager.removeItem(at: partial)
             throw WhisperModelDownloaderError.downloadFailed(statusCode: nil)
