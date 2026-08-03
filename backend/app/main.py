@@ -11,7 +11,8 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-from app.llm import LlmError, complete_chat, load_llm_settings
+from app.llm import LlmError, complete_chat
+from app.registry import RegistryError, load_registry, provider_settings, public_models
 
 app = FastAPI(title="MeetingRaft Backend", version="0.1.0")
 security = HTTPBearer(auto_error=False)
@@ -48,6 +49,12 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
+@app.get("/v1/models", dependencies=[Depends(require_bearer)])
+def list_models() -> dict[str, Any]:
+    """Публичный каталог моделей из реестра (без секретов)."""
+    return {"models": public_models(load_registry())}
+
+
 @app.post("/v1/jobs", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_bearer)])
 def create_job(body: CreateJobRequest) -> dict[str, Any]:
     for lang in body.allowed_languages:
@@ -56,14 +63,25 @@ def create_job(body: CreateJobRequest) -> dict[str, Any]:
 
     job_id = str(uuid.uuid4())
     created_at = datetime.now(UTC).isoformat()
-    settings = load_llm_settings()
+    registry = load_registry()
+    llm_ready = any(provider.base_url for provider in registry.providers)
 
-    if body.kind in {"brief", "follow_up"} and settings.base_url:
+    if body.kind in {"brief", "follow_up"} and llm_ready:
         payload = body.payload or {}
         model = payload.get("model", "")
         system = payload.get("system")
         user = payload.get("user")
         try:
+            raw_provider = payload.get("provider_id")
+            if raw_provider is None or raw_provider == "":
+                if registry.source == "env_compat":
+                    provider_id = "default"
+                else:
+                    raise LlmError("Не указан provider_id")
+            else:
+                provider_id = str(raw_provider)
+
+            settings = provider_settings(registry, provider_id)
             if not isinstance(model, str):
                 raise LlmError("Модель LLM должна быть строкой")
             if not isinstance(system, str) or not system.strip():
@@ -76,7 +94,7 @@ def create_job(body: CreateJobRequest) -> dict[str, Any]:
                 system=system,
                 user=user,
             )
-        except LlmError as error:
+        except (LlmError, RegistryError) as error:
             job = {
                 "id": job_id,
                 "meeting_id": body.meeting_id,
