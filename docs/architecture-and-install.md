@@ -328,6 +328,9 @@ Obsidian укажите путь к vault или подпапке; HTTP API и c
 
 ### 2.7 Проверка тестами
 
+Проверки — **локально** (автозапуск GitHub Actions отключён; workflow только
+`workflow_dispatch` в `.github/workflows/ci.yml`):
+
 ```bash
 # Rust
 cd rust && cargo test && cargo fmt --check && cargo clippy --all-targets -- -D warnings
@@ -340,8 +343,6 @@ cd apps/macos && xcodegen generate
 xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft \
   -configuration Debug test CODE_SIGNING_ALLOWED=NO
 ```
-
-CI: `.github/workflows/ci.yml` (rust + macos + backend).
 
 Локально перед push: `pre-commit install` (один раз) и/или
 `pre-commit run --all-files` — см. `.pre-commit-config.yaml` и `AGENTS.md`.

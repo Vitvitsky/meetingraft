@@ -1,9 +1,9 @@
+# GitHub Actions CI отключён для автозапуска (billing / локальная проверка).
+# При необходимости: Actions → CI → Run workflow.
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   rust:

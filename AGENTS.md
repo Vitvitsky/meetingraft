@@ -97,7 +97,9 @@ A feature is not done until:
   разовый прогон `pre-commit run --all-files`. Хуки: `cargo fmt --check`,
   `swiftformat Sources Tests --lint`, `ruff` для `backend/`. Clippy / полный
   `cargo test` / `xcodebuild` — только в CI.
-- CI: `.github/workflows/ci.yml` — fmt, clippy, cargo test, xcodebuild build+test
+- CI: автозапуск GitHub Actions отключён (`workflow_dispatch` only в
+  `.github/workflows/ci.yml`). Проверки — локально: команды выше +
+  `pre-commit run --all-files`
 - UniFFI + Xcode project (из корня репо): `apps/macos/Scripts/generate-ffi.sh`
   (dylib → `rust/target/debug`, биндинги → `apps/macos/Generated/`, затем
   `xcodegen generate` в `apps/macos/`)
