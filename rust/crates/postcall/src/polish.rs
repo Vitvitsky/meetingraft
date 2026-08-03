@@ -180,6 +180,7 @@ mod tests {
             end_ms: u64::from(index) * 1000 + 900,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
+            speaker_pinned: false,
             text: text.to_string(),
         }
     }

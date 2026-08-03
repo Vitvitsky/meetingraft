@@ -24,6 +24,12 @@ pub enum AudioManifestError {
     MeetingNotFound(String),
     #[error("meeting is being recorded: {0}")]
     SessionActive(String),
+    #[error("segment not found: {meeting_id} v{version} #{index}")]
+    SegmentNotFound {
+        meeting_id: String,
+        version: u32,
+        index: u32,
+    },
     #[error("chunk {path} truncated: expected {expected_frames} frames, got {actual_frames}")]
     ChunkTruncated {
         path: String,
@@ -496,8 +502,9 @@ impl AudioManifestStore {
         {
             let mut statement = transaction.prepare(
                 "INSERT INTO final_segments
-                 (meeting_id, version, idx, start_ms, end_ms, channel, speaker_id, text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (meeting_id, version, idx, start_ms, end_ms, channel, speaker_id,
+                  speaker_pinned, text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for segment in segments {
                 statement.execute(params![
@@ -508,6 +515,7 @@ impl AudioManifestStore {
                     segment.end_ms as i64,
                     segment.channel.code(),
                     segment.speaker_id,
+                    segment.speaker_pinned,
                     segment.text
                 ])?;
             }
@@ -523,7 +531,7 @@ impl AudioManifestStore {
         version: u32,
     ) -> Result<Vec<FinalSegment>, AudioManifestError> {
         let mut statement = self.conn.prepare(
-            "SELECT idx, start_ms, end_ms, channel, speaker_id, text
+            "SELECT idx, start_ms, end_ms, channel, speaker_id, speaker_pinned, text
              FROM final_segments
              WHERE meeting_id = ?1 AND version = ?2
              ORDER BY idx",
@@ -536,10 +544,77 @@ impl AudioManifestStore {
                 end_ms: row.get::<_, i64>(2)? as u64,
                 channel: AudioChannel::from_code(&channel),
                 speaker_id: row.get(4)?,
-                text: row.get(5)?,
+                speaker_pinned: row.get(5)?,
+                text: row.get(6)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Назначить спикера всем сегментам канала.
+    ///
+    /// Основная операция фазы: после Phase 8 канал `mic` — это владелец
+    /// машины, `system` — остальные, поэтому для звонка один на один
+    /// одного вызова достаточно, чтобы весь транскрипт стал подписанным.
+    ///
+    /// Сегменты с ручной правкой не трогаются: иначе человек терял бы
+    /// свои исправления при каждом переназначении, ничего об этом не
+    /// узнав.
+    pub fn set_channel_speaker(
+        &mut self,
+        meeting_id: &str,
+        version: u32,
+        channel: AudioChannel,
+        speaker_id: &str,
+    ) -> Result<u64, AudioManifestError> {
+        let updated = self.conn.execute(
+            "UPDATE final_segments
+             SET speaker_id = ?4
+             WHERE meeting_id = ?1 AND version = ?2 AND channel = ?3
+               AND speaker_pinned = 0",
+            params![meeting_id, version, channel.code(), speaker_id],
+        )?;
+        Ok(updated as u64)
+    }
+
+    /// Назначить спикера одной реплике и пометить её как правленую.
+    pub fn set_segment_speaker(
+        &mut self,
+        meeting_id: &str,
+        version: u32,
+        index: u32,
+        speaker_id: &str,
+    ) -> Result<(), AudioManifestError> {
+        let updated = self.conn.execute(
+            "UPDATE final_segments
+             SET speaker_id = ?4, speaker_pinned = 1
+             WHERE meeting_id = ?1 AND version = ?2 AND idx = ?3",
+            params![meeting_id, version, index, speaker_id],
+        )?;
+        if updated == 0 {
+            return Err(AudioManifestError::SegmentNotFound {
+                meeting_id: meeting_id.to_owned(),
+                version,
+                index,
+            });
+        }
+        Ok(())
+    }
+
+    /// Снять ручную правку, вернув реплику под назначение по каналу.
+    pub fn unpin_segment_speaker(
+        &mut self,
+        meeting_id: &str,
+        version: u32,
+        index: u32,
+    ) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "UPDATE final_segments
+             SET speaker_pinned = 0
+             WHERE meeting_id = ?1 AND version = ?2 AND idx = ?3",
+            params![meeting_id, version, index],
+        )?;
+        Ok(())
     }
 
     /// Собрать PCM канала за всю сессию в один поток.
@@ -750,7 +825,15 @@ impl AudioManifestStore {
     }
 
     /// Удалить спикера по id.
+    /// Удалить спикера, сняв его со всех реплик.
+    ///
+    /// Без очистки ссылок сегменты остались бы с идентификатором
+    /// несуществующего спикера и молча показывались бы без имени.
     pub fn delete_speaker(&mut self, id: &str) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "UPDATE final_segments SET speaker_id = '' WHERE speaker_id = ?1",
+            params![id],
+        )?;
         self.conn
             .execute("DELETE FROM speakers WHERE id = ?1", params![id])?;
         Ok(())
@@ -1004,8 +1087,129 @@ mod tests {
             end_ms: start_ms + 500,
             channel,
             speaker_id: String::new(),
+            speaker_pinned: false,
             text: text.to_string(),
         }
+    }
+
+    fn seeded_segments(store: &mut AudioManifestStore) {
+        let segments = vec![
+            segment(0, 0, AudioChannel::Mic, "я"),
+            segment(1, 600, AudioChannel::System, "они"),
+            segment(2, 1200, AudioChannel::System, "они снова"),
+        ];
+        store.replace_final_segments("m1", 1, &segments).unwrap();
+    }
+
+    /// Основная операция фазы: одно назначение подписывает весь канал.
+    #[test]
+    fn channel_assignment_touches_only_its_channel() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+
+            let updated = store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            assert_eq!(updated, 2);
+            let read = store.list_final_segments("m1", 1).unwrap();
+            assert_eq!(read[0].speaker_id, "", "микрофон не тронут");
+            assert_eq!(read[1].speaker_id, "sp-peter");
+            assert_eq!(read[2].speaker_id, "sp-peter");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Ручная правка обязана пережить повторное назначение канала: иначе
+    /// человек терял бы свою работу молча.
+    #[test]
+    fn manual_assignment_survives_channel_reassignment() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+            store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            store.set_segment_speaker("m1", 1, 2, "sp-anna").unwrap();
+            store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            let read = store.list_final_segments("m1", 1).unwrap();
+            assert_eq!(read[1].speaker_id, "sp-peter");
+            assert_eq!(read[2].speaker_id, "sp-anna", "правка затёрта");
+            assert!(read[2].speaker_pinned);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unpinning_returns_segment_under_channel_rule() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+            store.set_segment_speaker("m1", 1, 2, "sp-anna").unwrap();
+
+            store.unpin_segment_speaker("m1", 1, 2).unwrap();
+            store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            let read = store.list_final_segments("m1", 1).unwrap();
+            assert_eq!(read[2].speaker_id, "sp-peter");
+            assert!(!read[2].speaker_pinned);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assigning_unknown_segment_is_an_error() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+
+            let err = store.set_segment_speaker("m1", 1, 99, "sp").unwrap_err();
+
+            assert!(
+                matches!(err, AudioManifestError::SegmentNotFound { .. }),
+                "{err:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Удалённый спикер не должен оставлять висячие ссылки: сегмент с
+    /// несуществующим id молча показывался бы без имени.
+    #[test]
+    fn deleting_speaker_clears_segment_references() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+            store
+                .upsert_speaker(&Speaker {
+                    id: "sp-peter".into(),
+                    meeting_id: "m1".into(),
+                    display_name: "Пётр".into(),
+                    sort_index: 0,
+                })
+                .unwrap();
+            store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            store.delete_speaker("sp-peter").unwrap();
+
+            let read = store.list_final_segments("m1", 1).unwrap();
+            assert!(read.iter().all(|s| s.speaker_id.is_empty()));
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

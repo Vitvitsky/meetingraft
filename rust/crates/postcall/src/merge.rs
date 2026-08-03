@@ -44,8 +44,9 @@ pub fn merge_channels(
             start_ms: segment.start_ms,
             end_ms: segment.end_ms,
             channel,
-            // Заполнит диаризация (Phase 11).
+            // Заполняется назначением по каналу (Phase 11).
             speaker_id: String::new(),
+            speaker_pinned: false,
             text: segment.text,
         })
         .collect()
