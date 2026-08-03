@@ -23,6 +23,12 @@ pub enum AudioManifestError {
     MeetingNotFound(String),
     #[error("meeting is being recorded: {0}")]
     SessionActive(String),
+    #[error("chunk {path} truncated: expected {expected_frames} frames, got {actual_frames}")]
+    ChunkTruncated {
+        path: String,
+        expected_frames: usize,
+        actual_frames: usize,
+    },
 }
 
 /// Строка manifest.
@@ -471,6 +477,51 @@ impl AudioManifestStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Собрать PCM канала за всю сессию в один поток.
+    ///
+    /// Каналы читаются раздельно: post-call проход (Phase 10) распознаёт
+    /// их по отдельности, и тогда канал сегмента известен точно, без
+    /// эвристики доминирования, которой пользуется live (ADR-009).
+    ///
+    /// Отсутствующий файл — ошибка, а не молчаливая тишина в середине
+    /// записи: тишина исказила бы транскрипт незаметно.
+    pub fn read_session_pcm(
+        &self,
+        session_id: &str,
+        channel: AudioChannel,
+    ) -> Result<Vec<i16>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT path, frame_count
+             FROM audio_manifest
+             WHERE session_id = ?1 AND channel = ?2
+             ORDER BY seq",
+        )?;
+        let rows = statement.query_map(params![session_id, channel.dir_name()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+        })?;
+
+        let mut pcm = Vec::new();
+        for row in rows {
+            let (relative, frame_count) = row?;
+            let path = self.root.join(&relative);
+            let bytes = fs::read(&path)?;
+            if bytes.len() / 2 != frame_count {
+                return Err(AudioManifestError::ChunkTruncated {
+                    path: relative,
+                    expected_frames: frame_count,
+                    actual_frames: bytes.len() / 2,
+                });
+            }
+            pcm.reserve(frame_count);
+            pcm.extend(
+                bytes
+                    .chunks_exact(2)
+                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
+            );
+        }
+        Ok(pcm)
+    }
+
     /// Удалить встречу целиком: строки БД, поисковый индекс и PCM-чанки
     /// на диске (`architecture.md`: удаление удаляет всё).
     ///
@@ -876,6 +927,91 @@ mod tests {
             );
             store.append_caption("s1", &event, 42).unwrap();
             assert_eq!(store.caption_count("s1").unwrap(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Чанки склеиваются в порядке seq, каналы не смешиваются.
+    #[test]
+    fn read_session_pcm_concatenates_channel_in_order() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
+                .unwrap();
+            store
+                .append_chunk(AudioChannel::Mic, &[3, 0, 4, 0], 16_000, 100)
+                .unwrap();
+            store
+                .append_chunk(AudioChannel::System, &[9, 0], 16_000, 0)
+                .unwrap();
+
+            assert_eq!(
+                store.read_session_pcm("m1", AudioChannel::Mic).unwrap(),
+                vec![1, 2, 3, 4]
+            );
+            assert_eq!(
+                store.read_session_pcm("m1", AudioChannel::System).unwrap(),
+                vec![9]
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_session_pcm_of_empty_session_is_empty() {
+        let root = tmp_root();
+        {
+            let store = AudioManifestStore::open(&root).unwrap();
+            assert!(
+                store
+                    .read_session_pcm("missing", AudioChannel::Mic)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Пропавший файл чанка — ошибка, а не дыра тишины в транскрипте.
+    #[test]
+    fn read_session_pcm_fails_on_missing_chunk_file() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            let chunk = store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
+                .unwrap();
+            fs::remove_file(&chunk.path).unwrap();
+
+            let err = store.read_session_pcm("m1", AudioChannel::Mic).unwrap_err();
+
+            assert!(matches!(err, AudioManifestError::Io(_)), "{err:?}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Обрезанный файл тоже ловится: manifest знает ожидаемую длину.
+    #[test]
+    fn read_session_pcm_fails_on_truncated_chunk() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            let chunk = store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
+                .unwrap();
+            fs::write(&chunk.path, [1_u8, 0]).unwrap();
+
+            let err = store.read_session_pcm("m1", AudioChannel::Mic).unwrap_err();
+
+            assert!(
+                matches!(err, AudioManifestError::ChunkTruncated { .. }),
+                "{err:?}"
+            );
         }
         let _ = fs::remove_dir_all(&root);
     }
