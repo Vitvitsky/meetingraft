@@ -26,6 +26,8 @@ step "3/7 Rust: сборка движка Whisper (Metal)"
 (cd rust && cargo clippy -p meetingraft-stt --features whisper --all-targets -- -D warnings)
 
 step "4/7 UniFFI: dylib, биндинги, Xcode-проект"
+# Схема описана в project.yml, поэтому доступна сразу после генерации —
+# без открытия проекта в Xcode.
 apps/macos/Scripts/generate-ffi.sh
 
 step "5/7 Swift: формат"
