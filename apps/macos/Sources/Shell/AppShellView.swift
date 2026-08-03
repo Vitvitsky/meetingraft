@@ -62,10 +62,9 @@ struct AppShellView: View {
                     }
                 }
                 .frame(width: 140)
-                Button("Start Captions", systemImage: "play.fill") {
-                    startDemoCaptions()
-                }
-                .keyboardShortcut("r", modifiers: [.command])
+                // Демо-поток остался только в меню Session: витрине
+                // продукта не место кнопке для разработчика, и она делила
+                // ⌘R с настоящей записью.
                 Button("Start Live", systemImage: "mic.fill") {
                     startLiveSession()
                 }

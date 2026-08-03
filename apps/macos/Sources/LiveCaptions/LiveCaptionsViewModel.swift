@@ -8,6 +8,8 @@ final class LiveCaptionsViewModel {
     private(set) var lines: [CaptionLine] = []
     private(set) var translationLines: [CaptionLine] = []
     private(set) var isLiveSession = false
+    /// Начало live-сессии — для таймера в шапке.
+    private(set) var sessionStartedAt: Date?
     private(set) var effectiveTranslationBackend: String = "off"
 
     private let core: MeetingCore
@@ -91,6 +93,7 @@ final class LiveCaptionsViewModel {
         await capture.startRecording()
         guard capture.isRecording else { return }
         isLiveSession = true
+        sessionStartedAt = Date()
         livePollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -109,6 +112,7 @@ final class LiveCaptionsViewModel {
         ingestLiveEvents(capture.drainLiveCaptions(), intoCaptions: true)
         ingestLiveEvents(core.drainLiveTranslations(), intoCaptions: false)
         isLiveSession = false
+        sessionStartedAt = nil
     }
 
     func stopAll(capture: AudioCaptureCoordinator) {
@@ -116,6 +120,19 @@ final class LiveCaptionsViewModel {
         if isLiveSession || capture.isRecording {
             stopLive(capture: capture)
         }
+    }
+
+    #if DEBUG
+        /// Наполнение ленты в тестах без аудио и без Rust-потока.
+        func ingestForTesting(text: String, phase: CaptionPhase) {
+            appendCaption(CaptionLine(text: text, phase: phase))
+        }
+    #endif
+
+    /// Последние строки для центрального блока: экран показывает речь,
+    /// а не журнал событий. Полный лог живёт в истории встречи.
+    func recentLines(limit: Int = 3) -> [CaptionLine] {
+        Array(lines.suffix(limit))
     }
 
     private func stopLivePoll() {

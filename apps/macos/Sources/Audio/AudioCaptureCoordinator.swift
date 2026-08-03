@@ -16,6 +16,11 @@ final class AudioCaptureCoordinator {
     /// `idle` | `mock` | `whisper` после startRecording.
     private(set) var sttBackend: String = "idle"
     private(set) var captionEventCount: UInt64 = 0
+    /// Сглаженный уровень микрофона, 0…1 — для индикатора на экране.
+    ///
+    /// Считается из тех же сэмплов, что уходят в распознавание, поэтому
+    /// показывает реальный вход, а не анимацию.
+    private(set) var inputLevel: Double = 0
 
     private let core: MeetingCore
     private let microphone: any AudioTapping
@@ -133,6 +138,7 @@ final class AudioCaptureCoordinator {
         core.setSystemAudioExpected(expected: false)
         isRecording = false
         sttBackend = "idle"
+        inputLevel = 0
     }
 
     /// Live STT events с того же MeetingCore, что и ingest.
@@ -149,8 +155,24 @@ final class AudioCaptureCoordinator {
         lastError = nil
     }
 
+    /// Насколько быстро индикатор следует за звуком. Ниже — плавнее, но
+    /// заметно отстаёт от речи.
+    private static let levelSmoothing = 0.3
+    /// Опорный уровень: обычная речь около этого значения RMS.
+    private static let levelReference = 0.15
+
+    private func updateLevel(samples: [Float]) {
+        let sum = samples.reduce(0.0) { $0 + Double($1) * Double($1) }
+        let rms = (sum / Double(samples.count)).squareRoot()
+        let normalized = min(1, rms / Self.levelReference)
+        inputLevel += (normalized - inputLevel) * Self.levelSmoothing
+    }
+
     private func ingest(samples: [Float], channel: FfiAudioChannel) {
         guard isRecording, sessionId != nil, !samples.isEmpty else { return }
+        if channel == .mic {
+            updateLevel(samples: samples)
+        }
         let chunks: [AudioChunk] = switch channel {
         case .mic:
             micPipeline.push(samples: samples)
