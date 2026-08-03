@@ -101,12 +101,20 @@ flowchart LR
   end
 
   Settings["Settings → Backend API\nTest API / health"] --> Jobs
-  Meetings["Meetings → Live | Final | Speakers | Artifacts\nSubmit refine (stub)"] --> Jobs
+  Meetings["Meetings → Live | Final | Compare | Speakers | Artifacts\nSubmit refine (stub)"] --> Jobs
   Final --> Meetings
   Speakers["Speakers tab\nручные метки (SQLite)"] --> Meetings
 ```
 
-**Provenance (Meetings UI):** Live ≠ вход для Brief; Brief/Follow-up ← **Final**.
+**Provenance (Meetings UI):** Live ≠ вход для Brief; Brief/Follow-up ← **Final**
+(latest version).
+
+**Final versions / Compare:** каждый Stop Live / `assemble_final_now` пишет новую
+версию в `final_transcripts` (`version = max+1`). Вкладка **Final** — picker
+истории; **Compare** — side-by-side Live finals (captions phase=Final) и Final
+vN. Brief, Follow-up и Export всегда используют **latest**
+(`get_final_transcript`). Diarization и привязка спикеров к сегментам Final —
+ещё не реализованы.
 
 ### 1.4 Карта репозитория
 

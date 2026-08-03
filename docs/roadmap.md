@@ -152,10 +152,13 @@ resolve в Rust/UniFFI; first-run auto `ggml-base.bin` при пустом `mode
 **Done follow-up:** Backend provider registry (`feat/backend-provider-registry`:
 static JSON + `GET /v1/models` + Settings picker + job routing by `provider_id`;
 compat `LLM_*` → `default`).
+**Done follow-up:** Versioned Final + Compare (`feat/final-versions-compare`: Stop
+Live / re-assemble → next version; Final picker; Compare Live | Final vN;
+Brief/Export = latest).
 **Remaining:**
 Parakeet on-device STT, WhisperX / billing / provider CRUD+discovery, diarization
-(Epic 9), user-defined templates, mail draft export, Obsidian plugin / export
-API, remote STT.
++ speaker→Final binding (Epic 9), user-defined templates, mail draft export,
+Obsidian plugin / export API, remote STT.
 
 ## Phase 7 — Hardening and release
 

@@ -102,8 +102,12 @@
 - [x] Add speaker correction screen — **partial (skeleton):** Meetings detail
   **Speakers** tab: ручные метки (add/rename/delete), banner «diarization — скоро»;
   без diarization и без привязки к Final transcript
-- Add versioned refined transcript
-- Compare live vs final transcript
+- [x] Add versioned refined transcript — Stop Live / re-assemble → next version
+  (`max+1`); Final tab picker; Brief/Follow-up/Export = latest
+  (`feat/final-versions-compare`)
+- [x] Compare live vs final transcript — Meetings **Compare** tab: side-by-side
+  Live finals | Final vN (`feat/final-versions-compare`)
+- Diarization / speaker binding to Final segments — **deferred**
 
 ## Epic 10 — Quality
 - Unit tests for state machine
