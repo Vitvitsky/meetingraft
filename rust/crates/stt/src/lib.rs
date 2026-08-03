@@ -12,7 +12,7 @@ mod whisper;
 pub use engine::SttEngine;
 pub use hallucination::is_whisper_hallucination;
 pub use mock::MockSttEngine;
-pub use model_path::{models_dir, resolve_whisper_model};
+pub use model_path::{models_dir, resolve_whisper_model, whisper_filename_for_id};
 pub use window::{LiveCaptionPipeline, SttBackendKind};
 
 #[cfg(feature = "whisper")]

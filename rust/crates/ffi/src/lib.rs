@@ -1212,7 +1212,7 @@ impl MeetingCore {
     /// Абсолютный путь к найденной ggml-модели или пустая строка.
     pub fn whisper_model_path(&self) -> String {
         let guard = self.inner.lock().expect("meeting core poisoned");
-        resolve_whisper_model(&guard.data_root)
+        resolve_whisper_model(&guard.data_root, None)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default()
     }

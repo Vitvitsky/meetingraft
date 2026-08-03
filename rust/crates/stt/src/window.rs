@@ -69,7 +69,7 @@ impl LiveCaptionPipeline {
 }
 
 fn try_whisper(data_root: &Path, policy: LanguagePolicy) -> Option<LiveCaptionPipeline> {
-    let model = resolve_whisper_model(data_root)?;
+    let model = resolve_whisper_model(data_root, None)?;
     #[cfg(feature = "whisper")]
     {
         match WhisperSttEngine::open(&model) {
