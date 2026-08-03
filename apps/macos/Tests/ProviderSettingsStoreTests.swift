@@ -11,16 +11,13 @@ final class ProviderSettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.llmEngine.isAvailable)
     }
 
-    func testUnavailableEnginesAreMarked() {
+    func testUnavailablePostCallEngineIsMarked() {
         XCTAssertFalse(PostCallSttEngine.backendWhisperX.isAvailable)
-        XCTAssertFalse(LlmEngine.ollama.isAvailable)
-        XCTAssertFalse(LlmEngine.openaiCompat.isAvailable)
     }
 
     func testBackendLlmIsAvailableAndSelectable() {
         let store = ProviderSettingsStore()
         XCTAssertTrue(LlmEngine.backend.isAvailable)
-        XCTAssertFalse(LlmEngine.ollama.isAvailable)
         store.llmEngine = .backend
         XCTAssertEqual(store.llmEngine, .backend)
         XCTAssertFalse(LlmEngine.backend.needsUrl)
@@ -36,10 +33,16 @@ final class ProviderSettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.postCallStt, .localFinal)
     }
 
-    func testSelectingUnavailableLlmResetsToBuiltin() {
+    func testOllamaAndOpenAiCompatAreAvailable() {
         let store = ProviderSettingsStore()
+        XCTAssertTrue(LlmEngine.ollama.isAvailable)
+        XCTAssertTrue(LlmEngine.openaiCompat.isAvailable)
+        XCTAssertTrue(LlmEngine.ollama.needsUrl)
+
         store.llmEngine = .ollama
-        XCTAssertEqual(store.llmEngine, .builtinTemplates)
+        XCTAssertEqual(store.llmEngine, .ollama)
+        store.llmEngine = .openaiCompat
+        XCTAssertEqual(store.llmEngine, .openaiCompat)
     }
 
     func testArtifactsCaptionMentionsFinalAndTemplates() {

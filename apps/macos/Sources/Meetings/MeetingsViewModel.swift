@@ -10,7 +10,7 @@ protocol MeetingsCoreProviding: AnyObject {
     func upsertSpeaker(meetingId: String, id: String, displayName: String, sortIndex: Int64) -> String
     func deleteSpeaker(id: String) -> String
     func setApiConfig(baseUrl: String, token: String)
-    func setLlmConfig(engineCode: String, modelId: String)
+    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String)
     func generateArtifact(meetingId: String, kind: FfiArtifactKind) -> FfiGenerateArtifactResult
     func submitBackendJob(meetingId: String, kindCode: String) -> FfiBackendJob
     func getBackendJob(jobId: String) -> FfiBackendJob
@@ -116,10 +116,15 @@ final class MeetingsViewModel {
         apiBaseUrl: String,
         apiToken: String,
         llmEngineCode: String,
-        llmModelId: String
+        llmModelId: String,
+        llmBaseUrl: String
     ) {
         core.setApiConfig(baseUrl: apiBaseUrl, token: apiToken)
-        core.setLlmConfig(engineCode: llmEngineCode, modelId: llmModelId)
+        core.setLlmConfig(
+            engineCode: llmEngineCode,
+            modelId: llmModelId,
+            baseUrl: llmBaseUrl
+        )
     }
 
     func generate(meetingId: String, kind: FfiArtifactKind) {

@@ -26,7 +26,7 @@ final class ProviderSettingsStore {
     var apiToken: String = "dev-token"
     var apiConnectionMessage: String = ""
     var apiConnectionOk: Bool?
-    /// Ollama / OpenAI-compat base; показывается когда LLM станет available.
+    /// Base URL локального Ollama или OpenAI-compatible сервера.
     var llmBaseUrl: String = "http://127.0.0.1:11434"
     var llmModelId: String = "gemma2"
 
@@ -87,8 +87,7 @@ enum LlmEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var isAvailable: Bool {
         switch self {
-        case .builtinTemplates, .backend: true
-        case .ollama, .openaiCompat: false
+        case .builtinTemplates, .ollama, .openaiCompat, .backend: true
         }
     }
 
