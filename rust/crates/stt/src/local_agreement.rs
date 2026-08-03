@@ -194,6 +194,25 @@ pub fn words_from_tokens(tokens: &[(String, u64)]) -> Vec<HypothesisWord> {
     words
 }
 
+/// Подставить время сегмента словам, которым модель его не дала.
+///
+/// Whisper заполняет `t1` токенов только когда сам посчитал token-level
+/// тайм-коды; на коротких буферах он этого не делает, и тогда все слова
+/// приходят с нулём. Без подстановки обрезка буфера молча перестаёт
+/// работать — а это весь смысл стабилизации.
+pub fn backfill_end_ms(words: &mut [HypothesisWord], fallback_ms: u64) {
+    let mut last = 0;
+    for word in words.iter_mut() {
+        if word.end_ms == 0 {
+            word.end_ms = fallback_ms.max(last);
+        }
+        // Время не может идти назад: у монотонности зависит корректность
+        // обрезки.
+        word.end_ms = word.end_ms.max(last);
+        last = word.end_ms;
+    }
+}
+
 fn join_words(words: &[HypothesisWord]) -> String {
     words
         .iter()
@@ -250,6 +269,39 @@ mod tests {
     #[test]
     fn no_tokens_give_no_words() {
         assert!(words_from_tokens(&[]).is_empty());
+    }
+
+    #[test]
+    fn backfill_replaces_missing_times_with_segment_end() {
+        let mut words = vec![HypothesisWord::new("раз", 0), HypothesisWord::new("два", 0)];
+
+        backfill_end_ms(&mut words, 900);
+
+        assert_eq!(words[0].end_ms, 900);
+        assert_eq!(words[1].end_ms, 900);
+    }
+
+    #[test]
+    fn backfill_keeps_known_times_and_enforces_monotonicity() {
+        let mut words = vec![
+            HypothesisWord::new("раз", 400),
+            HypothesisWord::new("два", 0),
+            // Модель дала время назад — оно подтягивается вперёд.
+            HypothesisWord::new("три", 200),
+        ];
+
+        backfill_end_ms(&mut words, 700);
+
+        assert_eq!(words[0].end_ms, 400);
+        assert_eq!(words[1].end_ms, 700);
+        assert_eq!(words[2].end_ms, 700);
+    }
+
+    #[test]
+    fn backfill_on_empty_slice_is_noop() {
+        let mut words: Vec<HypothesisWord> = Vec::new();
+        backfill_end_ms(&mut words, 500);
+        assert!(words.is_empty());
     }
 
     #[test]

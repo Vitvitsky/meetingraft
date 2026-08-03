@@ -3,12 +3,12 @@
 use domain::{CaptionEvent, CaptionPhase, LanguagePolicy};
 use uuid::Uuid;
 use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
-    convert_integer_to_float_audio,
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+    WhisperTokenId, convert_integer_to_float_audio, install_logging_hooks,
 };
 
 use crate::is_whisper_hallucination;
-use crate::local_agreement::{HypothesisWord, LocalAgreement, words_from_tokens};
+use crate::local_agreement::{HypothesisWord, LocalAgreement, backfill_end_ms, words_from_tokens};
 use crate::{Stabilized, SttEngine};
 
 /// Порог RMS для «есть речь» (выше → меньше галлюцинаций на тишине).
@@ -30,9 +30,23 @@ const TRIM_GUARD_MS: u64 = 200;
 /// Переменная окружения для замеров латентности (ADR-010, T6).
 const TIMING_ENV: &str = "MEETINGRAFT_STT_TIMING";
 
+/// Глушим вывод whisper.cpp один раз на процесс.
+///
+/// Без хуков whisper.cpp пишет в stderr потокенный дамп декодера, и на
+/// каждой итерации LocalAgreement это сотни строк. `log_backend` не
+/// подключён, поэтому логи никуда не идут.
+static SILENCE_LOGS: std::sync::Once = std::sync::Once::new();
+
 /// Whisper STT с energy-VAD сегментацией.
 pub struct WhisperSttEngine {
     ctx: WhisperContext,
+    /// Переиспользуемое состояние декодера.
+    ///
+    /// `create_state` выделяет KV-кэши и compute-буферы (~240 МБ на
+    /// `base`) и переинициализирует Metal. Создавать его на каждой
+    /// итерации — а их теперь одна в секунду — значит платить эту цену
+    /// целиком на каждый partial.
+    state: Option<WhisperState>,
     policy: LanguagePolicy,
     buffer: Vec<i16>,
     speech_frames: usize,
@@ -51,8 +65,10 @@ impl WhisperSttEngine {
             WhisperContextParameters::default(),
         )
         .map_err(|e| format!("whisper load: {e}"))?;
+        SILENCE_LOGS.call_once(install_logging_hooks);
         Ok(Self {
             ctx,
+            state: None,
             policy: LanguagePolicy::default_v1(),
             buffer: Vec::new(),
             speech_frames: 0,
@@ -86,15 +102,21 @@ impl WhisperSttEngine {
     }
 
     /// Гипотеза по буферу: слова с временем окончания.
-    fn hypothesis(&self, pcm: &[i16]) -> Vec<HypothesisWord> {
+    ///
+    /// Ассоциированная функция, а не метод: состояние берётся отдельным
+    /// мутабельным заимствованием, чтобы буфер можно было передать рядом.
+    fn hypothesis(
+        state: &mut WhisperState,
+        pcm: &[i16],
+        language: &str,
+        prompt: &str,
+        special_token_floor: WhisperTokenId,
+    ) -> Vec<HypothesisWord> {
         if pcm.len() < MIN_SPEECH_FRAMES / 2 {
             return Vec::new();
         }
-        let Ok(mut state) = self.ctx.create_state() else {
-            return Vec::new();
-        };
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some(self.policy.primary.code()));
+        params.set_language(Some(language));
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -109,9 +131,8 @@ impl WhisperSttEngine {
         // Документация whisper-rs: no_speech_thold historically stub — всё равно
         // фильтруем по segment.no_speech_probability() ниже.
         params.set_no_speech_thold(0.6);
-        let prompt = self.decoding_prompt();
         if !prompt.is_empty() {
-            params.set_initial_prompt(&prompt);
+            params.set_initial_prompt(prompt);
         }
 
         let mut audio = vec![0.0f32; pcm.len()];
@@ -122,8 +143,7 @@ impl WhisperSttEngine {
             return Vec::new();
         }
 
-        let special_token_floor = self.ctx.token_eot();
-        let mut tokens: Vec<(String, u64)> = Vec::new();
+        let mut words: Vec<HypothesisWord> = Vec::new();
         for index in 0..state.full_n_segments() {
             let Some(segment) = state.get_segment(index) else {
                 continue;
@@ -137,6 +157,10 @@ impl WhisperSttEngine {
             {
                 continue;
             }
+            // Время сегмента whisper.cpp заполняет всегда, время токенов —
+            // нет. Первое служит запасным для второго.
+            let segment_end_ms = (segment.end_timestamp().max(0) as u64) * 10;
+            let mut segment_tokens: Vec<(String, u64)> = Vec::new();
             for token_index in 0..segment.n_tokens() {
                 let Some(token) = segment.get_token(token_index) else {
                     continue;
@@ -151,10 +175,15 @@ impl WhisperSttEngine {
                 };
                 // t1 в сотых долях секунды от начала буфера.
                 let end_ms = (token.token_data().t1.max(0) as u64) * 10;
-                tokens.push((text.to_string(), end_ms));
+                segment_tokens.push((text.to_string(), end_ms));
             }
+            let mut segment_words = words_from_tokens(&segment_tokens);
+            backfill_end_ms(&mut segment_words, segment_end_ms);
+            words.append(&mut segment_words);
         }
-        words_from_tokens(&tokens)
+        // Между сегментами время тоже обязано расти.
+        backfill_end_ms(&mut words, 0);
+        words
     }
 
     /// Глоссарий плюс хвост зафиксированного текста.
@@ -169,6 +198,22 @@ impl WhisperSttEngine {
             (false, true) => self.initial_prompt.clone(),
             (false, false) => format!("{} {tail}", self.initial_prompt),
         }
+    }
+
+    /// Прогнать текущий буфер через переиспользуемое состояние.
+    fn current_hypothesis(&mut self) -> Vec<HypothesisWord> {
+        if self.state.is_none() {
+            self.state = self.ctx.create_state().ok();
+        }
+        let language = self.policy.primary.code();
+        let prompt = self.decoding_prompt();
+        let special_token_floor = self.ctx.token_eot();
+        // Расщепление заимствований по полям: state — мутабельно,
+        // buffer — нет.
+        let Some(state) = self.state.as_mut() else {
+            return Vec::new();
+        };
+        Self::hypothesis(state, &self.buffer, language, &prompt, special_token_floor)
     }
 
     /// Выбросить из буфера аудио до зафиксированной границы.
@@ -251,7 +296,7 @@ impl SttEngine for WhisperSttEngine {
                 && self.frames_since_partial >= PARTIAL_MIN_FRAMES
             {
                 let started = std::time::Instant::now();
-                let hypothesis = self.hypothesis(&self.buffer);
+                let hypothesis = self.current_hypothesis();
                 let inference_ms = started.elapsed().as_millis();
                 let stabilized = self.agreement.push(hypothesis);
                 Self::log_timing(inference_ms, self.buffer.len(), &stabilized);
@@ -277,7 +322,7 @@ impl SttEngine for WhisperSttEngine {
         }
         // Последняя гипотеза плюс принудительная фиксация остатка: контекста
         // больше не будет, ждать согласия не с чем.
-        let hypothesis = self.hypothesis(&self.buffer);
+        let hypothesis = self.current_hypothesis();
         let mut out = Vec::new();
         let stabilized = self.agreement.push(hypothesis);
         if let Some(text) = Self::accept_text(&stabilized.committed_text) {
