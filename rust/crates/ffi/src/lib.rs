@@ -3,6 +3,7 @@
 uniffi::setup_scaffolding!();
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -12,7 +13,10 @@ use domain::{
     GlossaryTerm, LanguagePolicy, MeetingSummary, SessionState, Speaker, SpeechLanguage,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
-use postcall::{assemble_final, make_artifact, render_brief, render_follow_up};
+use postcall::{
+    LlmClient, LlmError, OllamaNativeClient, OpenAiCompatLlmClient, assemble_final, brief_prompts,
+    follow_up_prompts, make_artifact, render_brief, render_follow_up,
+};
 use session::MeetingSession;
 use storage::{AudioManifestError, AudioManifestStore};
 use stt::{LiveCaptionPipeline, SttBackendKind, models_dir, resolve_whisper_model};
@@ -174,6 +178,7 @@ struct MeetingCoreInner {
     sync_client: SyncClient,
     llm_engine: String,
     llm_model_id: String,
+    llm_base_url: String,
 }
 
 /// Фасад сессии для macOS shell.
@@ -376,7 +381,41 @@ fn empty_artifact() -> FfiArtifact {
 fn normalize_llm_engine(code: &str) -> &str {
     match code {
         "backend" => "backend",
+        "ollama" => "ollama",
+        "openai_compat" => "openai_compat",
         _ => "builtin_templates",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CoreError {
+    Http { status: u16, body: String },
+    Empty,
+    Transport(String),
+    NotConfigured,
+}
+
+impl From<LlmError> for CoreError {
+    fn from(error: LlmError) -> Self {
+        match error {
+            LlmError::Http { status, body } => Self::Http { status, body },
+            LlmError::EmptyResponse => Self::Empty,
+            LlmError::Transport(message) => Self::Transport(message),
+            LlmError::NotConfigured => Self::NotConfigured,
+        }
+    }
+}
+
+impl fmt::Display for CoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http { status, body } => {
+                write!(formatter, "LLM-провайдер вернул HTTP {status}: {body}")
+            }
+            Self::Empty => formatter.write_str("LLM-провайдер вернул пустой ответ"),
+            Self::Transport(message) => write!(formatter, "Ошибка транспорта LLM: {message}"),
+            Self::NotConfigured => formatter.write_str("LLM-клиент не настроен"),
+        }
     }
 }
 
@@ -520,6 +559,7 @@ impl MeetingCore {
                 sync_client: SyncClient::new("", ""),
                 llm_engine: "builtin_templates".to_string(),
                 llm_model_id: String::new(),
+                llm_base_url: String::new(),
             }),
         })
     }
@@ -624,10 +664,11 @@ impl MeetingCore {
     }
 
     /// Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
-    pub fn set_llm_config(&self, engine_code: String, model_id: String) {
+    pub fn set_llm_config(&self, engine_code: String, model_id: String, base_url: String) {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
         guard.llm_engine = normalize_llm_engine(&engine_code).to_owned();
         guard.llm_model_id = model_id;
+        guard.llm_base_url = base_url.trim().trim_end_matches('/').to_owned();
     }
 
     pub fn api_base_url(&self) -> String {
@@ -1033,6 +1074,50 @@ impl MeetingCore {
                 &meeting_id,
                 domain_kind,
                 &backend_artifact.body_markdown,
+                generated_at_ms,
+                Some(template_id),
+            );
+        }
+        if matches!(engine.as_str(), "ollama" | "openai_compat") {
+            let base_url = guard.llm_base_url.clone();
+            let model_id = guard.llm_model_id.clone();
+            let primary_language = guard.language_policy.primary;
+            let final_body = final_transcript.body_markdown.clone();
+            drop(guard);
+
+            let (system, user) = match domain_kind {
+                ArtifactKind::Brief => brief_prompts(&final_body, primary_language),
+                ArtifactKind::FollowUp => follow_up_prompts(&final_body, primary_language),
+            };
+            let completion = match engine.as_str() {
+                "ollama" => OllamaNativeClient::new(base_url, model_id).complete(&system, &user),
+                "openai_compat" => {
+                    OpenAiCompatLlmClient::new(base_url, model_id).complete(&system, &user)
+                }
+                _ => unreachable!("локальная LLM-ветка проверена выше"),
+            };
+            let body = match completion.map_err(CoreError::from) {
+                Ok(body) => body,
+                Err(error) => {
+                    return FfiGenerateArtifactResult {
+                        artifact: empty_artifact(),
+                        error: error.to_string(),
+                    };
+                }
+            };
+            let template_id = match (engine.as_str(), domain_kind) {
+                ("ollama", ArtifactKind::Brief) => "ollama.brief",
+                ("ollama", ArtifactKind::FollowUp) => "ollama.follow_up",
+                ("openai_compat", ArtifactKind::Brief) => "openai.brief",
+                ("openai_compat", ArtifactKind::FollowUp) => "openai.follow_up",
+                _ => unreachable!("локальная LLM-ветка проверена выше"),
+            };
+            let mut guard = self.inner.lock().expect("meeting core poisoned");
+            return store_generated_artifact(
+                &mut guard,
+                &meeting_id,
+                domain_kind,
+                &body,
                 generated_at_ms,
                 Some(template_id),
             );
@@ -1634,7 +1719,7 @@ mod tests {
         seed_final_transcript(&root, "m-backend");
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
         core.set_api_config(server.url(), "dev-token".into());
-        core.set_llm_config("backend".into(), "unused".into());
+        core.set_llm_config("backend".into(), "unused".into(), String::new());
 
         let result = core.generate_artifact("m-backend".into(), FfiArtifactKind::Brief);
 
@@ -1663,7 +1748,7 @@ mod tests {
         seed_final_transcript(&root, "m-backend-error");
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
         core.set_api_config(server.url(), "dev-token".into());
-        core.set_llm_config("backend".into(), "unused".into());
+        core.set_llm_config("backend".into(), "unused".into(), String::new());
 
         let result = core.generate_artifact("m-backend-error".into(), FfiArtifactKind::FollowUp);
 
@@ -1686,7 +1771,7 @@ mod tests {
         ));
         seed_final_transcript(&root, "m-builtin");
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
-        core.set_llm_config("unknown".into(), "ignored".into());
+        core.set_llm_config("unknown".into(), "ignored".into(), String::new());
 
         let result = core.generate_artifact("m-builtin".into(), FfiArtifactKind::Brief);
 
@@ -1694,5 +1779,134 @@ mod tests {
         assert!(result.artifact.body_markdown.contains("# Brief"));
         assert_eq!(result.artifact.template_id, "builtin.brief");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generate_artifact_ollama_uses_http_body() {
+        let mut server = Server::new();
+        let _mock = server
+            .mock("POST", "/api/chat")
+            .match_body(Matcher::Regex(r#""model":"gemma2","stream":false"#.into()))
+            .with_status(200)
+            .with_body(
+                r##"{"message":{"role":"assistant","content":"# Ollama brief"},"done":true}"##,
+            )
+            .expect(2)
+            .create();
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-ollama-success-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_final_transcript(&root, "m-ollama");
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_llm_config("ollama".into(), "gemma2".into(), server.url());
+
+        let result = core.generate_artifact("m-ollama".into(), FfiArtifactKind::Brief);
+        let follow_up = core.generate_artifact("m-ollama".into(), FfiArtifactKind::FollowUp);
+
+        assert!(result.error.is_empty(), "{}", result.error);
+        assert_eq!(result.artifact.body_markdown, "# Ollama brief");
+        assert_eq!(result.artifact.template_id, "ollama.brief");
+        assert!(follow_up.error.is_empty(), "{}", follow_up.error);
+        assert_eq!(follow_up.artifact.template_id, "ollama.follow_up");
+        assert_eq!(core.list_artifacts("m-ollama".into()).len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generate_artifact_ollama_error_does_not_insert() {
+        let mut server = Server::new();
+        let _mock = server
+            .mock("POST", "/api/chat")
+            .with_status(500)
+            .with_body("model unavailable")
+            .create();
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-ollama-error-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_final_transcript(&root, "m-ollama-error");
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_llm_config("ollama".into(), "gemma2".into(), server.url());
+
+        let result = core.generate_artifact("m-ollama-error".into(), FfiArtifactKind::FollowUp);
+
+        assert!(result.error.contains("HTTP 500"), "{}", result.error);
+        assert!(
+            result.error.contains("model unavailable"),
+            "{}",
+            result.error
+        );
+        assert!(result.artifact.id.is_empty());
+        assert!(
+            core.list_artifacts("m-ollama-error".into()).is_empty(),
+            "ошибка LLM не должна сохранять fallback-артефакт"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generate_artifact_openai_compat_sets_follow_up_template_id() {
+        let mut server = Server::new();
+        let _mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::Regex(r#""model":"qwen2\.5""#.into()))
+            .with_status(200)
+            .with_body(
+                r##"{"choices":[{"message":{"role":"assistant","content":"# Follow-up from compat"}}]}"##,
+            )
+            .expect(2)
+            .create();
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-openai-success-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_final_transcript(&root, "m-openai");
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_llm_config(
+            "openai_compat".into(),
+            "qwen2.5".into(),
+            format!("{}/", server.url()),
+        );
+
+        let brief = core.generate_artifact("m-openai".into(), FfiArtifactKind::Brief);
+        let follow_up = core.generate_artifact("m-openai".into(), FfiArtifactKind::FollowUp);
+
+        assert!(brief.error.is_empty(), "{}", brief.error);
+        assert_eq!(brief.artifact.template_id, "openai.brief");
+        assert!(follow_up.error.is_empty(), "{}", follow_up.error);
+        assert_eq!(follow_up.artifact.body_markdown, "# Follow-up from compat");
+        assert_eq!(follow_up.artifact.template_id, "openai.follow_up");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn llm_errors_map_to_core_error_variants() {
+        let cases = [
+            (
+                postcall::LlmError::Http {
+                    status: 429,
+                    body: "busy".into(),
+                },
+                "LLM-провайдер вернул HTTP 429: busy",
+            ),
+            (
+                postcall::LlmError::EmptyResponse,
+                "LLM-провайдер вернул пустой ответ",
+            ),
+            (
+                postcall::LlmError::Transport("connection refused".into()),
+                "Ошибка транспорта LLM: connection refused",
+            ),
+            (postcall::LlmError::NotConfigured, "LLM-клиент не настроен"),
+        ];
+
+        for (source, expected) in cases {
+            let error = CoreError::from(source);
+            assert_eq!(error.to_string(), expected);
+        }
     }
 }

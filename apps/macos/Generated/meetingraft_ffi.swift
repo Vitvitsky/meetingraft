@@ -721,7 +721,7 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     /**
      * Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
      */
-    func setLlmConfig(engineCode: String, modelId: String) 
+    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String) 
     
     /**
      * Primary язык распознавания (`ru` | `en` | `es`). Не включает перевод.
@@ -1191,12 +1191,13 @@ open func setLiveTranslation(enabled: Bool, targetCode: String) -> String  {
     /**
      * Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
      */
-open func setLlmConfig(engineCode: String, modelId: String)  {try! rustCall() {
+open func setLlmConfig(engineCode: String, modelId: String, baseUrl: String)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_set_llm_config(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(engineCode),
-        FfiConverterString.lower(modelId),uniffiCallStatus
+        FfiConverterString.lower(modelId),
+        FfiConverterString.lower(baseUrl),uniffiCallStatus
     )
 }
 }
@@ -2691,7 +2692,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_live_translation() != 28202) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_llm_config() != 4258) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_llm_config() != 40973) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_session_language() != 29416) {
