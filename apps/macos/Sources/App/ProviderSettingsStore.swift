@@ -29,6 +29,8 @@ final class ProviderSettingsStore {
     /// Base URL локального Ollama или OpenAI-compatible сервера.
     var llmBaseUrl: String = "http://127.0.0.1:11434"
     var llmModelId: String = "gemma2"
+    /// Папка экспорта markdown (Obsidian vault / Documents); tilde раскрывается при записи.
+    var exportFolderPath: String = "~/Documents/MeetingRaft"
 
     let postCallEngines = PostCallSttEngine.allCases
     let llmEngines = LlmEngine.allCases

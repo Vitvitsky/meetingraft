@@ -227,7 +227,7 @@ Expand tilde:
 NSString(string: path).expandingTildeInPath
 ```
 
-- [ ] **Step 1: Test default export path**
+- [x] **Step 1: Test default export path**
 
 ```swift
 func testExportFolderPathDefault() {
@@ -236,11 +236,11 @@ func testExportFolderPathDefault() {
 }
 ```
 
-- [ ] **Step 2: Wire UI (manual smoke OK for panel)**
+- [x] **Step 2: Wire UI (manual smoke OK for panel)**
 
-- [ ] **Step 3: macOS tests + swiftformat**
+- [x] **Step 3: macOS tests + swiftformat**
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
