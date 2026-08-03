@@ -5,9 +5,9 @@
 `docs/adr/`.
 
 **Статус прототипа (2026-08):** Phase 0–6 local MVP + ADR-007 **slice A**
-(FastAPI stub jobs) + **Speakers skeleton** (ручные метки в Meetings) +
-локальные LLM через Ollama native / OpenAI-compatible HTTP.
-WhisperX / diarization / production backend LLM — ещё не в рантайме.
+(FastAPI jobs; optional OpenAI-compat LLM via `LLM_*`) + **Speakers skeleton** +
+локальные LLM (Ollama / OpenAI-compatible). WhisperX / diarization /
+provider registry — ещё не в рантайме.
 
 ---
 
@@ -186,8 +186,9 @@ apps/macos/Scripts/generate-ffi.sh
 ### 2.5 Backend stub — настройка (опционально)
 
 Сейчас это **ADR-007 slice A**: FastAPI in-memory jobs без Postgres / Redis /
-WhisperX / production LLM. Jobs сразу возвращают stub markdown. Контракт:
-[`shared/openapi.yaml`](../shared/openapi.yaml).
+WhisperX. `refine` (и `brief`/`follow_up` без `LLM_BASE_URL`) — stub markdown.
+С `LLM_*` jobs `brief`/`follow_up` вызывают OpenAI-compatible провайдер.
+Контракт: [`shared/openapi.yaml`](../shared/openapi.yaml).
 
 #### Шаг 1. Поднять API
 
@@ -195,16 +196,27 @@ WhisperX / production LLM. Jobs сразу возвращают stub markdown. �
 
 ```bash
 # Вариант A — Docker (рекомендуется)
+# без LLM — только stub jobs:
+docker compose up --build
+
+# с реальным LLM (пример):
+export LLM_BASE_URL=http://93.189.243.223:58001   # без /v1
+export LLM_API_KEY=LOCAL-API-KEY
+export LLM_MODEL=Google/gemma-4-12b-it
 docker compose up --build
 # слушает http://127.0.0.1:8080
-# env: MEETINGRAFT_API_TOKEN=dev-token  (см. docker-compose.yml)
+# MEETINGRAFT_API_TOKEN=dev-token (см. docker-compose.yml)
 ```
 
 ```bash
 # Вариант B — локально через uv
 cd backend
 uv sync --extra dev
-MEETINGRAFT_API_TOKEN=dev-token uv run uvicorn app.main:app --host 127.0.0.1 --port 8080
+MEETINGRAFT_API_TOKEN=dev-token \
+LLM_BASE_URL=http://93.189.243.223:58001 \
+LLM_API_KEY=LOCAL-API-KEY \
+LLM_MODEL=Google/gemma-4-12b-it \
+  uv run uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
 Проверка без приложения:
@@ -226,9 +238,13 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 | URL | `http://127.0.0.1:8080` | порт compose / uvicorn |
 | Bearer token | `dev-token` | `MEETINGRAFT_API_TOKEN` |
 | Auth | HTTP Bearer | на все `/v1/*`; `/health` без токена |
+| `LLM_BASE_URL` | пусто (= stub brief/follow_up) | env backend; **без** `/v1` |
+| `LLM_API_KEY` | пусто (= без Authorization к LLM) | env backend |
+| `LLM_MODEL` | пусто (fallback, если model с app пуст) | env backend |
 
-Смена токена: задайте тот же `MEETINGRAFT_API_TOKEN` в окружении API **и** в
-Settings приложения (иначе 401).
+Смена токена MeetingRaft API: тот же `MEETINGRAFT_API_TOKEN` в окружении API
+**и** в Settings приложения (иначе 401). Секреты LLM провайдера — **только**
+в env backend, не во фронте.
 
 #### Шаг 2. Прописать в приложении
 
@@ -253,18 +269,21 @@ Settings приложения (иначе 401).
 Backend URL нужен для двух сценариев (не путать с локальным Ollama §2.6):
 
 1. **LLM = Backend** (**Settings → Providers → LLM**)
-   В Meetings: **Generate Brief** / **Generate Follow-up** →
-   `POST /v1/jobs` (`kind: brief` \| `follow_up`) → poll →
-   `GET /v1/artifacts/{id}` → артефакт с `template_id` `backend.brief` /
-   `backend.follow_up`.
-   Ошибка сети/401/job — **явная** в UI, **без** fallback на builtin templates.
+   - Engine: **Backend LLM**
+   - **Model id** (например `Google/gemma-4-12b-it`) — уходит в job `payload.model`
+   - Language-aware `system`/`user` собирает Rust (`brief_prompts` /
+     `follow_up_prompts`) и кладёт в `payload`; backend только
+     `POST {LLM_BASE_URL}/v1/chat/completions`
+   - Meetings: **Generate Brief** / **Generate Follow-up** → jobs → артефакт
+     `backend.brief` / `backend.follow_up`
+   - Без `LLM_BASE_URL` на сервере — stub markdown; с LLM и ошибкой провайдера —
+     job `failed`, **без** silent stub и без fallback на templates
 
 2. **Artifacts → Submit refine (stub)**
-   Тот же API, `kind: refine`. Не зависит от выбора LLM engine; нужен только
-   корректный Backend API + Final transcript у встречи.
+   Тот же API, `kind: refine` (пока всегда stub). Нужен Backend API + Final.
 
 `builtin_templates` / `ollama` / `openai_compat` **не** ходят в этот FastAPI
-stub для Brief/Follow-up.
+для Brief/Follow-up (локальные пути — §2.6).
 
 #### Типичные ошибки
 
@@ -272,9 +291,10 @@ stub для Brief/Follow-up.
 |---------|----------------|
 | Test API = Fail | `docker compose` / uvicorn запущен; URL без trailing slash; порт 8080 |
 | 401 / invalid token | токен в Settings == `MEETINGRAFT_API_TOKEN` на сервере |
-| Generate Brief ошибка при LLM=Backend | Test API сначала OK; есть Final у встречи |
-| Пустой / старый stub ответ | in-memory store: рестарт контейнера сбрасывает jobs |
-| Путаница с Ollama | Ollama — §2.6 (`:11434`); backend stub — только `:8080` jobs |
+| Generate Brief → stub `# Stub brief` | задан ли `LLM_BASE_URL` на backend |
+| Generate Brief ошибка / failed job | `LLM_API_KEY`, model id, доступность провайдера; Final есть |
+| 401 от LLM | ключ в `LLM_API_KEY`, не в Settings Bearer MeetingRaft |
+| Путаница с Ollama | Ollama — §2.6 (`:11434`); jobs API — `:8080` |
 
 ### 2.6 Локальный LLM: Ollama / OpenAI-compatible (опционально)
 

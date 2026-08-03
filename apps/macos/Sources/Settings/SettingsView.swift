@@ -122,10 +122,12 @@ struct SettingsView: View {
                 Text("Builtin templates локально; Ollama / OpenAI-compatible — локальный HTTP; Backend — jobs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if providerStore.llmEngine.needsModel {
+                    TextField("Model id", text: Bindable(providerStore).llmModelId)
+                        .textFieldStyle(.roundedBorder)
+                }
                 if providerStore.llmEngine.needsUrl {
                     TextField("LLM base URL", text: Bindable(providerStore).llmBaseUrl)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Model id", text: Bindable(providerStore).llmModelId)
                         .textFieldStyle(.roundedBorder)
                     Text("Ollama: /api/chat · OpenAI-compatible: /v1/chat/completions")
                         .font(.caption)

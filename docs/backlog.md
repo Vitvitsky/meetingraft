@@ -68,15 +68,24 @@
   Follow-up in UI; versioning deferred
 - Export artifacts — **partial:** copy to clipboard; .md file and mail draft
   deferred
-- Real LLM generation (`LlmClient` → Ollama/OpenAI-compatible) — **partial:**
-  Brief/Follow-up работают через локальные Ollama native (`POST /api/chat`) и
-  OpenAI-compatible (`POST /v1/chat/completions`) endpoints; backend пока
-  возвращает stub jobs через Settings LLM=Backend. Production LLM worker,
-  streaming/tools и защищённые remote endpoints **deferred**
+- Real LLM generation — **partial:**
+  - Local: Ollama native + OpenAI-compatible из app
+  - Backend jobs: Settings LLM=Backend + Model id → payload prompts →
+    OpenAI-compat провайдер из env (`LLM_BASE_URL` / `LLM_API_KEY` /
+    `LLM_MODEL`)
+  - Streaming/tools **deferred**
+- Backend provider platform — **deferred:** реестр нескольких провайдеров
+  (URL, keys, лимиты), UI «добавить провайдера», `GET /v1/models`
+- Тарификация / billing провайдеров — **deferred**
+- STT model picker во фронте (выбор ggml) — **deferred**
+- Remote STT API (latency risk для live; не default) — **deferred**
+- Более жирная модель для глубокого анализа полного аудио / refined
+  transcript — **deferred**
 - [x] Backend HTTP (ADR-007) — **slice A:** OpenAPI + FastAPI stub jobs +
   `meetingraft-sync` + Settings Test API (`feat/phase-6-backend-stub`)
 - [x] Meetings UI: Submit refine (stub) → poll → show artifact
   (`feat/meetings-backend-refine-stub`)
+- [x] Backend LLM provider for brief/follow_up jobs (`feat/backend-llm-provider`)
 - Create sync client crate — **done** (`meetingraft-sync`)
 
 ## Epic 9 — Speaker Assignment

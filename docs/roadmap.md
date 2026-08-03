@@ -142,9 +142,11 @@ show stub markdown). **Done follow-up:** Artifacts via backend jobs
 Speakers skeleton (`feat/speakers-skeleton`: domain + SQLite + UniFFI + Meetings
 **Speakers** tab, ручные метки ru/en). **Done follow-up:** Local LLM
 (`feat/ollama-openai-compat-llm`: Ollama native + OpenAI-compatible
-Brief/Follow-up, без silent fallback). **Remaining:** WhisperX/production LLM
-workers, diarization и привязка спикеров к Final (Epic 9), user-defined
-templates, export .md/mail.
+Brief/Follow-up, без silent fallback). **Done follow-up:** Backend LLM
+provider (`feat/backend-llm-provider`: jobs `brief`/`follow_up` → env
+OpenAI-compat; app шлёт model + language-aware prompts). **Remaining:**
+WhisperX / provider registry / billing, diarization (Epic 9), user-defined
+templates, export .md/mail, remote STT.
 
 ## Phase 7 — Hardening and release
 

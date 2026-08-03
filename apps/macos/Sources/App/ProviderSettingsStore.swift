@@ -104,6 +104,13 @@ enum LlmEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
         isAvailable ? displayName : "\(displayName) — скоро"
     }
 
+    var needsModel: Bool {
+        switch self {
+        case .builtinTemplates: false
+        case .ollama, .openaiCompat, .backend: true
+        }
+    }
+
     var needsUrl: Bool {
         switch self {
         case .builtinTemplates, .backend: false
