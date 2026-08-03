@@ -42,7 +42,8 @@
 - [x] Render partial captions
 - [x] Merge final captions
 - [x] Save local caption events
-- Settings: session language override (default Russian) — stub exists; STT model status in Settings
+- Settings: session language override (default Russian) — stub exists
+- [x] STT model picker в Settings (Whisper ggml: auto / base / small / large-v3-turbo; HF download; first-run `ggml-base.bin`)
 - Whisper Metal + model download script (opt-in `--features whisper`)
 
 ## Epic 7 — Glossary
@@ -81,7 +82,7 @@
 - Backend provider platform — **deferred:** реестр нескольких провайдеров
   (URL, keys, лимиты), UI «добавить провайдера», `GET /v1/models`
 - Тарификация / billing провайдеров — **deferred**
-- STT model picker во фронте (выбор ggml) — **deferred**
+- Parakeet on-device STT (второй engine рядом с Whisper) — **deferred**
 - Remote STT API (latency risk для live; не default) — **deferred**
 - Более жирная модель для глубокого анализа полного аудио / refined
   transcript — **deferred**

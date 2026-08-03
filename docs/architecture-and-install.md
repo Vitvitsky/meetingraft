@@ -168,6 +168,23 @@ xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft \
 
 Без файла модели используется **Mock** STT.
 
+**Settings → Live STT (ADR-005):** picker `auto | base | small | large-v3-turbo`;
+кнопка **Download** тянет ggml с Hugging Face (`ggerganov/whisper.cpp/resolve/main/…`)
+в `modelsDirectory()` (обычно `~/Library/Application Support/meetingraft/models/`).
+При первом открытии Settings, если каталог пуст — автоматически качается
+**`ggml-base.bin`**. Выбор сохраняется через UniFFI `setPreferredWhisperModel`;
+Rust `resolve_whisper_model` подставляет файл для Live STT (при сборке с
+`--features whisper`).
+
+| id | файл |
+|----|------|
+| `auto` | приоритетный список (как раньше) |
+| `base` | `ggml-base.bin` |
+| `small` | `ggml-small.bin` |
+| `large-v3-turbo` | `ggml-large-v3-turbo.bin` |
+
+CLI-альтернатива (CI / headless):
+
 ```bash
 # dev (~base)
 apps/macos/Scripts/download-stt-model.sh
