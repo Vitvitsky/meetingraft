@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 
+extension FfiMeetingSummary: Identifiable {}
+
 /// Библиотека встреч: список, поиск, переименование, удаление.
 struct MeetingsListView: View {
     @Bindable var viewModel: MeetingsViewModel
@@ -42,7 +44,11 @@ struct MeetingsListView: View {
             "Delete this meeting?",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
+                set: {
+                    if !$0 {
+                        pendingDeletion = nil
+                    }
+                }
             ),
             presenting: pendingDeletion
         ) { meeting in

@@ -54,7 +54,7 @@ final class MeetingsLibraryTests: XCTestCase {
             endedAtMs: 1_090_000
         )
 
-        XCTAssertEqual(viewModel.duration(for: meeting), .milliseconds(90_000))
+        XCTAssertEqual(viewModel.duration(for: meeting), .milliseconds(90000))
     }
 
     func testRenameUpdatesListOnSuccess() {
@@ -189,30 +189,42 @@ private final class LibraryCoreSpy: MeetingsCoreProviding {
         return searchHits
     }
 
-    func listCaptions(meetingId _: String) -> [FfiCaptionEvent] { [] }
+    func listCaptions(meetingId _: String) -> [FfiCaptionEvent] {
+        []
+    }
 
     func getFinalTranscript(meetingId _: String) -> FfiFinalTranscript {
         FfiFinalTranscript(meetingId: "", version: 0, bodyMarkdown: "", createdAtMs: 0)
     }
 
-    func listFinalTranscripts(meetingId _: String) -> [FfiFinalTranscript] { [] }
+    func listFinalTranscripts(meetingId _: String) -> [FfiFinalTranscript] {
+        []
+    }
 
     func getFinalTranscriptVersion(meetingId _: String, version _: UInt32) -> FfiFinalTranscript {
         FfiFinalTranscript(meetingId: "", version: 0, bodyMarkdown: "", createdAtMs: 0)
     }
 
-    func listArtifacts(meetingId _: String) -> [FfiArtifact] { [] }
+    func listArtifacts(meetingId _: String) -> [FfiArtifact] {
+        []
+    }
 
-    func listSpeakers(meetingId _: String) -> [FfiSpeaker] { [] }
+    func listSpeakers(meetingId _: String) -> [FfiSpeaker] {
+        []
+    }
 
     func upsertSpeaker(
         meetingId _: String,
         id _: String,
         displayName _: String,
         sortIndex _: Int64
-    ) -> String { "" }
+    ) -> String {
+        ""
+    }
 
-    func deleteSpeaker(id _: String) -> String { "" }
+    func deleteSpeaker(id _: String) -> String {
+        ""
+    }
 
     func setApiConfig(baseUrl _: String, token _: String) {}
 

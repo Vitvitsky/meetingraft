@@ -626,6 +626,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     func deleteGlossaryTerm(id: String)  -> String
     
     /**
+     * Удалить встречу целиком; пустая строка ошибки означает успех.
+     */
+    func deleteMeeting(meetingId: String)  -> String
+    
+    /**
      * Удалить ручную метку спикера.
      */
     func deleteSpeaker(id: String)  -> String
@@ -685,9 +690,6 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
      */
     func listBackendLlmModels()  -> [FfiLlmModelRef]
     
-    /**
-     * Сохранённые live captions выбранной встречи.
-     */
     func listCaptions(meetingId: String)  -> [FfiCaptionEvent]
     
     /**
@@ -722,6 +724,18 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     func modelsDirectory()  -> String
     
     func preferredWhisperModel()  -> String
+    
+    /**
+     * Переименовать встречу; пустая строка ошибки означает успех.
+     */
+    func renameMeeting(meetingId: String, title: String)  -> String
+    
+    /**
+     * Сохранённые live captions выбранной встречи.
+     * Полнотекстовый поиск по названиям, транскриптам и артефактам.
+     * Пустой запрос возвращает пустой список, а не всю базу.
+     */
+    func searchMeetings(query: String, limit: UInt32)  -> [FfiSearchHit]
     
     func sessionLanguage()  -> String
     
@@ -775,8 +789,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     
     /**
      * Recording + live STT (Whisper если модель есть и feature включён, иначе Mock).
+     *
+     * `title` формирует Swift: формат даты локале-зависим и не должен
+     * уезжать в ядро. Пустая строка допустима.
      */
-    func startRecording(sessionId: String)  -> String
+    func startRecording(sessionId: String, title: String)  -> String
     
     func state()  -> String
     
@@ -939,6 +956,19 @@ open func deleteGlossaryTerm(id: String) -> String  {
     uniffi_meetingraft_ffi_fn_method_meetingcore_delete_glossary_term(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(id),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Удалить встречу целиком; пустая строка ошибки означает успех.
+     */
+open func deleteMeeting(meetingId: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_delete_meeting(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),uniffiCallStatus
     )
 })
 }
@@ -1122,9 +1152,6 @@ open func listBackendLlmModels() -> [FfiLlmModelRef]  {
 })
 }
     
-    /**
-     * Сохранённые live captions выбранной встречи.
-     */
 open func listCaptions(meetingId: String) -> [FfiCaptionEvent]  {
     return try!  FfiConverterSequenceTypeFfiCaptionEvent.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1230,6 +1257,36 @@ open func preferredWhisperModel() -> String  {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_preferred_whisper_model(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Переименовать встречу; пустая строка ошибки означает успех.
+     */
+open func renameMeeting(meetingId: String, title: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_rename_meeting(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(meetingId),
+        FfiConverterString.lower(title),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Сохранённые live captions выбранной встречи.
+     * Полнотекстовый поиск по названиям, транскриптам и артефактам.
+     * Пустой запрос возвращает пустой список, а не всю базу.
+     */
+open func searchMeetings(query: String, limit: UInt32) -> [FfiSearchHit]  {
+    return try!  FfiConverterSequenceTypeFfiSearchHit.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_search_meetings(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(query),
+        FfiConverterUInt32.lower(limit),uniffiCallStatus
     )
 })
 }
@@ -1364,13 +1421,17 @@ open func startDemo()  {try! rustCall() {
     
     /**
      * Recording + live STT (Whisper если модель есть и feature включён, иначе Mock).
+     *
+     * `title` формирует Swift: формат даты локале-зависим и не должен
+     * уезжать в ядро. Пустая строка допустима.
      */
-open func startRecording(sessionId: String) -> String  {
+open func startRecording(sessionId: String, title: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_start_recording(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(sessionId),uniffiCallStatus
+        FfiConverterString.lower(sessionId),
+        FfiConverterString.lower(title),uniffiCallStatus
     )
 })
 }
@@ -2207,15 +2268,31 @@ public func FfiConverterTypeFfiLlmModelRef_lower(_ value: FfiLlmModelRef) -> Rus
  */
 public struct FfiMeetingSummary: Equatable, Hashable {
     public var id: String
+    /**
+     * Пустая строка — названия нет; подстановку делает Swift.
+     */
+    public var title: String
     public var startedAtMs: UInt64
+    /**
+     * 0 — встреча ещё не завершена.
+     */
+    public var endedAtMs: UInt64
     public var hasFinal: Bool
     public var artifactCount: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, startedAtMs: UInt64, hasFinal: Bool, artifactCount: UInt64) {
+    public init(id: String, 
+        /**
+         * Пустая строка — названия нет; подстановку делает Swift.
+         */title: String, startedAtMs: UInt64, 
+        /**
+         * 0 — встреча ещё не завершена.
+         */endedAtMs: UInt64, hasFinal: Bool, artifactCount: UInt64) {
         self.id = id
+        self.title = title
         self.startedAtMs = startedAtMs
+        self.endedAtMs = endedAtMs
         self.hasFinal = hasFinal
         self.artifactCount = artifactCount
     }
@@ -2237,7 +2314,9 @@ public struct FfiConverterTypeFfiMeetingSummary: FfiConverterRustBuffer {
         return
             try FfiMeetingSummary(
                 id: FfiConverterString.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf), 
                 startedAtMs: FfiConverterUInt64.read(from: &buf), 
+                endedAtMs: FfiConverterUInt64.read(from: &buf), 
                 hasFinal: FfiConverterBool.read(from: &buf), 
                 artifactCount: FfiConverterUInt64.read(from: &buf)
         )
@@ -2245,7 +2324,9 @@ public struct FfiConverterTypeFfiMeetingSummary: FfiConverterRustBuffer {
 
     public static func write(_ value: FfiMeetingSummary, into buf: inout [UInt8]) {
         FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
         FfiConverterUInt64.write(value.startedAtMs, into: &buf)
+        FfiConverterUInt64.write(value.endedAtMs, into: &buf)
         FfiConverterBool.write(value.hasFinal, into: &buf)
         FfiConverterUInt64.write(value.artifactCount, into: &buf)
     }
@@ -2264,6 +2345,77 @@ public func FfiConverterTypeFfiMeetingSummary_lift(_ buf: RustBuffer) throws -> 
 #endif
 public func FfiConverterTypeFfiMeetingSummary_lower(_ value: FfiMeetingSummary) -> RustBuffer {
     return FfiConverterTypeFfiMeetingSummary.lower(value)
+}
+
+
+/**
+ * Совпадение поиска по материалам встреч.
+ */
+public struct FfiSearchHit: Equatable, Hashable {
+    public var meetingId: String
+    /**
+     * `caption` | `final` | `artifact` — куда вести из результата.
+     */
+    public var kind: String
+    public var refId: String
+    public var snippet: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(meetingId: String, 
+        /**
+         * `caption` | `final` | `artifact` — куда вести из результата.
+         */kind: String, refId: String, snippet: String) {
+        self.meetingId = meetingId
+        self.kind = kind
+        self.refId = refId
+        self.snippet = snippet
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiSearchHit: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiSearchHit: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiSearchHit {
+        return
+            try FfiSearchHit(
+                meetingId: FfiConverterString.read(from: &buf), 
+                kind: FfiConverterString.read(from: &buf), 
+                refId: FfiConverterString.read(from: &buf), 
+                snippet: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiSearchHit, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.meetingId, into: &buf)
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterString.write(value.refId, into: &buf)
+        FfiConverterString.write(value.snippet, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSearchHit_lift(_ buf: RustBuffer) throws -> FfiSearchHit {
+    return try FfiConverterTypeFfiSearchHit.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSearchHit_lower(_ value: FfiSearchHit) -> RustBuffer {
+    return FfiConverterTypeFfiSearchHit.lower(value)
 }
 
 
@@ -2810,6 +2962,31 @@ fileprivate struct FfiConverterSequenceTypeFfiMeetingSummary: FfiConverterRustBu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeFfiSearchHit: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiSearchHit]
+
+    public static func write(_ value: [FfiSearchHit], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiSearchHit.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiSearchHit] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiSearchHit]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiSearchHit.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeFfiSpeaker: FfiConverterRustBuffer {
     typealias SwiftType = [FfiSpeaker]
 
@@ -2862,6 +3039,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_delete_glossary_term() != 55034) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_delete_meeting() != 33170) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_delete_speaker() != 29708) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2907,7 +3087,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_backend_llm_models() != 57200) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_captions() != 46525) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_captions() != 52453) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_final_transcripts() != 50011) {
@@ -2935,6 +3115,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_preferred_whisper_model() != 63540) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_rename_meeting() != 47969) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_search_meetings() != 3435) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_session_language() != 62667) {
@@ -2967,7 +3153,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_demo() != 15831) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_recording() != 34732) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_start_recording() != 29196) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_state() != 11869) {
