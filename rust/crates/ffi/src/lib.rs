@@ -1040,6 +1040,16 @@ impl MeetingCore {
                 ArtifactKind::Brief => JobKind::Brief,
                 ArtifactKind::FollowUp => JobKind::FollowUp,
             };
+            let (system, user) = match domain_kind {
+                ArtifactKind::Brief => brief_prompts(
+                    &final_transcript.body_markdown,
+                    guard.language_policy.primary,
+                ),
+                ArtifactKind::FollowUp => follow_up_prompts(
+                    &final_transcript.body_markdown,
+                    guard.language_policy.primary,
+                ),
+            };
             let request = CreateJobRequest {
                 meeting_id: meeting_id.clone(),
                 kind: job_kind,
@@ -1050,7 +1060,11 @@ impl MeetingCore {
                     .iter()
                     .map(|language| language.code().to_owned())
                     .collect(),
-                payload: None,
+                payload: Some(serde_json::json!({
+                    "model": guard.llm_model_id,
+                    "system": system,
+                    "user": user,
+                })),
             };
             let client = guard.sync_client.clone();
             drop(guard);
@@ -1696,7 +1710,7 @@ mod tests {
         let _post = server
             .mock("POST", "/v1/jobs")
             .match_body(Matcher::Exact(
-                r#"{"meeting_id":"m-backend","kind":"brief","primary_language":"ru","allowed_languages":["ru","en","es"]}"#
+                r#"{"meeting_id":"m-backend","kind":"brief","primary_language":"ru","allowed_languages":["ru","en","es"],"payload":{"model":"Google/gemma-4-12b-it","system":"Create a concise meeting brief in language `ru`. Return Markdown with a summary, decisions, and key discussion points. Do not invent facts absent from the transcript.","user":"Create the meeting brief from this final transcript:\n\n<transcript>\nОбсудили backend-генерацию.\n</transcript>"}}"#
                     .into(),
             ))
             .with_status(201)
@@ -1719,7 +1733,11 @@ mod tests {
         seed_final_transcript(&root, "m-backend");
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
         core.set_api_config(server.url(), "dev-token".into());
-        core.set_llm_config("backend".into(), "unused".into(), String::new());
+        core.set_llm_config(
+            "backend".into(),
+            "Google/gemma-4-12b-it".into(),
+            String::new(),
+        );
 
         let result = core.generate_artifact("m-backend".into(), FfiArtifactKind::Brief);
 
@@ -1735,6 +1753,10 @@ mod tests {
         let mut server = Server::new();
         let _post = server
             .mock("POST", "/v1/jobs")
+            .match_body(Matcher::Exact(
+                r#"{"meeting_id":"m-backend-error","kind":"follow_up","primary_language":"ru","allowed_languages":["ru","en","es"],"payload":{"model":"Google/gemma-4-12b-it","system":"You are a meeting assistant. Draft a follow-up email in language `ru` as Markdown. Start with the subject line in an HTML comment, then include a greeting, a concise meeting summary, explicitly stated next steps, and a closing. Do not invent facts, assignments, or deadlines absent from the transcript.","user":"Draft a follow-up email from this final transcript:\n\n<transcript>\nОбсудили backend-генерацию.\n</transcript>"}}"#
+                    .into(),
+            ))
             .with_status(201)
             .with_body(
                 r#"{"id":"j2","meeting_id":"m-backend-error","kind":"follow_up","status":"failed","error":"model unavailable","artifact_ids":[]}"#,
@@ -1748,7 +1770,11 @@ mod tests {
         seed_final_transcript(&root, "m-backend-error");
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
         core.set_api_config(server.url(), "dev-token".into());
-        core.set_llm_config("backend".into(), "unused".into(), String::new());
+        core.set_llm_config(
+            "backend".into(),
+            "Google/gemma-4-12b-it".into(),
+            String::new(),
+        );
 
         let result = core.generate_artifact("m-backend-error".into(), FfiArtifactKind::FollowUp);
 
