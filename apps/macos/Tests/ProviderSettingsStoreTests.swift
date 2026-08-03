@@ -97,4 +97,50 @@ final class ProviderSettingsStoreTests: XCTestCase {
         let store = ProviderSettingsStore()
         XCTAssertEqual(store.selectedSttModelId, .auto)
     }
+
+    func testBackendBlocksArtifactGenerationWhenCatalogEmpty() {
+        let store = ProviderSettingsStore()
+        store.llmEngine = .backend
+        XCTAssertTrue(store.backendLlmModels.isEmpty)
+        XCTAssertFalse(store.allowsArtifactGeneration)
+        XCTAssertTrue(store.backendCatalogMissingHelp.contains("PROVIDERS_JSON"))
+    }
+
+    func testBackendAllowsArtifactGenerationWhenCatalogPresent() {
+        let store = ProviderSettingsStore()
+        store.llmEngine = .backend
+        store.applyBackendModelsCatalog([
+            FfiLlmModelRef(providerId: "home", model: "m1", displayName: "One"),
+        ])
+        XCTAssertTrue(store.allowsArtifactGeneration)
+        XCTAssertEqual(store.llmProviderId, "home")
+        XCTAssertEqual(store.llmModelId, "m1")
+    }
+
+    func testEmptyCatalogRefreshClearsSelection() {
+        let store = ProviderSettingsStore()
+        store.llmProviderId = "stale"
+        store.llmModelId = "old-model"
+        store.applyBackendModelsCatalog([])
+        XCTAssertTrue(store.backendLlmModels.isEmpty)
+        XCTAssertEqual(store.llmProviderId, "")
+        XCTAssertEqual(store.llmModelId, "")
+        XCTAssertTrue(store.backendLlmModelsMessage.contains("PROVIDERS_JSON"))
+    }
+
+    func testCatalogRefreshNetworkErrorKeepsPreviousCache() {
+        let store = ProviderSettingsStore()
+        let cached = FfiLlmModelRef(providerId: "home", model: "m1", displayName: "One")
+        store.applyBackendModelsCatalog([cached])
+        store.llmProviderId = "home"
+        store.llmModelId = "m1"
+
+        store.applyBackendModelsCatalog([], connectionError: "connection refused")
+
+        XCTAssertEqual(store.backendLlmModels, [cached])
+        XCTAssertEqual(store.llmProviderId, "home")
+        XCTAssertEqual(store.llmModelId, "m1")
+        XCTAssertTrue(store.backendLlmModelsMessage.contains("connection refused"))
+        XCTAssertTrue(store.allowsArtifactGeneration)
+    }
 }

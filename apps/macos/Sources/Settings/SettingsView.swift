@@ -343,21 +343,15 @@ struct SettingsView: View {
         applyApiConfig()
         guard let core else { return }
         let models = core.listBackendLlmModels()
-        providerStore.backendLlmModels = models
+        // FFI maps sync Err → []; отличаем сбой от Ok([]) через health probe.
         if models.isEmpty {
-            providerStore.backendLlmModelsMessage =
-                "Нет моделей — настройте PROVIDERS_JSON / LLM_* на backend"
-            return
+            let connectionError = core.testApiConnection()
+            if !connectionError.isEmpty {
+                providerStore.applyBackendModelsCatalog([], connectionError: connectionError)
+                return
+            }
         }
-        providerStore.backendLlmModelsMessage = ""
-        let currentKey = providerStore.selectedBackendLlmId
-        let keys = Set(
-            models.map { BackendLlmSelection.selectionKey(providerId: $0.providerId, model: $0.model) }
-        )
-        if !keys.contains(currentKey), let first = models.first {
-            providerStore.llmProviderId = first.providerId
-            providerStore.llmModelId = first.model
-        }
+        providerStore.applyBackendModelsCatalog(models)
     }
 
     private func chooseExportFolder() {

@@ -164,11 +164,13 @@ struct MeetingDetailView: View {
                     viewModel.generate(meetingId: meeting.id, kind: .brief)
                 }
                 .help(generateHelp)
+                .disabled(!canGenerateArtifacts)
                 Button("Generate Follow-up", systemImage: "envelope") {
                     applyProviderConfig()
                     viewModel.generate(meetingId: meeting.id, kind: .followUp)
                 }
                 .help(generateHelp)
+                .disabled(!canGenerateArtifacts)
                 Button("Submit refine (stub)", systemImage: "cloud") {
                     viewModel.submitBackendRefine(meetingId: meeting.id)
                 }
@@ -182,6 +184,7 @@ struct MeetingDetailView: View {
                     exportMarkdown()
                 }
                 .help(exportHelp)
+                .disabled(viewModel.finalTranscript == nil)
                 Button("Choose folder…") {
                     chooseExportFolderAndExport()
                 }
@@ -189,8 +192,16 @@ struct MeetingDetailView: View {
                 .disabled(viewModel.finalTranscript == nil)
                 Spacer()
             }
-            .disabled(viewModel.finalTranscript == nil)
             .padding()
+
+            if let catalogHelp = backendCatalogGenerateHelp {
+                Text(catalogHelp)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+            }
 
             if !viewModel.exportStatusMessage.isEmpty {
                 Text(viewModel.exportStatusMessage)
@@ -274,10 +285,25 @@ struct MeetingDetailView: View {
         .padding()
     }
 
+    private var canGenerateArtifacts: Bool {
+        viewModel.finalTranscript != nil && providerStore.allowsArtifactGeneration
+    }
+
+    private var backendCatalogGenerateHelp: String? {
+        guard providerStore.llmEngine == .backend, !providerStore.allowsArtifactGeneration else {
+            return nil
+        }
+        return providerStore.backendCatalogMissingHelp
+    }
+
     private var generateHelp: String {
-        viewModel.finalTranscript == nil
-            ? "Нужен Final transcript"
-            : "Собрать артефакт из Final"
+        if viewModel.finalTranscript == nil {
+            return "Нужен Final transcript"
+        }
+        if let backendCatalogGenerateHelp {
+            return backendCatalogGenerateHelp
+        }
+        return "Собрать артефакт из Final"
     }
 
     private var exportHelp: String {

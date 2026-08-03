@@ -65,6 +65,21 @@ final class ProviderSettingsStore {
         }
     }
 
+    /// Generate Brief/Follow-up: для Backend нужен непустой каталог моделей.
+    var allowsArtifactGeneration: Bool {
+        switch llmEngine {
+        case .backend:
+            !backendLlmModels.isEmpty
+        case .builtinTemplates, .ollama, .openaiCompat:
+            true
+        }
+    }
+
+    /// Подпись, когда Generate заблокирован из‑за пустого каталога backend.
+    var backendCatalogMissingHelp: String {
+        "Нет каталога моделей — Settings → Обновить или PROVIDERS_JSON / LLM_*"
+    }
+
     /// Подпись для баннера Artifacts.
     var artifactsPipelineCaption: String {
         switch llmEngine {
@@ -81,6 +96,42 @@ final class ProviderSettingsStore {
                 "Генерация из Final · LLM: backend (\(llmProviderId) · \(llmModelId))"
             }
         }
+    }
+
+    /// Результат Refresh каталога: ошибка сети → сохранить cache; пустой Ok → сбросить selection.
+    func applyBackendModelsCatalog(
+        _ models: [FfiLlmModelRef],
+        connectionError: String? = nil
+    ) {
+        if let connectionError, !connectionError.isEmpty {
+            backendLlmModelsMessage = "Не удалось обновить каталог: \(connectionError)"
+            return
+        }
+
+        backendLlmModels = models
+        if models.isEmpty {
+            clearBackendLlmSelection()
+            backendLlmModelsMessage =
+                "Нет моделей — настройте PROVIDERS_JSON / LLM_* на backend"
+            return
+        }
+
+        backendLlmModelsMessage = ""
+        let currentKey = selectedBackendLlmId
+        let keys = Set(
+            models.map {
+                BackendLlmSelection.selectionKey(providerId: $0.providerId, model: $0.model)
+            }
+        )
+        if !keys.contains(currentKey), let first = models.first {
+            llmProviderId = first.providerId
+            llmModelId = first.model
+        }
+    }
+
+    func clearBackendLlmSelection() {
+        llmProviderId = ""
+        llmModelId = ""
     }
 }
 
