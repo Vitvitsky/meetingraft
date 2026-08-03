@@ -19,7 +19,7 @@ use postcall::{
 };
 mod rebuild;
 
-use postcall::{RebuildJobs, ThreadSpawner};
+use postcall::{RebuildJobs, ThreadSpawner, diff_words};
 use session::{ChannelMixer, MeetingSession};
 use storage::{AudioManifestError, AudioManifestStore};
 use stt::{
@@ -102,6 +102,14 @@ pub struct FfiMeetingSummary {
     pub ended_at_ms: u64,
     pub has_final: bool,
     pub artifact_count: u64,
+}
+
+/// Кусок дифференциации Live против Final для Swift.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiDiffSpan {
+    /// `equal` | `removed` | `added`.
+    pub op: String,
+    pub text: String,
 }
 
 /// Прогресс фонового пересбора Final для Swift.
@@ -1138,6 +1146,44 @@ impl MeetingCore {
         }
     }
 
+    /// Сравнить live-финалы с версией Final по словам.
+    ///
+    /// Считается в ядре: сравнение — доменная логика, вью только
+    /// раскрашивает (`AGENTS.md`).
+    pub fn diff_live_vs_final(&self, meeting_id: String, version: u32) -> Vec<FfiDiffSpan> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        let root = guard.data_root.clone();
+        drop(guard);
+        let Ok(store) = AudioManifestStore::open(&root) else {
+            return Vec::new();
+        };
+        let live = store
+            .list_captions(&meeting_id)
+            .map(|captions| {
+                captions
+                    .iter()
+                    .filter(|caption| caption.phase == CaptionPhase::Final)
+                    .map(|caption| caption.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        let final_text = store
+            .get_final_transcript_version(&meeting_id, version)
+            .ok()
+            .flatten()
+            .map(|transcript| transcript.body_markdown)
+            .unwrap_or_default();
+
+        diff_words(&live, &final_text)
+            .into_iter()
+            .map(|span| FfiDiffSpan {
+                op: span.op.code().to_string(),
+                text: span.text,
+            })
+            .collect()
+    }
+
     /// Модель post-call прохода (`large-v3-turbo` по умолчанию).
     pub fn set_post_call_whisper_model(&self, model_id: String) {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
@@ -1781,6 +1827,55 @@ mod tests {
             assert_eq!(first, second);
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diff_live_vs_final_marks_the_corrected_word() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-diff-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-diff".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store
+                .append_caption(
+                    &meeting_id,
+                    &domain::CaptionEvent::new(
+                        "c1".into(),
+                        "обсудили билинг".into(),
+                        CaptionPhase::Final,
+                    ),
+                    10,
+                )
+                .expect("caption");
+            store
+                .upsert_final_transcript(&FinalTranscript {
+                    meeting_id: meeting_id.clone(),
+                    version: 1,
+                    body_markdown: "обсудили биллинг".into(),
+                    created_at_ms: 20,
+                })
+                .expect("final");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let spans = core.diff_live_vs_final(meeting_id, 1);
+
+        let ops: Vec<&str> = spans.iter().map(|span| span.op.as_str()).collect();
+        assert_eq!(ops, vec!["equal", "removed", "added"], "{spans:?}");
+        assert_eq!(spans[1].text, "билинг");
+        assert_eq!(spans[2].text, "биллинг");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diff_of_unknown_meeting_is_empty() {
+        let root = std::env::temp_dir().join(format!("mr-ffi-diff-none-{}", now_ms()));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        assert!(core.diff_live_vs_final("nope".into(), 1).is_empty());
     }
 
     #[test]

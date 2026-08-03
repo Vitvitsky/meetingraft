@@ -1,6 +1,7 @@
 //! Локальная сборка post-call транскриптов и артефактов.
 
 mod assemble;
+mod diff;
 mod jobs;
 mod llm;
 mod llm_http;
@@ -10,6 +11,7 @@ mod prompts;
 mod templates;
 
 pub use assemble::assemble_final;
+pub use diff::{DiffOp, DiffSpan, diff_words};
 pub use jobs::{
     InlineSpawner, JobHandle, RebuildJobs, RebuildProgress, RebuildState, Spawner, ThreadSpawner,
 };
