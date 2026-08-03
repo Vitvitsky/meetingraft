@@ -63,4 +63,9 @@ final class ProviderSettingsStoreTests: XCTestCase {
         let store = ProviderSettingsStore()
         XCTAssertTrue(store.exportFolderPath.contains("MeetingRaft"))
     }
+
+    func testDefaultSelectedSttModelIdIsAuto() {
+        let store = ProviderSettingsStore()
+        XCTAssertEqual(store.selectedSttModelId, .auto)
+    }
 }

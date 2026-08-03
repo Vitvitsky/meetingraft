@@ -71,13 +71,23 @@ final class LiveCaptionsViewModel {
         stream.stop()
     }
 
+    /// ADR-005: выбранная ggml-модель → MeetingCore перед записью.
+    func applySttModelPreference(_ store: ProviderSettingsStore) {
+        core.setPreferredWhisperModel(modelId: store.selectedSttModelId.rawValue)
+    }
+
     /// Recording + drainLiveCaptions с того же MeetingCore.
-    func startLive(capture: AudioCaptureCoordinator, translation: TranslationSettingsStore) async {
+    func startLive(
+        capture: AudioCaptureCoordinator,
+        translation: TranslationSettingsStore,
+        stt: ProviderSettingsStore
+    ) async {
         stopDemo()
         stopLivePoll()
         lines = []
         translationLines = []
         applyTranslationSettings(translation)
+        applySttModelPreference(stt)
         await capture.startRecording()
         guard capture.isRecording else { return }
         isLiveSession = true

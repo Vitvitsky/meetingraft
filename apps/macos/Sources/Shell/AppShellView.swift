@@ -5,6 +5,7 @@ import SwiftUI
 struct AppShellView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
     @Environment(TranslationSettingsStore.self) private var translationStore
+    @Environment(ProviderSettingsStore.self) private var providerStore
     @State private var selection: AppDestination? = .liveCaptions
     @State private var captionsViewModel: LiveCaptionsViewModel
     @State private var captureCoordinator: AudioCaptureCoordinator
@@ -107,7 +108,8 @@ struct AppShellView: View {
         Task {
             await captionsViewModel.startLive(
                 capture: captureCoordinator,
-                translation: translationStore
+                translation: translationStore,
+                stt: providerStore
             )
         }
     }

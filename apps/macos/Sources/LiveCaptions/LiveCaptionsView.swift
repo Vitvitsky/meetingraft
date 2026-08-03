@@ -5,6 +5,7 @@ struct LiveCaptionsView: View {
     @Bindable var viewModel: LiveCaptionsViewModel
     @Bindable var capture: AudioCaptureCoordinator
     @Environment(TranslationSettingsStore.self) private var translationStore
+    @Environment(ProviderSettingsStore.self) private var providerStore
     let primaryLanguage: SpeechLanguage
 
     var body: some View {
@@ -38,7 +39,8 @@ struct LiveCaptionsView: View {
                         Task {
                             await viewModel.startLive(
                                 capture: capture,
-                                translation: translationStore
+                                translation: translationStore,
+                                stt: providerStore
                             )
                         }
                     }

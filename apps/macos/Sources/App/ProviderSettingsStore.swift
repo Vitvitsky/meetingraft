@@ -31,8 +31,11 @@ final class ProviderSettingsStore {
     var llmModelId: String = "gemma2"
     /// Папка экспорта markdown (Obsidian vault / Documents); tilde раскрывается при записи.
     var exportFolderPath: String = "~/Documents/MeetingRaft"
+    /// On-device Whisper ggml id; `auto` — resolve по установленным файлам (ADR-005).
+    var selectedSttModelId: WhisperModelId = .auto
 
     let postCallEngines = PostCallSttEngine.allCases
+    let sttModelIds = WhisperModelId.allCases
     let llmEngines = LlmEngine.allCases
 
     /// Подпись для баннера Artifacts.

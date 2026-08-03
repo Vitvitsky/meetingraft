@@ -30,4 +30,17 @@ enum WhisperModelId: String, CaseIterable, Identifiable, Sendable {
         guard let filename else { return nil }
         return URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)")
     }
+
+    var displayName: String {
+        switch self {
+        case .auto:
+            "Auto (best installed)"
+        case .base:
+            "Whisper base"
+        case .small:
+            "Whisper small"
+        case .largeV3Turbo:
+            "Whisper large-v3-turbo"
+        }
+    }
 }

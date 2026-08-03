@@ -9,7 +9,12 @@ struct SettingsView: View {
     @State private var modelPath: String = ""
     @State private var modelsDir: String = ""
     @State private var dataRoot: String = ""
+    @State private var localModels: [String] = []
+    @State private var downloadProgress: Double?
+    @State private var downloadError: String = ""
+    @State private var isDownloading = false
     @State private var core: MeetingCore?
+    private let modelDownloader: WhisperDownloading = WhisperModelDownloader()
 
     var body: some View {
         Form {
@@ -55,6 +60,11 @@ struct SettingsView: View {
             }
 
             Section("Live STT (ADR-005)") {
+                Picker("Model", selection: Bindable(providerStore).selectedSttModelId) {
+                    ForEach(providerStore.sttModelIds) { modelId in
+                        Text(modelId.displayName).tag(modelId)
+                    }
+                }
                 LabeledContent("Engine") {
                     Text(liveSttEngineLabel)
                         .foregroundStyle(modelPath.isEmpty ? .orange : .primary)
@@ -70,11 +80,34 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
+                if !localModels.isEmpty {
+                    Text("Installed: \(localModels.joined(separator: ", "))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if providerStore.selectedSttModelId != .auto, !isSelectedModelInstalled {
+                    HStack {
+                        Button(isDownloading ? "Downloading…" : "Download") {
+                            startDownload(providerStore.selectedSttModelId)
+                        }
+                        .disabled(isDownloading)
+                        if let progress = downloadProgress {
+                            ProgressView(value: progress)
+                                .frame(width: 120)
+                        }
+                    }
+                }
+                if !downloadError.isEmpty {
+                    Text(downloadError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
                 Text("Models dir: \(modelsDir)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                Text("Download: apps/macos/Scripts/download-stt-model.sh (Hugging Face ggml)")
+                Text("First-run: auto-download ggml-base.bin when models/ is empty.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -169,6 +202,10 @@ struct SettingsView: View {
         .padding()
         .frame(minWidth: 560, minHeight: 620)
         .onAppear(perform: refreshModelStatus)
+        .onChange(of: providerStore.selectedSttModelId) { _, _ in
+            applySttPreference()
+            refreshModelPaths()
+        }
         .onChange(of: providerStore.apiBaseUrl) { _, _ in
             applyApiConfig()
         }
@@ -190,15 +227,79 @@ struct SettingsView: View {
         modelPath.isEmpty ? "Mock (no ggml model)" : "Whisper (on-device)"
     }
 
+    private var isSelectedModelInstalled: Bool {
+        guard let filename = providerStore.selectedSttModelId.filename else {
+            return !localModels.isEmpty
+        }
+        return localModels.contains(filename)
+    }
+
     private func refreshModelStatus() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let root = support.appendingPathComponent("meetingraft", isDirectory: true)
         dataRoot = root.path
         let meetingCore = MeetingCore.withDataRoot(dataRoot: root.path)
         core = meetingCore
-        modelPath = meetingCore.whisperModelPath()
-        modelsDir = meetingCore.modelsDirectory()
+        refreshModelPaths()
+        applySttPreference()
         applyApiConfig()
+        maybeFirstRunDownload()
+    }
+
+    private func refreshModelPaths() {
+        guard let core else { return }
+        modelPath = core.whisperModelPath()
+        modelsDir = core.modelsDirectory()
+        localModels = core.listLocalWhisperModels()
+    }
+
+    private func applySttPreference() {
+        core?.setPreferredWhisperModel(modelId: providerStore.selectedSttModelId.rawValue)
+        refreshModelPaths()
+    }
+
+    private func maybeFirstRunDownload() {
+        guard localModels.isEmpty, !isDownloading else { return }
+        startDownload(.base)
+    }
+
+    private func startDownload(_ modelId: WhisperModelId) {
+        guard let core else { return }
+        let modelsDirectory = URL(fileURLWithPath: core.modelsDirectory(), isDirectory: true)
+        isDownloading = true
+        downloadError = ""
+        downloadProgress = nil
+        Task {
+            do {
+                _ = try await modelDownloader.download(
+                    id: modelId,
+                    modelsDirectory: modelsDirectory
+                ) { fraction in
+                    downloadProgress = fraction
+                }
+                refreshModelPaths()
+                applySttPreference()
+            } catch {
+                downloadError = downloadErrorMessage(for: error)
+            }
+            isDownloading = false
+            downloadProgress = nil
+        }
+    }
+
+    private func downloadErrorMessage(for error: Error) -> String {
+        switch error {
+        case WhisperModelDownloaderError.notDownloadable:
+            "Модель не скачивается (auto)."
+        case let WhisperModelDownloaderError.downloadFailed(statusCode):
+            if let statusCode {
+                "Ошибка загрузки: HTTP \(statusCode)."
+            } else {
+                "Ошибка загрузки модели с Hugging Face."
+            }
+        default:
+            "Ошибка загрузки: \(error.localizedDescription)"
+        }
     }
 
     /// Локальный core нужен для проверки API; Generate применяет эти настройки к shell core.
