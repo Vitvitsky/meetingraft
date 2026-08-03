@@ -49,6 +49,11 @@ struct AppShellView: View {
                 )
             }
         }
+        // Оболочка окна переведена на токены (ТЗ редизайна, D1, шаг 3).
+        // Тема принудительно тёмная: светлая палитра вынесена за скобки,
+        // и смешение с системной светлой дало бы нечитаемый контраст.
+        .background(Theme.surfaceRoot)
+        .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Picker("Language", selection: Bindable(languageStore).primary) {
