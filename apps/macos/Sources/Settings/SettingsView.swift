@@ -94,6 +94,14 @@ struct SettingsView: View {
                         if let progress = downloadProgress {
                             ProgressView(value: progress)
                                 .frame(width: 120)
+                            Text("\(Int(progress * 100))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        if let size = providerStore.selectedSttModelId.approximateSizeMB {
+                            Text("~\(size) MB")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }

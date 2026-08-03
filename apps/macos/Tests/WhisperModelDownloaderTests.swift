@@ -126,7 +126,7 @@ final class WhisperModelDownloaderTests: XCTestCase {
             var invoked = false
         }
         let tracker = DownloadTracker()
-        let downloader = WhisperModelDownloader(downloadTransport: { _, _ in
+        let downloader = WhisperModelDownloader(downloadTransport: { _, _, _ in
             tracker.invoked = true
         })
 
@@ -138,7 +138,7 @@ final class WhisperModelDownloaderTests: XCTestCase {
 
     func testDownloadWritesFileViaInjectedTransport() async throws {
         let payload = Data("downloaded-model".utf8)
-        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL in
+        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL, _ in
             try payload.write(to: partialURL)
         })
 
@@ -159,7 +159,7 @@ final class WhisperModelDownloaderTests: XCTestCase {
             var fractions: [Double] = []
         }
         let tracker = ProgressTracker()
-        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL in
+        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL, _ in
             try Data("x".utf8).write(to: partialURL)
         })
 
@@ -185,7 +185,7 @@ final class WhisperModelDownloaderTests: XCTestCase {
     }
 
     func testDownloadPreservesHTTPStatusOnTransportFailure() async {
-        let downloader = WhisperModelDownloader(downloadTransport: { _, _ in
+        let downloader = WhisperModelDownloader(downloadTransport: { _, _, _ in
             throw WhisperModelDownloaderError.downloadFailed(statusCode: 404)
         })
 
@@ -197,5 +197,39 @@ final class WhisperModelDownloaderTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    /// Прогресс обязан доходить до UI: без него загрузка на сотни
+    /// мегабайт выглядит зависшей.
+    func testProgressFromTransportReachesCaller() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL, onProgress in
+            onProgress(0.25)
+            onProgress(0.75)
+            try Data("ggml".utf8).write(to: partialURL)
+        })
+        let seen = ProgressSink()
+
+        _ = try await downloader.download(id: .small, modelsDirectory: directory) { value in
+            seen.append(value)
+        }
+
+        let values = seen.values
+        XCTAssertTrue(values.contains(0.25), "\(values)")
+        XCTAssertTrue(values.contains(0.75), "\(values)")
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+/// Собирает значения прогресса с MainActor.
+@MainActor
+private final class ProgressSink {
+    private(set) var values: [Double] = []
+
+    nonisolated init() {}
+
+    func append(_ value: Double) {
+        values.append(value)
     }
 }
