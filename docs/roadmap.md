@@ -232,7 +232,8 @@ Maps to: Epic 5 (последний незакрытый пункт). Status: **
 существующая база обновляется без потери данных.
 
 План: `docs/superpowers/plans/2026-08-03-phase-9-meetings-library.md`.
-Maps to: новый Epic 11. Status: **planned**.
+Maps to: Epic 11. Status: **Rust-часть готова и проверена (T2, T4, T5, T6);
+Swift-часть написана, ждёт прогона на Mac (T0, T3, T7)**.
 
 ## Phase 10 — Final v2: re-ASR и полировка
 

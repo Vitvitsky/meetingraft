@@ -2,8 +2,9 @@ import Foundation
 
 /// Пункты боковой навигации.
 enum AppDestination: String, Hashable, CaseIterable, Identifiable {
-    case liveCaptions
+    /// Дом приложения — накопленные встречи, а не текущая запись.
     case meetings
+    case liveCaptions
     case glossary
 
     var id: String {

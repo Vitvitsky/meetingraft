@@ -74,6 +74,11 @@ The backend handles long-running and heavy post-call processing.
   markdown templates with placeholders (transcript, brief, glossary,
   participants); artifacts are versioned and regenerable
 
+### Библиотека встреч
+- название (по умолчанию — дата, задаёт Swift), длительность, статус Final
+- полнотекстовый поиск по финальным captions, транскриптам и артефактам
+- каскадное удаление: строки, поисковый индекс и PCM-чанки на диске
+
 ### Glossary
 - meeting glossary
 - workspace glossary

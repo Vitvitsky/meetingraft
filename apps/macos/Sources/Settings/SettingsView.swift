@@ -107,7 +107,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                Text("First-run: auto-download ggml-base.bin when models/ is empty.")
+                Text("First run downloads ggml-base.bin automatically at app launch.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -269,7 +269,6 @@ struct SettingsView: View {
         refreshModelPaths()
         applySttPreference()
         applyApiConfig()
-        maybeFirstRunDownload()
     }
 
     private func refreshModelPaths() {
@@ -282,11 +281,6 @@ struct SettingsView: View {
     private func applySttPreference() {
         core?.setPreferredWhisperModel(modelId: providerStore.selectedSttModelId.rawValue)
         refreshModelPaths()
-    }
-
-    private func maybeFirstRunDownload() {
-        guard localModels.isEmpty, !isDownloading else { return }
-        startDownload(.base)
     }
 
     private func startDownload(_ modelId: WhisperModelId) {

@@ -36,7 +36,7 @@ struct MeetingDetailView: View {
                 artifacts
             }
         }
-        .navigationTitle(String(meeting.id.prefix(8)))
+        .navigationTitle(viewModel.displayTitle(for: meeting))
         .onAppear {
             applyProviderConfig()
             viewModel.reload(meetingId: meeting.id)

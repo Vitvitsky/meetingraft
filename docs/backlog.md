@@ -118,6 +118,16 @@
   Live finals | Final vN (`feat/final-versions-compare`)
 - Diarization / speaker binding to Final segments — **deferred**
 
+## Epic 11 — Meetings library
+- [x] Название встречи (задаётся при старте записи, переименование в UI)
+- [x] Время окончания и длительность
+- [x] Полнотекстовый поиск FTS5 по finals / live-финалам / артефактам
+- [x] Каскадное удаление встречи (строки, индекс, PCM-чанки)
+- [x] Meetings — стартовый раздел приложения
+- [x] Скачивание STT-модели при первом запуске вне Settings
+- Фильтры по времени (Today / This week / Older) — ТЗ редизайна §4.2
+- Участники встречи — после diarization (Epic 9)
+
 ## Epic 10 — Quality
 - Unit tests for state machine
 - Integration tests for FFI facade
