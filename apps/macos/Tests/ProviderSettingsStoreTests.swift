@@ -27,6 +27,14 @@ final class ProviderSettingsStoreTests: XCTestCase {
         )
     }
 
+    func testBackendNeedsModelButNotUrl() {
+        XCTAssertTrue(LlmEngine.backend.needsModel)
+        XCTAssertFalse(LlmEngine.backend.needsUrl)
+        XCTAssertTrue(LlmEngine.ollama.needsModel)
+        XCTAssertTrue(LlmEngine.openaiCompat.needsModel)
+        XCTAssertFalse(LlmEngine.builtinTemplates.needsModel)
+    }
+
     func testSelectingUnavailablePostCallResetsToLocalFinal() {
         let store = ProviderSettingsStore()
         store.postCallStt = .backendWhisperX
