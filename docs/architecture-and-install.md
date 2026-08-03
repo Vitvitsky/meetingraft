@@ -5,8 +5,9 @@
 `docs/adr/`.
 
 **Статус прототипа (2026-08):** Phase 0–6 local MVP + ADR-007 **slice A**
-(FastAPI stub jobs) + **Speakers skeleton** (ручные метки в Meetings).
-WhisperX / diarization / production LLM — ещё не в рантайме.
+(FastAPI stub jobs) + **Speakers skeleton** (ручные метки в Meetings) +
+локальные LLM через Ollama native / OpenAI-compatible HTTP.
+WhisperX / diarization / production backend LLM — ещё не в рантайме.
 
 ---
 
@@ -85,9 +86,12 @@ sequenceDiagram
 flowchart LR
   subgraph local["На устройстве"]
     Final["FinalTranscript\nиз live finals + glossary"]
-    Art["Brief / Follow-up\nbuiltin templates"]
+    Art["Brief / Follow-up\nbuiltin templates или local LLM"]
     Final --> Art
   end
+
+  LLM["Ollama / OpenAI-compatible\n:11434"]
+  Art -->|"POST /api/chat или\n/v1/chat/completions"| LLM
 
   subgraph optional["Опционально — stub API"]
     Jobs["POST /v1/jobs"]
@@ -203,7 +207,28 @@ builtin templates).
 
 Контракт: [`shared/openapi.yaml`](../shared/openapi.yaml).
 
-### 2.6 Проверка тестами
+### 2.6 Локальный LLM: Ollama / OpenAI-compatible (опционально)
+
+```bash
+brew install ollama
+ollama serve
+# в другом terminal
+ollama pull gemma2
+```
+
+В **Settings → Providers → LLM**:
+
+- **Ollama:** Base URL `http://127.0.0.1:11434`, Model id `gemma2`;
+  приложение вызывает `POST /api/chat`.
+- **OpenAI-compatible:** тот же Base URL и Model id для Ollama либо адрес
+  другого совместимого сервера; приложение вызывает
+  `POST /v1/chat/completions`.
+
+Затем открыть завершённую встречу с Final transcript и нажать
+**Generate Brief** или **Generate Follow-up**. Ошибка локального LLM
+показывается явно: fallback на builtin templates не выполняется.
+
+### 2.7 Проверка тестами
 
 ```bash
 # Rust
@@ -223,7 +248,7 @@ CI: `.github/workflows/ci.yml` (rust + macos + backend).
 Локально перед push: `pre-commit install` (один раз) и/или
 `pre-commit run --all-files` — см. `.pre-commit-config.yaml` и `AGENTS.md`.
 
-### 2.7 Минимальный smoke после установки
+### 2.8 Минимальный smoke после установки
 
 1. Запустить app → **Start Captions** (demo) — появляются строки.
 2. Сменить Language → English → снова demo — английский скрипт.
@@ -231,9 +256,12 @@ CI: `.github/workflows/ci.yml` (rust + macos + backend).
 4. Stop Live → **Meetings** → Final / **Speakers** (Add, rename, delete) / Generate Brief.
 5. (Опц.) `docker compose up` → Settings **Test API** = OK.
 6. (Опц.) Settings **LLM = Backend** → **Meetings** → Final → **Generate Brief** → markdown из stub job (`kind: brief`).
-7. (Опц.) **Meetings** → **Artifacts** → **Submit refine (stub)** → refine markdown из backend.
+7. (Опц.) Запустить Ollama с моделью → Settings **LLM = Ollama**, URL
+   `http://127.0.0.1:11434`, model id → **Generate Brief**; затем выбрать
+   **OpenAI-compatible** с тем же URL и повторить.
+8. (Опц.) **Meetings** → **Artifacts** → **Submit refine (stub)** → refine markdown из backend.
 
-### 2.8 Потенциальная «продакшен»-инсталляция (ещё не автоматизирована)
+### 2.9 Потенциальная «продакшен»-инсталляция (ещё не автоматизирована)
 
 Целевое направление (не реализовано end-to-end):
 
@@ -241,9 +269,9 @@ CI: `.github/workflows/ci.yml` (rust + macos + backend).
 2. First-run download ggml в Application Support.
 3. Backend на домашнем сервере: полный ADR-007 (Postgres, Redis, Dramatiq, MinIO, WhisperX).
 4. Token в Keychain; `apiBaseUrl` на HTTPS.
-5. Опционально: NLLB translate worker, Ollama/Gemma для Brief.
+5. Опционально: NLLB translate worker и production LLM worker для Brief.
 
-Пока используйте §2.3–2.7 как единственную поддерживаемую процедуру.
+Пока используйте §2.3–2.8 как единственную поддерживаемую процедуру.
 
 ---
 
