@@ -158,6 +158,14 @@ pub struct FfiBackendArtifact {
     pub error: String,
 }
 
+/// Ссылка на LLM-модель из backend-каталога.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiLlmModelRef {
+    pub provider_id: String,
+    pub model: String,
+    pub display_name: String,
+}
+
 struct MeetingCoreInner {
     session: MeetingSession,
     started_at: Option<Instant>,
@@ -179,6 +187,7 @@ struct MeetingCoreInner {
     llm_engine: String,
     llm_model_id: String,
     llm_base_url: String,
+    llm_provider_id: String,
     preferred_whisper_model: String,
 }
 
@@ -569,6 +578,7 @@ impl MeetingCore {
                 llm_engine: "builtin_templates".to_string(),
                 llm_model_id: String::new(),
                 llm_base_url: String::new(),
+                llm_provider_id: String::new(),
                 preferred_whisper_model: "auto".to_string(),
             }),
         })
@@ -674,11 +684,35 @@ impl MeetingCore {
     }
 
     /// Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
-    pub fn set_llm_config(&self, engine_code: String, model_id: String, base_url: String) {
+    /// `provider_id` — id backend-провайдера; для локальных движков передавать пустую строку.
+    pub fn set_llm_config(
+        &self,
+        engine_code: String,
+        model_id: String,
+        base_url: String,
+        provider_id: String,
+    ) {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
         guard.llm_engine = normalize_llm_engine(&engine_code).to_owned();
         guard.llm_model_id = model_id;
         guard.llm_base_url = base_url.trim().trim_end_matches('/').to_owned();
+        guard.llm_provider_id = provider_id;
+    }
+
+    /// Каталог LLM с backend; при ошибке sync / не настроенном API — пустой список.
+    pub fn list_backend_llm_models(&self) -> Vec<FfiLlmModelRef> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        match guard.sync_client.list_models() {
+            Ok(models) => models
+                .into_iter()
+                .map(|model| FfiLlmModelRef {
+                    provider_id: model.provider_id,
+                    model: model.model,
+                    display_name: model.display_name,
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
     }
 
     pub fn api_base_url(&self) -> String {
@@ -1071,6 +1105,7 @@ impl MeetingCore {
                     .map(|language| language.code().to_owned())
                     .collect(),
                 payload: Some(serde_json::json!({
+                    "provider_id": guard.llm_provider_id,
                     "model": guard.llm_model_id,
                     "system": system,
                     "user": user,
@@ -1820,12 +1855,38 @@ mod tests {
     }
 
     #[test]
+    fn list_backend_llm_models_maps_sync() {
+        let mut server = Server::new();
+        let _m = server
+            .mock("GET", "/v1/models")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"models":[{"provider_id":"p","model":"m","display_name":"D"}]}"#)
+            .create();
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-list-models-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_api_config(server.url(), "dev-token".into());
+
+        let models = core.list_backend_llm_models();
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].provider_id, "p");
+        assert_eq!(models[0].model, "m");
+        assert_eq!(models[0].display_name, "D");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn generate_artifact_backend_uses_job_artifact() {
         let mut server = Server::new();
         let _post = server
             .mock("POST", "/v1/jobs")
             .match_body(Matcher::Exact(
-                r#"{"meeting_id":"m-backend","kind":"brief","primary_language":"ru","allowed_languages":["ru","en","es"],"payload":{"model":"Google/gemma-4-12b-it","system":"Create a concise meeting brief in language `ru`. Return Markdown with a summary, decisions, and key discussion points. Do not invent facts absent from the transcript.","user":"Create the meeting brief from this final transcript:\n\n<transcript>\nОбсудили backend-генерацию.\n</transcript>"}}"#
+                r#"{"meeting_id":"m-backend","kind":"brief","primary_language":"ru","allowed_languages":["ru","en","es"],"payload":{"model":"Google/gemma-4-12b-it","provider_id":"default","system":"Create a concise meeting brief in language `ru`. Return Markdown with a summary, decisions, and key discussion points. Do not invent facts absent from the transcript.","user":"Create the meeting brief from this final transcript:\n\n<transcript>\nОбсудили backend-генерацию.\n</transcript>"}}"#
                     .into(),
             ))
             .with_status(201)
@@ -1852,6 +1913,7 @@ mod tests {
             "backend".into(),
             "Google/gemma-4-12b-it".into(),
             String::new(),
+            "default".into(),
         );
 
         let result = core.generate_artifact("m-backend".into(), FfiArtifactKind::Brief);
@@ -1869,7 +1931,7 @@ mod tests {
         let _post = server
             .mock("POST", "/v1/jobs")
             .match_body(Matcher::Exact(
-                r#"{"meeting_id":"m-backend-error","kind":"follow_up","primary_language":"ru","allowed_languages":["ru","en","es"],"payload":{"model":"Google/gemma-4-12b-it","system":"You are a meeting assistant. Draft a follow-up email in language `ru` as Markdown. Start with the subject line in an HTML comment, then include a greeting, a concise meeting summary, explicitly stated next steps, and a closing. Do not invent facts, assignments, or deadlines absent from the transcript.","user":"Draft a follow-up email from this final transcript:\n\n<transcript>\nОбсудили backend-генерацию.\n</transcript>"}}"#
+                r#"{"meeting_id":"m-backend-error","kind":"follow_up","primary_language":"ru","allowed_languages":["ru","en","es"],"payload":{"model":"Google/gemma-4-12b-it","provider_id":"default","system":"You are a meeting assistant. Draft a follow-up email in language `ru` as Markdown. Start with the subject line in an HTML comment, then include a greeting, a concise meeting summary, explicitly stated next steps, and a closing. Do not invent facts, assignments, or deadlines absent from the transcript.","user":"Draft a follow-up email from this final transcript:\n\n<transcript>\nОбсудили backend-генерацию.\n</transcript>"}}"#
                     .into(),
             ))
             .with_status(201)
@@ -1889,6 +1951,7 @@ mod tests {
             "backend".into(),
             "Google/gemma-4-12b-it".into(),
             String::new(),
+            "default".into(),
         );
 
         let result = core.generate_artifact("m-backend-error".into(), FfiArtifactKind::FollowUp);
@@ -1912,7 +1975,12 @@ mod tests {
         ));
         seed_final_transcript(&root, "m-builtin");
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
-        core.set_llm_config("unknown".into(), "ignored".into(), String::new());
+        core.set_llm_config(
+            "unknown".into(),
+            "ignored".into(),
+            String::new(),
+            String::new(),
+        );
 
         let result = core.generate_artifact("m-builtin".into(), FfiArtifactKind::Brief);
 
@@ -1941,7 +2009,12 @@ mod tests {
         ));
         seed_final_transcript(&root, "m-ollama");
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
-        core.set_llm_config("ollama".into(), "gemma2".into(), server.url());
+        core.set_llm_config(
+            "ollama".into(),
+            "gemma2".into(),
+            server.url(),
+            String::new(),
+        );
 
         let result = core.generate_artifact("m-ollama".into(), FfiArtifactKind::Brief);
         let follow_up = core.generate_artifact("m-ollama".into(), FfiArtifactKind::FollowUp);
@@ -1970,7 +2043,12 @@ mod tests {
         ));
         seed_final_transcript(&root, "m-ollama-error");
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
-        core.set_llm_config("ollama".into(), "gemma2".into(), server.url());
+        core.set_llm_config(
+            "ollama".into(),
+            "gemma2".into(),
+            server.url(),
+            String::new(),
+        );
 
         let result = core.generate_artifact("m-ollama-error".into(), FfiArtifactKind::FollowUp);
 
@@ -2011,6 +2089,7 @@ mod tests {
             "openai_compat".into(),
             "qwen2.5".into(),
             format!("{}/", server.url()),
+            String::new(),
         );
 
         let brief = core.generate_artifact("m-openai".into(), FfiArtifactKind::Brief);

@@ -676,6 +676,11 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     func listArtifacts(meetingId: String)  -> [FfiArtifact]
     
     /**
+     * Каталог LLM с backend; при ошибке sync / не настроенном API — пустой список.
+     */
+    func listBackendLlmModels()  -> [FfiLlmModelRef]
+    
+    /**
      * Сохранённые live captions выбранной встречи.
      */
     func listCaptions(meetingId: String)  -> [FfiCaptionEvent]
@@ -727,8 +732,9 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     
     /**
      * Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
+     * `provider_id` — id backend-провайдера; для локальных движков передавать пустую строку.
      */
-    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String) 
+    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String, providerId: String) 
     
     /**
      * Предпочитаемая модель Whisper: `auto` | `base` | `small` | `large-v3-turbo`.
@@ -1075,6 +1081,18 @@ open func listArtifacts(meetingId: String) -> [FfiArtifact]  {
 }
     
     /**
+     * Каталог LLM с backend; при ошибке sync / не настроенном API — пустой список.
+     */
+open func listBackendLlmModels() -> [FfiLlmModelRef]  {
+    return try!  FfiConverterSequenceTypeFfiLlmModelRef.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_list_backend_llm_models(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Сохранённые live captions выбранной встречи.
      */
 open func listCaptions(meetingId: String) -> [FfiCaptionEvent]  {
@@ -1223,14 +1241,16 @@ open func setLiveTranslation(enabled: Bool, targetCode: String) -> String  {
     
     /**
      * Выбрать генератор post-call артефактов; неизвестные значения используют builtin.
+     * `provider_id` — id backend-провайдера; для локальных движков передавать пустую строку.
      */
-open func setLlmConfig(engineCode: String, modelId: String, baseUrl: String)  {try! rustCall() {
+open func setLlmConfig(engineCode: String, modelId: String, baseUrl: String, providerId: String)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_meetingraft_ffi_fn_method_meetingcore_set_llm_config(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(engineCode),
         FfiConverterString.lower(modelId),
-        FfiConverterString.lower(baseUrl),uniffiCallStatus
+        FfiConverterString.lower(baseUrl),
+        FfiConverterString.lower(providerId),uniffiCallStatus
     )
 }
 }
@@ -2056,6 +2076,67 @@ public func FfiConverterTypeFfiHostTranslationRequest_lower(_ value: FfiHostTran
 
 
 /**
+ * Ссылка на LLM-модель из backend-каталога.
+ */
+public struct FfiLlmModelRef: Equatable, Hashable {
+    public var providerId: String
+    public var model: String
+    public var displayName: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(providerId: String, model: String, displayName: String) {
+        self.providerId = providerId
+        self.model = model
+        self.displayName = displayName
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FfiLlmModelRef: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiLlmModelRef: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiLlmModelRef {
+        return
+            try FfiLlmModelRef(
+                providerId: FfiConverterString.read(from: &buf), 
+                model: FfiConverterString.read(from: &buf), 
+                displayName: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiLlmModelRef, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.providerId, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterString.write(value.displayName, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiLlmModelRef_lift(_ buf: RustBuffer) throws -> FfiLlmModelRef {
+    return try FfiConverterTypeFfiLlmModelRef.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiLlmModelRef_lower(_ value: FfiLlmModelRef) -> RustBuffer {
+    return FfiConverterTypeFfiLlmModelRef.lower(value)
+}
+
+
+/**
  * Краткая запись встречи для списка истории.
  */
 public struct FfiMeetingSummary: Equatable, Hashable {
@@ -2588,6 +2669,31 @@ fileprivate struct FfiConverterSequenceTypeFfiHostTranslationRequest: FfiConvert
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeFfiLlmModelRef: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiLlmModelRef]
+
+    public static func write(_ value: [FfiLlmModelRef], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiLlmModelRef.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiLlmModelRef] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiLlmModelRef]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiLlmModelRef.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeFfiMeetingSummary: FfiConverterRustBuffer {
     typealias SwiftType = [FfiMeetingSummary]
 
@@ -2704,6 +2810,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_artifacts() != 37417) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_backend_llm_models() != 57200) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_list_captions() != 46525) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2743,7 +2852,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_live_translation() != 28202) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_llm_config() != 40973) {
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_llm_config() != 18815) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_preferred_whisper_model() != 32371) {
