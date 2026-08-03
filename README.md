@@ -27,6 +27,10 @@ GitHub repository for **MeetingRaft** — a native-first macOS meeting companion
 
 → **[`docs/architecture-and-install.md`](docs/architecture-and-install.md)**
 
+Настройка backend stub (Docker / uv, Settings, Test API, LLM=Backend, refine):
+
+→ **[`docs/architecture-and-install.md` §2.5](docs/architecture-and-install.md#backend-setup)**
+
 Кратко:
 
 ```bash
@@ -36,7 +40,7 @@ open apps/macos/MeetingRaft.xcodeproj   # ⌘R
 # опционально Whisper
 apps/macos/Scripts/download-stt-model.sh
 
-# опционально backend stub
+# опционально backend stub → затем Settings → Backend API (см. §2.5)
 docker compose up --build   # :8080, token dev-token
 ```
 
