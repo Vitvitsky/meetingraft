@@ -27,6 +27,8 @@ const MAX_BUFFER_FRAMES: usize = 16_000 * 30;
 /// Режем с запасом назад: тайм-коды на границе неточны, потерять контекст
 /// дешевле, чем обрезать слово посередине.
 const TRIM_GUARD_MS: u64 = 200;
+/// Переменная окружения для замеров латентности (ADR-010, T6).
+const TIMING_ENV: &str = "MEETINGRAFT_STT_TIMING";
 
 /// Whisper STT с energy-VAD сегментацией.
 pub struct WhisperSttEngine {
@@ -180,6 +182,23 @@ impl WhisperSttEngine {
         self.agreement.rebase(cut_ms);
     }
 
+    /// Замеры для ADR-010: включаются `MEETINGRAFT_STT_TIMING=1`.
+    ///
+    /// Инструментовка держится за env, а не за фичу: числа снимают на
+    /// собранном приложении, пересобирать ради этого не нужно.
+    fn log_timing(inference_ms: u128, buffer_frames: usize, stabilized: &Stabilized) {
+        if std::env::var_os(TIMING_ENV).is_none() {
+            return;
+        }
+        let buffer_ms = buffer_frames / 16;
+        let committed = stabilized.committed_text.split_whitespace().count();
+        let pending = stabilized.pending_text.split_whitespace().count();
+        eprintln!(
+            "meetingraft-stt timing: inference={inference_ms}ms buffer={buffer_ms}ms \
+             committed_words={committed} pending_words={pending}"
+        );
+    }
+
     /// События из результата стабилизации.
     fn events(stabilized: &Stabilized) -> Vec<CaptionEvent> {
         let mut out = Vec::new();
@@ -231,8 +250,11 @@ impl SttEngine for WhisperSttEngine {
             if self.speech_frames >= MIN_SPEECH_FRAMES
                 && self.frames_since_partial >= PARTIAL_MIN_FRAMES
             {
+                let started = std::time::Instant::now();
                 let hypothesis = self.hypothesis(&self.buffer);
+                let inference_ms = started.elapsed().as_millis();
                 let stabilized = self.agreement.push(hypothesis);
+                Self::log_timing(inference_ms, self.buffer.len(), &stabilized);
                 out.extend(Self::events(&stabilized));
                 if let Some(until_ms) = stabilized.committed_until_ms {
                     self.trim_buffer(until_ms);

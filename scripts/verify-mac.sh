@@ -14,19 +14,24 @@ step() {
     printf '\n\033[1m==> %s\033[0m\n' "$1"
 }
 
-step "1/6 Rust: тесты"
+step "1/7 Rust: тесты"
 (cd rust && cargo test)
 
-step "2/6 Rust: clippy и формат"
+step "2/7 Rust: clippy и формат"
 (cd rust && cargo clippy --all-targets -- -D warnings && cargo fmt --check)
 
-step "3/6 UniFFI: dylib, биндинги, Xcode-проект"
+step "3/7 Rust: сборка движка Whisper (Metal)"
+# Без этого шага whisper.rs проверяется только косвенно, внутри сборки ffi,
+# и без clippy.
+(cd rust && cargo clippy -p meetingraft-stt --features whisper --all-targets -- -D warnings)
+
+step "4/7 UniFFI: dylib, биндинги, Xcode-проект"
 apps/macos/Scripts/generate-ffi.sh
 
-step "4/6 Swift: формат"
+step "5/7 Swift: формат"
 (cd apps/macos && swiftformat Sources Tests --lint)
 
-step "5/6 Swift: сборка и тесты"
+step "6/7 Swift: сборка и тесты"
 (cd apps/macos && xcodebuild \
     -project MeetingRaft.xcodeproj \
     -scheme MeetingRaft \
@@ -34,7 +39,7 @@ step "5/6 Swift: сборка и тесты"
     CODE_SIGNING_ALLOWED=NO \
     test)
 
-step "6/6 pre-commit"
+step "7/7 pre-commit"
 if command -v pre-commit >/dev/null 2>&1; then
     pre-commit run --all-files
 else
