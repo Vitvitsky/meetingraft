@@ -46,6 +46,8 @@ pub struct RebuildProgress {
     pub done: u32,
     pub total: u32,
     pub error: String,
+    /// Что фактически отработало — вход для provenance.
+    pub note: String,
 }
 
 #[derive(Debug)]
@@ -55,6 +57,7 @@ struct JobEntry {
     done: u32,
     total: u32,
     error: String,
+    note: String,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -98,6 +101,15 @@ impl JobHandle {
         if let Some(entry) = guard.get_mut(&self.job_id) {
             entry.done = entry.done.max(done).min(total);
             entry.total = total;
+        }
+    }
+
+    /// Записать, что реально отработало: UI обязан называть источник
+    /// честно, а не подставлять ожидаемый.
+    pub fn set_note(&self, note: impl Into<String>) {
+        let mut guard = self.jobs.lock().expect("jobs poisoned");
+        if let Some(entry) = guard.get_mut(&self.job_id) {
+            entry.note = note.into();
         }
     }
 
@@ -157,6 +169,7 @@ impl RebuildJobs {
                     done: 0,
                     total: 0,
                     error: String::new(),
+                    note: String::new(),
                     cancelled: Arc::clone(&cancelled),
                 },
             );
@@ -199,6 +212,7 @@ impl RebuildJobs {
             done: entry.done,
             total: entry.total,
             error: entry.error.clone(),
+            note: entry.note.clone(),
         })
     }
 
@@ -396,6 +410,18 @@ mod tests {
 
         assert!(jobs.progress("done").is_none());
         assert!(jobs.progress("live").is_some());
+    }
+
+    #[test]
+    fn note_carries_what_actually_ran() {
+        let jobs = registry();
+
+        jobs.start("j1".into(), "m1".into(), |handle| {
+            handle.set_note("re-ASR large-v3");
+            Ok(())
+        });
+
+        assert_eq!(jobs.progress("j1").unwrap().note, "re-ASR large-v3");
     }
 
     #[test]

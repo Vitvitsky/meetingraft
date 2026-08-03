@@ -17,6 +17,9 @@ use postcall::{
     LlmClient, LlmError, OllamaNativeClient, OpenAiCompatLlmClient, assemble_final, brief_prompts,
     follow_up_prompts, make_artifact, render_brief, render_follow_up,
 };
+mod rebuild;
+
+use postcall::{RebuildJobs, ThreadSpawner};
 use session::{ChannelMixer, MeetingSession};
 use storage::{AudioManifestError, AudioManifestStore};
 use stt::{
@@ -99,6 +102,21 @@ pub struct FfiMeetingSummary {
     pub ended_at_ms: u64,
     pub has_final: bool,
     pub artifact_count: u64,
+}
+
+/// Прогресс фонового пересбора Final для Swift.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiRebuildProgress {
+    pub job_id: String,
+    pub meeting_id: String,
+    /// `queued` | `running` | `succeeded` | `failed` | `cancelled`;
+    /// пусто — задачи с таким id нет.
+    pub state: String,
+    pub done: u32,
+    pub total: u32,
+    pub error: String,
+    /// Что фактически отработало: источник для provenance в UI.
+    pub note: String,
 }
 
 /// Совпадение поиска по материалам встреч.
@@ -209,12 +227,18 @@ struct MeetingCoreInner {
     llm_base_url: String,
     llm_provider_id: String,
     preferred_whisper_model: String,
+    /// Модель для post-call прохода; отдельная от live, скачивается по
+    /// требованию при первом пересборе.
+    post_call_whisper_model: String,
 }
 
 /// Фасад сессии для macOS shell.
 #[derive(uniffi::Object)]
 pub struct MeetingCore {
     inner: Mutex<MeetingCoreInner>,
+    /// Реестр фоновых пересборов. Вне `inner` намеренно: у него своя
+    /// синхронизация, и проход не должен держать мьютекс ядра минутами.
+    jobs: RebuildJobs,
 }
 
 fn now_ms() -> u64 {
@@ -649,7 +673,9 @@ impl MeetingCore {
                 llm_base_url: String::new(),
                 llm_provider_id: String::new(),
                 preferred_whisper_model: "auto".to_string(),
+                post_call_whisper_model: "large-v3-turbo".to_string(),
             }),
+            jobs: RebuildJobs::new(Box::new(ThreadSpawner)),
         })
     }
 
@@ -1112,6 +1138,69 @@ impl MeetingCore {
         }
     }
 
+    /// Модель post-call прохода (`large-v3-turbo` по умолчанию).
+    pub fn set_post_call_whisper_model(&self, model_id: String) {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.post_call_whisper_model = model_id;
+    }
+
+    /// Запустить пересбор Final в фоне; возвращает id задачи.
+    ///
+    /// Повторный вызов для встречи с идущим проходом отдаёт тот же id:
+    /// два прохода, пишущие сегменты одной версии, — это гонка.
+    pub fn start_final_rebuild(&self, meeting_id: String) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        let params = rebuild::RebuildParams {
+            data_root: guard.data_root.clone(),
+            meeting_id: meeting_id.clone(),
+            policy: guard.language_policy.clone(),
+            post_call_model: guard.post_call_whisper_model.clone(),
+            llm_engine: normalize_llm_engine(&guard.llm_engine).to_owned(),
+            llm_base_url: guard.llm_base_url.clone(),
+            llm_model_id: guard.llm_model_id.clone(),
+        };
+        drop(guard);
+
+        let job_id = Uuid::new_v4().to_string();
+        self.jobs.start(job_id, meeting_id, move |handle| {
+            rebuild::run_rebuild(params, handle)
+        })
+    }
+
+    /// Состояние прохода; пустой `state` — задачи с таким id нет.
+    pub fn final_rebuild_progress(&self, job_id: String) -> FfiRebuildProgress {
+        match self.jobs.progress(&job_id) {
+            Some(progress) => FfiRebuildProgress {
+                job_id: progress.job_id,
+                meeting_id: progress.meeting_id,
+                state: progress.state.code().to_string(),
+                done: progress.done,
+                total: progress.total,
+                error: progress.error,
+                note: progress.note,
+            },
+            None => FfiRebuildProgress {
+                job_id,
+                meeting_id: String::new(),
+                state: String::new(),
+                done: 0,
+                total: 0,
+                error: String::new(),
+                note: String::new(),
+            },
+        }
+    }
+
+    /// Попросить проход остановиться; он увидит это между единицами работы.
+    pub fn cancel_final_rebuild(&self, job_id: String) {
+        self.jobs.cancel(&job_id);
+    }
+
+    /// Идущий пересбор этой встречи, если он есть.
+    pub fn active_final_rebuild(&self, meeting_id: String) -> String {
+        self.jobs.active_job_for(&meeting_id).unwrap_or_default()
+    }
+
     /// Переименовать встречу; пустая строка ошибки означает успех.
     pub fn rename_meeting(&self, meeting_id: String, title: String) -> String {
         let guard = self.inner.lock().expect("meeting core poisoned");
@@ -1387,6 +1476,7 @@ impl MeetingCore {
                 guard.stt = Some(pipeline);
                 guard.glossary = glossary;
                 guard.mixer.reset();
+                self.jobs.set_recording(true);
                 guard.pending_live_captions.clear();
                 guard.pending_translations.clear();
                 guard.host_translation_queue.clear();
@@ -1521,6 +1611,7 @@ impl MeetingCore {
         guard.recording_session_id = None;
         guard.stt = None;
         guard.stt_backend = "idle".to_string();
+        self.jobs.set_recording(false);
     }
 
     pub fn manifest_chunk_count(&self, session_id: String) -> u64 {
@@ -1602,6 +1693,105 @@ mod tests {
                 20,
             )
             .expect("caption должен сохраниться");
+    }
+
+    /// Сквозной проход: аудио → распознавание → слияние → сегменты.
+    ///
+    /// Идёт на MockBatchTranscriber, поэтому проверяется весь путь
+    /// post-call, а не только его края.
+    #[test]
+    fn final_rebuild_writes_segments_and_reports_provenance() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-rebuild-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-rebuild".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store
+                .begin_session(&meeting_id, 1, "Тест")
+                .expect("session");
+            let loud: Vec<u8> = (0..16_000)
+                .flat_map(|i| if i % 2 == 0 { 3000_i16 } else { -3000 }.to_le_bytes())
+                .collect();
+            store
+                .append_chunk(AudioChannel::Mic, &loud, 16_000, 0)
+                .expect("chunk");
+            store.end_session(2_000).expect("end");
+        }
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let job_id = core.start_final_rebuild(meeting_id.clone());
+        assert!(!job_id.is_empty());
+
+        let mut progress = core.final_rebuild_progress(job_id.clone());
+        for _ in 0..300 {
+            if matches!(
+                progress.state.as_str(),
+                "succeeded" | "failed" | "cancelled"
+            ) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            progress = core.final_rebuild_progress(job_id.clone());
+        }
+
+        assert_eq!(progress.state, "succeeded", "{}", progress.error);
+        assert_eq!((progress.done, progress.total), (100, 100));
+        assert!(progress.note.contains("re-ASR"), "note: {}", progress.note);
+        // Полировки не было — NullLlmClient; provenance обязан это сказать.
+        assert!(
+            !progress.note.contains("+ LLM polish"),
+            "note не должен обещать полировку: {}",
+            progress.note
+        );
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        let version = store.next_final_version(&meeting_id).expect("version") - 1;
+        let segments = store
+            .list_final_segments(&meeting_id, version)
+            .expect("segments");
+        assert!(!segments.is_empty(), "сегменты должны быть записаны");
+        assert_eq!(segments[0].channel, AudioChannel::Mic);
+        assert!(segments[0].speaker_id.is_empty());
+
+        let transcript = store.get_final_transcript(&meeting_id).expect("final");
+        assert!(transcript.is_some_and(|t| !t.body_markdown.is_empty()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Второй запуск по той же встрече не плодит параллельный проход.
+    #[test]
+    fn starting_rebuild_twice_returns_the_same_job() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-rebuild-twice-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let first = core.start_final_rebuild("m1".into());
+        let second = core.start_final_rebuild("m1".into());
+
+        // Проход без аудио падает сразу, поэтому первый может успеть
+        // завершиться; тогда второй id законно новый.
+        let first_state = core.final_rebuild_progress(first.clone()).state;
+        if first_state == "running" || first_state == "queued" {
+            assert_eq!(first, second);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn progress_of_unknown_job_is_empty() {
+        let root = std::env::temp_dir().join(format!("mr-ffi-nojob-{}", now_ms()));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let progress = core.final_rebuild_progress("nope".into());
+
+        assert!(progress.state.is_empty());
+        assert!(progress.meeting_id.is_empty());
     }
 
     #[test]
