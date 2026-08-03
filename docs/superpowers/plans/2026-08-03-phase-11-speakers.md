@@ -68,7 +68,18 @@
   «Собеседник» в списке — мусор.
 - Тесты: повторный пересбор не плодит дубликаты спикеров.
 
-## T3 — FFI
+## T3 — FFI — **сделано**
+
+`FfiFinalSegment` с именем и признаком правки, `FfiSpeakerStat`,
+`assign_channel_speaker`, `assign_segment_speaker`,
+`unpin_segment_speaker`, `list_final_segments`, `list_speaker_stats`.
+
+Сводка по говорящим считается в `postcall::speaker_stats`, а не в UI:
+доля речи — агрегат по сегментам, и вью не место арифметике над
+доменными данными.
+
+**Требует регенерации биндингов на Mac.**
+
 
 - `assign_channel_speaker`, `assign_segment_speaker`, расширенный
   `list_final_segments` с именем спикера.

@@ -19,7 +19,7 @@ use postcall::{
 };
 mod rebuild;
 
-use postcall::{RebuildJobs, ThreadSpawner, diff_words};
+use postcall::{RebuildJobs, ThreadSpawner, diff_words, speaker_stats};
 use session::{ChannelMixer, MeetingSession};
 use storage::{AudioManifestError, AudioManifestStore};
 use stt::{
@@ -102,6 +102,35 @@ pub struct FfiMeetingSummary {
     pub ended_at_ms: u64,
     pub has_final: bool,
     pub artifact_count: u64,
+}
+
+/// Сегмент финального транскрипта для Swift.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiFinalSegment {
+    pub index: u32,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    /// `mic` — владелец машины, `system` — остальные.
+    pub channel: String,
+    pub speaker_id: String,
+    /// Разрешённое имя; пусто, если спикер не назначен или удалён.
+    pub speaker_name: String,
+    /// Спикера поставил человек: массовое назначение по каналу такую
+    /// реплику не тронет.
+    pub speaker_pinned: bool,
+    pub text: String,
+}
+
+/// Сводка по участнику встречи.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiSpeakerStat {
+    pub speaker_id: String,
+    pub display_name: String,
+    pub channel: String,
+    pub segment_count: u32,
+    pub speaking_ms: u64,
+    /// Доля от общего времени речи, 0…1.
+    pub share: f64,
 }
 
 /// Кусок дифференциации Live против Final для Swift.
@@ -327,6 +356,18 @@ fn store_and_enqueue(inner: &mut MeetingCoreInner, events: Vec<domain::CaptionEv
         }
         enqueue_caption(inner, event);
     }
+}
+
+/// Открыть хранилище по корню данных, не удерживая мьютекс ядра.
+///
+/// Свободная функция, а не метод: приватные методы внутри
+/// `#[uniffi::export]`-блока всё равно пытаются пройти через границу, а
+/// хранилище через неё не проходит.
+fn open_store(core: &MeetingCore) -> Option<AudioManifestStore> {
+    let guard = core.inner.lock().expect("meeting core poisoned");
+    let root = guard.data_root.clone();
+    drop(guard);
+    AudioManifestStore::open(&root).ok()
 }
 
 /// Captions + опциональный отдельный translation event (не подменяет caption).
@@ -1146,6 +1187,109 @@ impl MeetingCore {
         }
     }
 
+    /// Сегменты версии Final с именами говорящих.
+    pub fn list_final_segments(&self, meeting_id: String, version: u32) -> Vec<FfiFinalSegment> {
+        let Some(store) = open_store(self) else {
+            return Vec::new();
+        };
+        let segments = store
+            .list_final_segments(&meeting_id, version)
+            .unwrap_or_default();
+        let speakers = store.list_speakers(&meeting_id).unwrap_or_default();
+        segments
+            .into_iter()
+            .map(|segment| {
+                let speaker_name = speakers
+                    .iter()
+                    .find(|speaker| speaker.id == segment.speaker_id)
+                    .map(|speaker| speaker.display_name.clone())
+                    .unwrap_or_default();
+                FfiFinalSegment {
+                    index: segment.index,
+                    start_ms: segment.start_ms,
+                    end_ms: segment.end_ms,
+                    channel: segment.channel.code().to_string(),
+                    speaker_id: segment.speaker_id,
+                    speaker_name,
+                    speaker_pinned: segment.speaker_pinned,
+                    text: segment.text,
+                }
+            })
+            .collect()
+    }
+
+    /// Сводка по участникам версии Final.
+    pub fn list_speaker_stats(&self, meeting_id: String, version: u32) -> Vec<FfiSpeakerStat> {
+        let Some(store) = open_store(self) else {
+            return Vec::new();
+        };
+        let segments = store
+            .list_final_segments(&meeting_id, version)
+            .unwrap_or_default();
+        let speakers = store.list_speakers(&meeting_id).unwrap_or_default();
+        speaker_stats(&segments, &speakers)
+            .into_iter()
+            .map(|stat| FfiSpeakerStat {
+                speaker_id: stat.speaker_id,
+                display_name: stat.display_name,
+                channel: stat.channel.code().to_string(),
+                segment_count: stat.segment_count,
+                speaking_ms: stat.speaking_ms,
+                share: stat.share,
+            })
+            .collect()
+    }
+
+    /// Назначить спикера всем непоправленным репликам канала.
+    pub fn assign_channel_speaker(
+        &self,
+        meeting_id: String,
+        version: u32,
+        channel_code: String,
+        speaker_id: String,
+    ) -> String {
+        let Some(mut store) = open_store(self) else {
+            return "storage unavailable".to_string();
+        };
+        match store.set_channel_speaker(
+            &meeting_id,
+            version,
+            AudioChannel::from_code(&channel_code),
+            &speaker_id,
+        ) {
+            Ok(_) => String::new(),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    /// Назначить спикера одной реплике; она перестаёт подчиняться каналу.
+    pub fn assign_segment_speaker(
+        &self,
+        meeting_id: String,
+        version: u32,
+        index: u32,
+        speaker_id: String,
+    ) -> String {
+        let Some(mut store) = open_store(self) else {
+            return "storage unavailable".to_string();
+        };
+        match store.set_segment_speaker(&meeting_id, version, index, &speaker_id) {
+            Ok(()) => String::new(),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    /// Вернуть реплику под назначение по каналу.
+    pub fn unpin_segment_speaker(&self, meeting_id: String, version: u32, index: u32) -> String {
+        let Some(mut store) = open_store(self) else {
+            return "storage unavailable".to_string();
+        };
+        match store.unpin_segment_speaker(&meeting_id, version, index) {
+            Ok(()) => String::new(),
+            Err(error) => error.to_string(),
+        }
+    }
+
     /// Сравнить live-финалы с версией Final по словам.
     ///
     /// Считается в ядре: сравнение — доменная логика, вью только
@@ -1906,6 +2050,124 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         "timeout".to_string()
+    }
+
+    /// Назначение через фасад видно в списке сегментов и в сводке.
+    #[test]
+    fn speaker_assignment_is_visible_through_the_facade() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-assign-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-assign".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            let segments = vec![
+                domain::FinalSegment {
+                    index: 0,
+                    start_ms: 0,
+                    end_ms: 3_000,
+                    channel: AudioChannel::Mic,
+                    speaker_id: String::new(),
+                    speaker_pinned: false,
+                    text: "я говорю".into(),
+                },
+                domain::FinalSegment {
+                    index: 1,
+                    start_ms: 3_000,
+                    end_ms: 4_000,
+                    channel: AudioChannel::System,
+                    speaker_id: String::new(),
+                    speaker_pinned: false,
+                    text: "они отвечают".into(),
+                },
+            ];
+            store
+                .replace_final_segments(&meeting_id, 1, &segments)
+                .expect("segments");
+            store
+                .upsert_speaker(&domain::Speaker {
+                    id: "sp-peter".into(),
+                    meeting_id: meeting_id.clone(),
+                    display_name: "Пётр".into(),
+                    sort_index: 1,
+                })
+                .expect("speaker");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        assert!(
+            core.assign_channel_speaker(meeting_id.clone(), 1, "system".into(), "sp-peter".into())
+                .is_empty()
+        );
+
+        let segments = core.list_final_segments(meeting_id.clone(), 1);
+        assert_eq!(segments.len(), 2);
+        assert!(segments[0].speaker_name.is_empty(), "микрофон не тронут");
+        assert_eq!(segments[1].speaker_name, "Пётр");
+        assert!(!segments[1].speaker_pinned);
+
+        // Точечная правка перекрывает канал и переживает его повторное
+        // назначение.
+        assert!(
+            core.assign_segment_speaker(meeting_id.clone(), 1, 1, String::new())
+                .is_empty()
+        );
+        assert!(
+            core.assign_channel_speaker(meeting_id.clone(), 1, "system".into(), "sp-peter".into())
+                .is_empty()
+        );
+        let after = core.list_final_segments(meeting_id.clone(), 1);
+        assert!(after[1].speaker_id.is_empty(), "правка затёрта");
+        assert!(after[1].speaker_pinned);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn speaker_stats_report_share_of_speech() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-stats-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-stats".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store
+                .replace_final_segments(
+                    &meeting_id,
+                    1,
+                    &[domain::FinalSegment {
+                        index: 0,
+                        start_ms: 0,
+                        end_ms: 4_000,
+                        channel: AudioChannel::Mic,
+                        speaker_id: "sp".into(),
+                        speaker_pinned: false,
+                        text: "текст".into(),
+                    }],
+                )
+                .expect("segments");
+            store
+                .upsert_speaker(&domain::Speaker {
+                    id: "sp".into(),
+                    meeting_id: meeting_id.clone(),
+                    display_name: "Вы".into(),
+                    sort_index: 0,
+                })
+                .expect("speaker");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let stats = core.list_speaker_stats(meeting_id, 1);
+
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].display_name, "Вы");
+        assert_eq!(stats[0].speaking_ms, 4_000);
+        assert!((stats[0].share - 1.0).abs() < 0.001);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Второй запуск по той же встрече не плодит параллельный проход.
