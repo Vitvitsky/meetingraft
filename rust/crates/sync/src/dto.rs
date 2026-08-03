@@ -80,3 +80,18 @@ pub struct ArtifactDto {
     pub body_markdown: String,
     pub created_at: String,
 }
+
+/// Ссылка на LLM-модель в каталоге провайдера.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LlmModelRefDto {
+    pub provider_id: String,
+    pub model: String,
+    #[serde(default)]
+    pub display_name: String,
+}
+
+/// Ответ GET /v1/models.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListModelsResponse {
+    pub models: Vec<LlmModelRefDto>,
+}

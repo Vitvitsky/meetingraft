@@ -1,6 +1,6 @@
 //! Blocking HTTP client.
 
-use crate::dto::{ArtifactDto, CreateJobRequest, JobDto};
+use crate::dto::{ArtifactDto, CreateJobRequest, JobDto, ListModelsResponse, LlmModelRefDto};
 use crate::error::SyncError;
 
 /// Клиент REST API backend (ADR-007).
@@ -70,6 +70,18 @@ impl SyncClient {
             .header("Authorization", format!("Bearer {}", self.token))
             .send()?;
         Self::parse_json(response)
+    }
+
+    /// Каталог доступных LLM-моделей (GET /v1/models).
+    pub fn list_models(&self) -> Result<Vec<LlmModelRefDto>, SyncError> {
+        self.ensure_configured()?;
+        let response = self
+            .http()?
+            .get(format!("{}/v1/models", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.token))
+            .send()?;
+        let parsed: ListModelsResponse = Self::parse_json(response)?;
+        Ok(parsed.models)
     }
 
     fn ensure_configured(&self) -> Result<(), SyncError> {
@@ -159,5 +171,25 @@ mod tests {
     fn not_configured_errors() {
         let client = SyncClient::new("", "");
         assert!(matches!(client.health(), Err(SyncError::NotConfigured)));
+    }
+
+    #[test]
+    fn list_models_parses_catalog() {
+        let mut server = Server::new();
+        let _m = server
+            .mock("GET", "/v1/models")
+            .match_header("Authorization", "Bearer t")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"models":[{"provider_id":"home-llm","model":"m1","display_name":"One"}]}"#,
+            )
+            .create();
+        let client = SyncClient::new(server.url(), "t");
+        let models = client.list_models().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].provider_id, "home-llm");
+        assert_eq!(models[0].model, "m1");
+        assert_eq!(models[0].display_name, "One");
     }
 }
