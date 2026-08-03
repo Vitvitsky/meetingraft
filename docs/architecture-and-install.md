@@ -181,31 +181,100 @@ apps/macos/Scripts/generate-ffi.sh
 
 Файлы: `…/meetingraft/models/ggml-*.bin` (Hugging Face `ggerganov/whisper.cpp`).
 
-### 2.5 Backend stub (опционально)
+<a id="backend-setup"></a>
+
+### 2.5 Backend stub — настройка (опционально)
+
+Сейчас это **ADR-007 slice A**: FastAPI in-memory jobs без Postgres / Redis /
+WhisperX / production LLM. Jobs сразу возвращают stub markdown. Контракт:
+[`shared/openapi.yaml`](../shared/openapi.yaml).
+
+#### Шаг 1. Поднять API
+
+Из корня репозитория:
 
 ```bash
-# Docker
+# Вариант A — Docker (рекомендуется)
 docker compose up --build
-# API: http://127.0.0.1:8080
-# Token: dev-token
-
-# или локально без Docker
-cd backend
-uv sync --extra dev
-MEETINGRAFT_API_TOKEN=dev-token uv run uvicorn app.main:app --port 8080
+# слушает http://127.0.0.1:8080
+# env: MEETINGRAFT_API_TOKEN=dev-token  (см. docker-compose.yml)
 ```
 
-В приложении: **Settings → Backend API**
-- Base URL: `http://127.0.0.1:8080`
-- Bearer: `dev-token`
-- кнопка **Test API** → `GET /health`
+```bash
+# Вариант B — локально через uv
+cd backend
+uv sync --extra dev
+MEETINGRAFT_API_TOKEN=dev-token uv run uvicorn app.main:app --host 127.0.0.1 --port 8080
+```
 
-**Settings → Providers → LLM = Backend:** Generate Brief / Follow-up в Meetings
-отправляет `POST /v1/jobs` с `kind: brief` или `follow_up`, затем poll job и
-`GET /v1/artifacts/{id}`; при ошибке backend — явная ошибка (без fallback на
-builtin templates).
+Проверка без приложения:
 
-Контракт: [`shared/openapi.yaml`](../shared/openapi.yaml).
+```bash
+curl -s http://127.0.0.1:8080/health
+# {"status":"ok"}
+
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -H "Authorization: Bearer dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{"meeting_id":"m1","kind":"brief","primary_language":"ru","allowed_languages":["ru"]}' \
+  http://127.0.0.1:8080/v1/jobs
+# 201
+```
+
+| Параметр | Значение по умолчанию | Где задаётся |
+|----------|------------------------|--------------|
+| URL | `http://127.0.0.1:8080` | порт compose / uvicorn |
+| Bearer token | `dev-token` | `MEETINGRAFT_API_TOKEN` |
+| Auth | HTTP Bearer | на все `/v1/*`; `/health` без токена |
+
+Смена токена: задайте тот же `MEETINGRAFT_API_TOKEN` в окружении API **и** в
+Settings приложения (иначе 401).
+
+#### Шаг 2. Прописать в приложении
+
+**Settings → Backend API (ADR-007)** (дефолты уже совпадают со stub):
+
+| Поле | Значение для local stub |
+|------|-------------------------|
+| API base URL | `http://127.0.0.1:8080` |
+| Bearer token | `dev-token` |
+
+Нажать **Test API** → должно стать **OK** (`GET /health` через UniFFI sync).
+
+Замечания:
+
+- Значения живут в `ProviderSettingsStore` (сессия UI); после перезапуска app
+  снова подставятся дефолты `8080` / `dev-token`, пока нет Keychain persistence.
+- Перед Generate / Submit refine shell передаёт URL+token в Rust через
+  `setApiConfig` (`applyProviderConfig` на экране встречи / onChange в Settings).
+
+#### Шаг 3. Что включать в Providers
+
+Backend URL нужен для двух сценариев (не путать с локальным Ollama §2.6):
+
+1. **LLM = Backend** (**Settings → Providers → LLM**)
+   В Meetings: **Generate Brief** / **Generate Follow-up** →
+   `POST /v1/jobs` (`kind: brief` \| `follow_up`) → poll →
+   `GET /v1/artifacts/{id}` → артефакт с `template_id` `backend.brief` /
+   `backend.follow_up`.
+   Ошибка сети/401/job — **явная** в UI, **без** fallback на builtin templates.
+
+2. **Artifacts → Submit refine (stub)**
+   Тот же API, `kind: refine`. Не зависит от выбора LLM engine; нужен только
+   корректный Backend API + Final transcript у встречи.
+
+`builtin_templates` / `ollama` / `openai_compat` **не** ходят в этот FastAPI
+stub для Brief/Follow-up.
+
+#### Типичные ошибки
+
+| Симптом | Что проверить |
+|---------|----------------|
+| Test API = Fail | `docker compose` / uvicorn запущен; URL без trailing slash; порт 8080 |
+| 401 / invalid token | токен в Settings == `MEETINGRAFT_API_TOKEN` на сервере |
+| Generate Brief ошибка при LLM=Backend | Test API сначала OK; есть Final у встречи |
+| Пустой / старый stub ответ | in-memory store: рестарт контейнера сбрасывает jobs |
+| Путаница с Ollama | Ollama — §2.6 (`:11434`); backend stub — только `:8080` jobs |
 
 ### 2.6 Локальный LLM: Ollama / OpenAI-compatible (опционально)
 
@@ -254,12 +323,12 @@ CI: `.github/workflows/ci.yml` (rust + macos + backend).
 2. Сменить Language → English → снова demo — английский скрипт.
 3. (Опц.) Whisper model + **Start Live** — captions / Mock.
 4. Stop Live → **Meetings** → Final / **Speakers** (Add, rename, delete) / Generate Brief.
-5. (Опц.) `docker compose up` → Settings **Test API** = OK.
+5. (Опц.) Backend по §2.5: `docker compose up` → Settings **Test API** = OK.
 6. (Опц.) Settings **LLM = Backend** → **Meetings** → Final → **Generate Brief** → markdown из stub job (`kind: brief`).
 7. (Опц.) Запустить Ollama с моделью → Settings **LLM = Ollama**, URL
    `http://127.0.0.1:11434`, model id → **Generate Brief**; затем выбрать
    **OpenAI-compatible** с тем же URL и повторить.
-8. (Опц.) **Meetings** → **Artifacts** → **Submit refine (stub)** → refine markdown из backend.
+8. (Опц.) **Meetings** → **Artifacts** → **Submit refine (stub)** → refine markdown из backend (§2.5 шаг 3).
 
 ### 2.9 Потенциальная «продакшен»-инсталляция (ещё не автоматизирована)
 
@@ -285,3 +354,5 @@ CI: `.github/workflows/ci.yml` (rust + macos + backend).
 | [adr/](adr/) | ADR-001…008 |
 | [../AGENTS.md](../AGENTS.md) | Команды агентов / границы слоёв |
 | [../README.md](../README.md) | Короткий обзор репо |
+| [../shared/openapi.yaml](../shared/openapi.yaml) | Контракт backend jobs (ADR-007) |
+| §2.5 выше | Пошаговая настройка backend stub в Settings |
