@@ -66,8 +66,12 @@
   brief, glossary, participants) — **deferred**
 - Template picker, regeneration and versioning — **partial:** generate Brief /
   Follow-up in UI; versioning deferred
-- Export artifacts — **partial:** copy to clipboard; .md file and mail draft
-  deferred
+- Export artifacts — **partial:** copy to clipboard + **.md file export**
+  (Final + Brief/Follow-up → Settings export folder, flat Obsidian-friendly
+  names; `feat/markdown-export-obsidian`); mail draft **deferred**
+- Obsidian plugin / export HTTP API — **deferred:** pull meetings from app
+  or backend без ручного folder export (spec
+  `docs/superpowers/specs/2026-08-03-markdown-export-obsidian-design.md`)
 - Real LLM generation — **partial:**
   - Local: Ollama native + OpenAI-compatible из app
   - Backend jobs: Settings LLM=Backend + Model id → payload prompts →
