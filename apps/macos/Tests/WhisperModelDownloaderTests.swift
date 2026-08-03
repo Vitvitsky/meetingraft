@@ -126,7 +126,7 @@ final class WhisperModelDownloaderTests: XCTestCase {
             var invoked = false
         }
         let tracker = DownloadTracker()
-        let downloader = WhisperModelDownloader(downloadTransport: { _, _ in
+        let downloader = WhisperModelDownloader(downloadTransport: { _, _, _ in
             tracker.invoked = true
         })
 
@@ -138,7 +138,7 @@ final class WhisperModelDownloaderTests: XCTestCase {
 
     func testDownloadWritesFileViaInjectedTransport() async throws {
         let payload = Data("downloaded-model".utf8)
-        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL in
+        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL, _ in
             try payload.write(to: partialURL)
         })
 
@@ -159,7 +159,7 @@ final class WhisperModelDownloaderTests: XCTestCase {
             var fractions: [Double] = []
         }
         let tracker = ProgressTracker()
-        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL in
+        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL, _ in
             try Data("x".utf8).write(to: partialURL)
         })
 
@@ -185,7 +185,7 @@ final class WhisperModelDownloaderTests: XCTestCase {
     }
 
     func testDownloadPreservesHTTPStatusOnTransportFailure() async {
-        let downloader = WhisperModelDownloader(downloadTransport: { _, _ in
+        let downloader = WhisperModelDownloader(downloadTransport: { _, _, _ in
             throw WhisperModelDownloaderError.downloadFailed(statusCode: 404)
         })
 
@@ -197,5 +197,29 @@ final class WhisperModelDownloaderTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    /// Значения, которые сообщает транспорт, обязаны доходить до UI.
+    ///
+    /// Отличается от `testDownloadReportsProgress`: тот проверяет края
+    /// (0 и 1), а здесь — что промежуточные доли не теряются. Без них
+    /// загрузка на сотни мегабайт выглядит зависшей.
+    func testProgressFromTransportReachesCaller() async throws {
+        final class ProgressTracker: @unchecked Sendable {
+            var fractions: [Double] = []
+        }
+        let tracker = ProgressTracker()
+        let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL, onProgress in
+            onProgress(0.25)
+            onProgress(0.75)
+            try Data("ggml".utf8).write(to: partialURL)
+        })
+
+        _ = try await downloader.download(id: .small, modelsDirectory: tempDir) { fraction in
+            tracker.fractions.append(fraction)
+        }
+
+        XCTAssertTrue(tracker.fractions.contains(0.25), "\(tracker.fractions)")
+        XCTAssertTrue(tracker.fractions.contains(0.75), "\(tracker.fractions)")
     }
 }

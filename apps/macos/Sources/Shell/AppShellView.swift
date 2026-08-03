@@ -12,6 +12,9 @@ struct AppShellView: View {
     @State private var glossaryViewModel: GlossaryViewModel
     @State private var meetingsViewModel: MeetingsViewModel
     @State private var modelBootstrap = FirstRunModelBootstrap()
+    @State private var overlay = OverlayWindowController()
+    @Environment(PresenceSettingsStore.self) private var presenceStore
+    @Environment(RecordingBridge.self) private var recordingBridge
     private let core: MeetingCore
 
     init() {
@@ -41,7 +44,7 @@ struct AppShellView: View {
                     primaryLanguage: languageStore.primary
                 )
             case .meetings:
-                MeetingsListView(viewModel: meetingsViewModel)
+                MeetingsListView(viewModel: meetingsViewModel, core: core)
             case .glossary:
                 GlossaryView(
                     viewModel: glossaryViewModel,
@@ -49,6 +52,14 @@ struct AppShellView: View {
                 )
             }
         }
+        // Оболочка окна переведена на токены (ТЗ редизайна, D1, шаг 3).
+        // Тема принудительно тёмная: светлая палитра вынесена за скобки,
+        // и смешение с системной светлой дало бы нечитаемый контраст.
+        .background(Theme.surfaceRoot)
+        // Минимум окна: без него его можно сжать так, что управлению
+        // внизу экрана просто некуда поместиться.
+        .frame(minWidth: 880, minHeight: 560)
+        .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Picker("Language", selection: Bindable(languageStore).primary) {
@@ -57,10 +68,9 @@ struct AppShellView: View {
                     }
                 }
                 .frame(width: 140)
-                Button("Start Captions", systemImage: "play.fill") {
-                    startDemoCaptions()
-                }
-                .keyboardShortcut("r", modifiers: [.command])
+                // Демо-поток остался только в меню Session: витрине
+                // продукта не место кнопке для разработчика, и она делила
+                // ⌘R с настоящей записью.
                 Button("Start Live", systemImage: "mic.fill") {
                     startLiveSession()
                 }
@@ -77,6 +87,30 @@ struct AppShellView: View {
         .task {
             // Модель качается на старте, а не при заходе в Settings.
             await modelBootstrap.ensureModel(core: core)
+        }
+        // Накладка следует за состоянием записи и за настройками: их
+        // можно поменять посреди сессии, и решение должно пересчитаться.
+        .onChange(of: captureCoordinator.isRecording) { _, isRecording in
+            recordingBridge.setRecording(isRecording)
+            applyPresence()
+        }
+        .onAppear {
+            // Строка меню живёт в отдельной сцене и не видит координатор;
+            // окно отдаёт ей действия, а не состояние целиком.
+            recordingBridge.toggle = { toggleRecording() }
+            recordingBridge.openWindow = { overlay.restoreMainWindow() }
+        }
+        .onChange(of: presenceStore.showsOverlay) { _, _ in
+            applyPresence()
+        }
+        .onChange(of: presenceStore.minimizesMainWindow) { _, _ in
+            applyPresence()
+        }
+        .onChange(of: captionsViewModel.lines) { _, _ in
+            // Содержимое накладки обновляется вместе с лентой.
+            if overlay.isVisible {
+                applyPresence()
+            }
         }
         .onChange(of: languageStore.primary) { _, newValue in
             captionsViewModel.applySessionLanguage(newValue)
@@ -100,6 +134,44 @@ struct AppShellView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(captureCoordinator.lastError ?? "")
+        }
+    }
+
+    /// Старт или остановка записи из строки меню.
+    private func toggleRecording() {
+        if captureCoordinator.isRecording {
+            captionsViewModel.stopLive(capture: captureCoordinator)
+        } else {
+            startLiveSession()
+        }
+    }
+
+    /// Привести окна в соответствие с состоянием записи.
+    private func applyPresence() {
+        let decision = PresenceDecision.make(
+            isRecording: captureCoordinator.isRecording,
+            settings: presenceStore
+        )
+
+        if decision.showsOverlay {
+            overlay.show(
+                content: CaptionOverlayView(
+                    lines: captionsViewModel.recentLines(limit: 2),
+                    isRecording: captureCoordinator.isRecording,
+                    showsSpeaker: captureCoordinator.systemAudioAvailable,
+                    opacity: presenceStore.overlayOpacity
+                ) {
+                    captionsViewModel.stopLive(capture: captureCoordinator)
+                }
+            )
+        } else {
+            overlay.hide()
+        }
+
+        if decision.hidesMainWindow {
+            overlay.hideMainWindow()
+        } else {
+            overlay.restoreMainWindow()
         }
     }
 

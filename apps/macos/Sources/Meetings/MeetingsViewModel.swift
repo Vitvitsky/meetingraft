@@ -74,6 +74,8 @@ final class MeetingsViewModel {
 
     private(set) var searchHits: [FfiSearchHit] = []
     private(set) var isSearching = false
+    /// Фильтр по времени; на поиск не влияет — искать логично по всему.
+    var filter: MeetingsFilter = .all
 
     private let core: any MeetingsCoreProviding
     private var backendRefineTask: Task<Void, Never>?
@@ -150,6 +152,16 @@ final class MeetingsViewModel {
             searchHits = core.searchMeetings(query: text, limit: 50)
             isSearching = false
         }
+    }
+
+    /// Встречи под текущим фильтром.
+    func filteredMeetings(now: Date = Date()) -> [FfiMeetingSummary] {
+        meetings.filter { filter.matches(startedAtMs: $0.startedAtMs, now: now) }
+    }
+
+    /// Сколько встреч попадает в фильтр — число рядом с его названием.
+    func count(for filter: MeetingsFilter, now: Date = Date()) -> Int {
+        meetings.count { filter.matches(startedAtMs: $0.startedAtMs, now: now) }
     }
 
     /// Название для показа: пустое поле заменяется датой встречи.

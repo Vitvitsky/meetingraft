@@ -35,6 +35,23 @@ final class GlossaryViewModel {
     private(set) var terms: [FfiGlossaryTerm] = []
     private(set) var errorMessage: String?
     private(set) var importMessage: String?
+    var filter: GlossaryFilter = .all
+    var query = ""
+
+    /// Термины под текущим фильтром и запросом.
+    func visibleTerms(liveSessionId: String?) -> [FfiGlossaryTerm] {
+        terms.filter {
+            filter.matches($0, liveSessionId: liveSessionId) && $0.matches(query: query)
+        }
+    }
+
+    /// Сколько терминов в области — число рядом с её названием.
+    ///
+    /// Запрос сюда не входит: счётчики показывают размер словаря, а не
+    /// то, сколько нашлось по строке поиска.
+    func count(for filter: GlossaryFilter, liveSessionId: String?) -> Int {
+        terms.count { filter.matches($0, liveSessionId: liveSessionId) }
+    }
 
     private let core: any GlossaryCoreProviding
 

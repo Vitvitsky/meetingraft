@@ -1,5 +1,6 @@
 //! Live STT engines (ADR-005).
 
+mod batch;
 mod engine;
 mod hallucination;
 mod local_agreement;
@@ -9,7 +10,10 @@ mod window;
 
 #[cfg(feature = "whisper")]
 mod whisper;
+#[cfg(feature = "whisper")]
+mod whisper_batch;
 
+pub use batch::{BatchTranscribeError, BatchTranscriber, MockBatchTranscriber, normalize_segments};
 pub use engine::SttEngine;
 pub use hallucination::is_whisper_hallucination;
 pub use local_agreement::{
@@ -21,3 +25,5 @@ pub use window::{LiveCaptionPipeline, SttBackendKind, pcm_bytes_to_i16};
 
 #[cfg(feature = "whisper")]
 pub use whisper::WhisperSttEngine;
+#[cfg(feature = "whisper")]
+pub use whisper_batch::WhisperBatchTranscriber;

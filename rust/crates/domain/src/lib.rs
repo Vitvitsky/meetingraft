@@ -13,7 +13,8 @@ pub use caption::{CaptionEvent, CaptionPhase};
 pub use glossary::{GlossaryScope, GlossaryTerm};
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use postcall::{
-    Artifact, ArtifactKind, FinalTranscript, MeetingSummary, SearchHit, SearchHitKind,
+    Artifact, ArtifactKind, FinalSegment, FinalTranscript, MeetingSummary, SearchHit,
+    SearchHitKind, TranscriptSegment,
 };
 pub use session::SessionState;
 pub use speaker::Speaker;

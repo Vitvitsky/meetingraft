@@ -10,6 +10,13 @@ struct MeetingDetailView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
 
     @State private var section: MeetingDetailSection = .live
+    @State private var rebuild: FinalRebuildViewModel
+
+    init(meeting: FfiMeetingSummary, viewModel: MeetingsViewModel, core: MeetingCore) {
+        self.meeting = meeting
+        self.viewModel = viewModel
+        _rebuild = State(initialValue: FinalRebuildViewModel(core: core))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,9 +47,17 @@ struct MeetingDetailView: View {
         .onAppear {
             applyProviderConfig()
             viewModel.reload(meetingId: meeting.id)
+            rebuild.attach(meetingId: meeting.id)
         }
         .onDisappear {
             viewModel.resetBackendRefineSession()
+            rebuild.stopPolling()
+        }
+        .onChange(of: rebuild.state) { _, newValue in
+            // Проход закончился — перечитываем: появилась новая версия.
+            if newValue == "succeeded" {
+                viewModel.reload(meetingId: meeting.id)
+            }
         }
         .alert(
             "Ошибка Meetings",
@@ -137,9 +152,8 @@ struct MeetingDetailView: View {
 
     private var finalTranscript: some View {
         VStack(spacing: 0) {
-            provenanceBanner(
-                "Источник: Live finals + glossary · вход для Brief / Follow-up"
-            )
+            provenanceBanner(finalProvenance)
+            rebuildBar
             if viewModel.finalVersions.isEmpty {
                 ContentUnavailableView(
                     "Финальный транскрипт недоступен",
@@ -156,6 +170,38 @@ struct MeetingDetailView: View {
                 }
             }
         }
+    }
+
+    /// Provenance называет то, что фактически отработало: после
+    /// настоящего прохода — его, до него — честную сборку из live-финалов.
+    private var finalProvenance: String {
+        rebuild.provenance.isEmpty
+            ? "Источник: Live finals + glossary · вход для Brief / Follow-up"
+            : "Источник: \(rebuild.provenance) · вход для Brief / Follow-up"
+    }
+
+    private var rebuildBar: some View {
+        HStack(spacing: 12) {
+            if rebuild.isRunning {
+                ProgressView(value: rebuild.fraction)
+                    .frame(width: 140)
+                Button("Cancel") { rebuild.cancel() }
+            } else {
+                Button("Rebuild Final", systemImage: "arrow.clockwise") {
+                    rebuild.start(meetingId: meeting.id)
+                }
+                .help("Повторно распознать сохранённое аудио большой моделью")
+            }
+            if !rebuild.statusText.isEmpty {
+                Text(rebuild.statusText)
+                    .font(.caption)
+                    .foregroundStyle(rebuild.state == "failed" ? Color.red : Color.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
     }
 
     private var comparePanel: some View {

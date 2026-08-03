@@ -17,20 +17,23 @@ protocol WhisperDownloading: Sendable {
 }
 
 struct WhisperModelDownloader: WhisperDownloading {
-    /// `(sourceURL, partialDestination)` — для unit-тестов без live HF.
-    private let downloadTransport: @Sendable (URL, URL) async throws -> Void
+    /// `(sourceURL, partialDestination, onProgress)` — для unit-тестов без live HF.
+    private let downloadTransport: @Sendable (URL, URL, @Sendable @escaping (Double) -> Void) async throws -> Void
     private let session: URLSession
 
     init(
         session: URLSession = .shared,
-        downloadTransport: (@Sendable (URL, URL) async throws -> Void)? = nil
+        downloadTransport: (
+            @Sendable (URL, URL, @Sendable @escaping (Double) -> Void) async throws -> Void
+        )? = nil
     ) {
         self.session = session
-        self.downloadTransport = downloadTransport ?? { sourceURL, partialURL in
+        self.downloadTransport = downloadTransport ?? { sourceURL, partialURL, onProgress in
             try await Self.defaultDownloadTransport(
                 session: session,
                 from: sourceURL,
-                to: partialURL
+                to: partialURL,
+                onProgress: onProgress
             )
         }
     }
@@ -83,7 +86,11 @@ struct WhisperModelDownloader: WhisperDownloading {
         }
 
         do {
-            try await downloadTransport(sourceURL, partial)
+            // Модели весят сотни мегабайт: без честного прогресса загрузка
+            // выглядит зависшей, и её отменяют, не дождавшись.
+            try await downloadTransport(sourceURL, partial) { fraction in
+                Task { @MainActor in progress(fraction) }
+            }
         } catch let error as WhisperModelDownloaderError {
             try? fileManager.removeItem(at: partial)
             throw error
@@ -106,16 +113,46 @@ struct WhisperModelDownloader: WhisperDownloading {
     private static func defaultDownloadTransport(
         session: URLSession,
         from sourceURL: URL,
-        to partialURL: URL
+        to partialURL: URL,
+        onProgress: @Sendable @escaping (Double) -> Void
     ) async throws {
-        let (tempFile, response) = try await session.download(from: sourceURL)
-        defer { try? FileManager.default.removeItem(at: tempFile) }
-
-        if let http = response as? HTTPURLResponse,
-           !(200 ... 299).contains(http.statusCode)
-        {
-            throw WhisperModelDownloaderError.downloadFailed(statusCode: http.statusCode)
+        let tempFile: URL = try await withCheckedThrowingContinuation { continuation in
+            let box = ContinuationBox(continuation)
+            let task = session.downloadTask(with: sourceURL) { url, response, error in
+                if let error {
+                    box.fail(error)
+                    return
+                }
+                if let http = response as? HTTPURLResponse,
+                   !(200 ... 299).contains(http.statusCode)
+                {
+                    box.fail(WhisperModelDownloaderError.downloadFailed(statusCode: http.statusCode))
+                    return
+                }
+                guard let url else {
+                    box.fail(WhisperModelDownloaderError.downloadFailed(statusCode: nil))
+                    return
+                }
+                // Временный файл живёт только внутри этого колбэка, поэтому
+                // переносим его сразу, а не после возврата из continuation.
+                let staged = URL(fileURLWithPath: NSTemporaryDirectory())
+                    .appendingPathComponent(UUID().uuidString)
+                do {
+                    try FileManager.default.moveItem(at: url, to: staged)
+                    box.succeed(staged)
+                } catch {
+                    box.fail(error)
+                }
+            }
+            // `progress` у задачи обновляется по мере получения данных —
+            // это единственный источник настоящего прогресса у URLSession.
+            let observation = task.progress.observe(\.fractionCompleted) { progress, _ in
+                onProgress(progress.fractionCompleted)
+            }
+            box.retain(observation)
+            task.resume()
         }
+        defer { try? FileManager.default.removeItem(at: tempFile) }
 
         let directory = partialURL.deletingLastPathComponent()
         if !FileManager.default.fileExists(atPath: directory.path) {
@@ -125,5 +162,46 @@ struct WhisperModelDownloader: WhisperDownloading {
             try FileManager.default.removeItem(at: partialURL)
         }
         try FileManager.default.moveItem(at: tempFile, to: partialURL)
+    }
+}
+
+/// Одноразовое возобновление continuation из колбэка URLSession.
+///
+/// Колбэк может прийти один раз, но компилятор этого не знает, а двойное
+/// возобновление — падение. Заодно держит наблюдателя прогресса живым до
+/// конца загрузки.
+private final class ContinuationBox: @unchecked Sendable {
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var observation: NSKeyValueObservation?
+    private let lock = NSLock()
+
+    init(_ continuation: CheckedContinuation<URL, Error>) {
+        self.continuation = continuation
+    }
+
+    func retain(_ observation: NSKeyValueObservation) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.observation = observation
+    }
+
+    func succeed(_ url: URL) {
+        finish { $0.resume(returning: url) }
+    }
+
+    func fail(_ error: Error) {
+        finish { $0.resume(throwing: error) }
+    }
+
+    private func finish(_ body: (CheckedContinuation<URL, Error>) -> Void) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        observation?.invalidate()
+        observation = nil
+        lock.unlock()
+        if let pending {
+            body(pending)
+        }
     }
 }

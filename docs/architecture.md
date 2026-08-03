@@ -40,7 +40,7 @@ macOS App (SwiftUI)
 
 Rust Core via UniFFI (MeetingCore)
 ├─ domain · session (+ ChannelMixer) · glossary · postcall templates
-├─ live STT (Whisper / Mock) · translate engines
+├─ live STT (Whisper / Mock) · batch STT (post-call) · translate engines
 ├─ sync client → HTTP backend
 └─ SQLite local store facade
 
@@ -66,8 +66,14 @@ The backend handles long-running and heavy post-call processing.
 - persist live caption events
 
 ### Post-call processing
+- **re-ASR**: сохранённые PCM-чанки распознаются заново большой моделью,
+  дорожки — раздельно, поэтому канал сегмента известен точно (ADR-011)
+- LLM-полировка: пунктуация, заглавные, границы предложений; границы
+  сегментов и тайм-коды не трогаются
+- сегменты живут в `final_segments`; `body_markdown` — производный рендер
+- проход идёт фоновым джобом с прогрессом и отменой, уступая записи
+- пословная диффа Live против Final для вкладки Compare
 - upload or finalize raw audio artifact
-- refine transcript
 - assign speakers
 - generate artifacts from templates: built-in (brief, follow-up email,
   technical requirements, meeting minutes, action items) and user-defined

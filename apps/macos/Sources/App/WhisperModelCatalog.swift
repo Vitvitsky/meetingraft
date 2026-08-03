@@ -31,6 +31,17 @@ enum WhisperModelId: String, CaseIterable, Identifiable, Sendable {
         return URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)")
     }
 
+    /// Примерный размер файла. Показывается рядом с кнопкой загрузки:
+    /// без него полминуты ожидания читаются как поломка.
+    var approximateSizeMB: Int? {
+        switch self {
+        case .auto: nil
+        case .base: 148
+        case .small: 466
+        case .largeV3Turbo: 1560
+        }
+    }
+
     var displayName: String {
         switch self {
         case .auto:
