@@ -120,6 +120,7 @@ impl WhisperSttEngine {
             return Vec::new();
         }
 
+        let special_token_floor = self.ctx.token_eot();
         let mut tokens: Vec<(String, u64)> = Vec::new();
         for index in 0..state.full_n_segments() {
             let Some(segment) = state.get_segment(index) else {
@@ -135,14 +136,20 @@ impl WhisperSttEngine {
                 continue;
             }
             for token_index in 0..segment.n_tokens() {
-                let Ok(text) = segment.get_token_text(token_index) else {
+                let Some(token) = segment.get_token(token_index) else {
                     continue;
                 };
-                let Some(data) = segment.get_token_data(token_index) else {
+                // Служебные токены (в т.ч. тайм-коды `<|1.20|>`) идут с id не
+                // меньше eot — иначе они попали бы в текст как «слова».
+                if token.token_id() >= special_token_floor {
+                    continue;
+                }
+                let Ok(text) = token.to_str() else {
                     continue;
                 };
                 // t1 в сотых долях секунды от начала буфера.
-                tokens.push((text, (data.t1.max(0) as u64) * 10));
+                let end_ms = (token.token_data().t1.max(0) as u64) * 10;
+                tokens.push((text.to_string(), end_ms));
             }
         }
         words_from_tokens(&tokens)
