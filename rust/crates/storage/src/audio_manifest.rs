@@ -317,6 +317,51 @@ impl AudioManifestStore {
         Ok(())
     }
 
+    /// Следующий номер версии финального транскрипта (MAX+1 или 1).
+    pub fn next_final_version(&self, meeting_id: &str) -> Result<u32, AudioManifestError> {
+        let next: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) + 1
+             FROM final_transcripts
+             WHERE meeting_id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        )?;
+        Ok(next as u32)
+    }
+
+    /// Все версии финального транскрипта встречи (новые первыми).
+    pub fn list_final_transcripts(
+        &self,
+        meeting_id: &str,
+    ) -> Result<Vec<FinalTranscript>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT meeting_id, version, body_markdown, created_at_ms
+             FROM final_transcripts
+             WHERE meeting_id = ?1
+             ORDER BY version DESC",
+        )?;
+        let rows = statement.query_map(params![meeting_id], Self::map_final_transcript_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Конкретная версия финального транскрипта или None.
+    pub fn get_final_transcript_version(
+        &self,
+        meeting_id: &str,
+        version: u32,
+    ) -> Result<Option<FinalTranscript>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT meeting_id, version, body_markdown, created_at_ms
+             FROM final_transcripts
+             WHERE meeting_id = ?1 AND version = ?2",
+        )?;
+        let mut rows = statement.query(params![meeting_id, version])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(Self::map_final_transcript_row(&row)?))
+    }
+
     /// Вернуть последнюю версию финального транскрипта встречи.
     pub fn get_final_transcript(
         &self,
@@ -333,12 +378,7 @@ impl AudioManifestStore {
         let Some(row) = rows.next()? else {
             return Ok(None);
         };
-        Ok(Some(FinalTranscript {
-            meeting_id: row.get(0)?,
-            version: row.get::<_, i64>(1)? as u32,
-            body_markdown: row.get(2)?,
-            created_at_ms: row.get::<_, i64>(3)? as u64,
-        }))
+        Ok(Some(Self::map_final_transcript_row(&row)?))
     }
 
     /// Сохранить post-call артефакт.
@@ -602,6 +642,17 @@ impl AudioManifestStore {
         }
     }
 
+    fn map_final_transcript_row(
+        row: &rusqlite::Row<'_>,
+    ) -> Result<FinalTranscript, rusqlite::Error> {
+        Ok(FinalTranscript {
+            meeting_id: row.get(0)?,
+            version: row.get::<_, i64>(1)? as u32,
+            body_markdown: row.get(2)?,
+            created_at_ms: row.get::<_, i64>(3)? as u64,
+        })
+    }
+
     fn invalid_storage_value(field: &str, value: &str) -> rusqlite::Error {
         rusqlite::Error::FromSqlConversionFailure(
             0,
@@ -744,6 +795,51 @@ mod tests {
                     },
                 ]
             );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn next_list_and_get_final_versions() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            assert_eq!(store.next_final_version("m1").unwrap(), 1);
+            store
+                .upsert_final_transcript(&FinalTranscript {
+                    meeting_id: "m1".into(),
+                    version: 1,
+                    body_markdown: "one".into(),
+                    created_at_ms: 10,
+                })
+                .unwrap();
+            store
+                .upsert_final_transcript(&FinalTranscript {
+                    meeting_id: "m1".into(),
+                    version: 2,
+                    body_markdown: "two".into(),
+                    created_at_ms: 20,
+                })
+                .unwrap();
+            assert_eq!(store.next_final_version("m1").unwrap(), 3);
+            let list = store.list_final_transcripts("m1").unwrap();
+            assert_eq!(list.len(), 2);
+            assert_eq!(list[0].version, 2);
+            assert_eq!(list[0].body_markdown, "two");
+            assert_eq!(list[1].version, 1);
+            assert_eq!(
+                store.get_final_transcript("m1").unwrap().unwrap().version,
+                2
+            );
+            assert_eq!(
+                store
+                    .get_final_transcript_version("m1", 1)
+                    .unwrap()
+                    .unwrap()
+                    .body_markdown,
+                "one"
+            );
+            assert_eq!(store.get_final_transcript_version("m1", 9).unwrap(), None);
         }
         let _ = fs::remove_dir_all(&root);
     }
