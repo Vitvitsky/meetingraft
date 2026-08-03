@@ -199,40 +199,27 @@ final class WhisperModelDownloaderTests: XCTestCase {
         }
     }
 
-    /// Прогресс обязан доходить до UI: без него загрузка на сотни
-    /// мегабайт выглядит зависшей.
+    /// Значения, которые сообщает транспорт, обязаны доходить до UI.
     ///
-    /// Метод изолирован явно: колбэк прогресса объявлен `@MainActor`, и
-    /// читать собранные значения можно только оттуда же — остальной класс
-    /// не изолирован.
-    @MainActor
+    /// Отличается от `testDownloadReportsProgress`: тот проверяет края
+    /// (0 и 1), а здесь — что промежуточные доли не теряются. Без них
+    /// загрузка на сотни мегабайт выглядит зависшей.
     func testProgressFromTransportReachesCaller() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
+        final class ProgressTracker: @unchecked Sendable {
+            var fractions: [Double] = []
+        }
+        let tracker = ProgressTracker()
         let downloader = WhisperModelDownloader(downloadTransport: { _, partialURL, onProgress in
             onProgress(0.25)
             onProgress(0.75)
             try Data("ggml".utf8).write(to: partialURL)
         })
-        let seen = ProgressSink()
 
-        _ = try await downloader.download(id: .small, modelsDirectory: directory) { value in
-            seen.append(value)
+        _ = try await downloader.download(id: .small, modelsDirectory: tempDir) { fraction in
+            tracker.fractions.append(fraction)
         }
 
-        let values = seen.values
-        XCTAssertTrue(values.contains(0.25), "\(values)")
-        XCTAssertTrue(values.contains(0.75), "\(values)")
-        try? FileManager.default.removeItem(at: directory)
-    }
-}
-
-/// Собирает значения прогресса; живёт на MainActor, как и сам колбэк.
-@MainActor
-private final class ProgressSink {
-    private(set) var values: [Double] = []
-
-    func append(_ value: Double) {
-        values.append(value)
+        XCTAssertTrue(tracker.fractions.contains(0.25), "\(tracker.fractions)")
+        XCTAssertTrue(tracker.fractions.contains(0.75), "\(tracker.fractions)")
     }
 }
