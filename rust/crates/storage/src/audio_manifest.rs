@@ -806,6 +806,26 @@ impl AudioManifestStore {
     }
 
     /// Добавить или обновить спикера по id.
+    /// Создать спикера, если его ещё нет.
+    ///
+    /// В отличие от `upsert_speaker`, имя существующего не трогается:
+    /// пересбор не имеет права переименовывать спикера обратно после
+    /// того, как человек дал ему настоящее имя.
+    pub fn ensure_speaker(&mut self, speaker: &Speaker) -> Result<bool, AudioManifestError> {
+        let inserted = self.conn.execute(
+            "INSERT INTO speakers (id, meeting_id, display_name, sort_index)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO NOTHING",
+            params![
+                speaker.id,
+                speaker.meeting_id,
+                speaker.display_name,
+                speaker.sort_index
+            ],
+        )?;
+        Ok(inserted > 0)
+    }
+
     pub fn upsert_speaker(&mut self, speaker: &Speaker) -> Result<(), AudioManifestError> {
         self.conn.execute(
             "INSERT INTO speakers (id, meeting_id, display_name, sort_index)

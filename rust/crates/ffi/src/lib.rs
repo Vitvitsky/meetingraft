@@ -1194,7 +1194,29 @@ impl MeetingCore {
     ///
     /// Повторный вызов для встречи с идущим проходом отдаёт тот же id:
     /// два прохода, пишущие сегменты одной версии, — это гонка.
+    /// Запустить пересбор Final в фоне; возвращает id задачи.
+    ///
+    /// Имена спикеров по умолчанию приходят из Swift: формулировка
+    /// локале-зависима и не должна жить в ядре.
+    pub fn start_final_rebuild_named(
+        &self,
+        meeting_id: String,
+        mic_speaker_name: String,
+        system_speaker_name: String,
+    ) -> String {
+        self.start_rebuild(meeting_id, mic_speaker_name, system_speaker_name)
+    }
+
     pub fn start_final_rebuild(&self, meeting_id: String) -> String {
+        self.start_rebuild(meeting_id, "You".to_string(), "Others".to_string())
+    }
+
+    fn start_rebuild(
+        &self,
+        meeting_id: String,
+        mic_speaker_name: String,
+        system_speaker_name: String,
+    ) -> String {
         let guard = self.inner.lock().expect("meeting core poisoned");
         let params = rebuild::RebuildParams {
             data_root: guard.data_root.clone(),
@@ -1204,6 +1226,8 @@ impl MeetingCore {
             llm_engine: normalize_llm_engine(&guard.llm_engine).to_owned(),
             llm_base_url: guard.llm_base_url.clone(),
             llm_model_id: guard.llm_model_id.clone(),
+            mic_speaker_name,
+            system_speaker_name,
         };
         drop(guard);
 
@@ -1800,11 +1824,88 @@ mod tests {
             .expect("segments");
         assert!(!segments.is_empty(), "сегменты должны быть записаны");
         assert_eq!(segments[0].channel, AudioChannel::Mic);
-        assert!(segments[0].speaker_id.is_empty());
+        // Спикер по умолчанию назначается самим проходом (Phase 11, T2).
+        assert!(!segments[0].speaker_id.is_empty());
 
         let transcript = store.get_final_transcript(&meeting_id).expect("final");
         assert!(transcript.is_some_and(|t| !t.body_markdown.is_empty()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Пересбор подписывает реплики без единой ручной операции: канал
+    /// микрофона — владелец машины, системный — собеседник.
+    #[test]
+    fn rebuild_assigns_default_speakers_and_keeps_renames() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-speakers-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-speakers".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store
+                .begin_session(&meeting_id, 1, "Тест")
+                .expect("session");
+            let loud: Vec<u8> = (0..16_000)
+                .flat_map(|i| if i % 2 == 0 { 3000_i16 } else { -3000 }.to_le_bytes())
+                .collect();
+            store
+                .append_chunk(AudioChannel::Mic, &loud, 16_000, 0)
+                .expect("chunk");
+            store.end_session(2_000).expect("end");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let first = run_rebuild_to_completion(&core, &meeting_id);
+        assert_eq!(first, "succeeded");
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        let speakers = store.list_speakers(&meeting_id).expect("speakers");
+        assert_eq!(speakers.len(), 1, "системного канала не было: {speakers:?}");
+        assert_eq!(speakers[0].display_name, "Вы");
+        let version = store.next_final_version(&meeting_id).expect("version") - 1;
+        let segments = store
+            .list_final_segments(&meeting_id, version)
+            .expect("segments");
+        assert!(segments.iter().all(|s| s.speaker_id == speakers[0].id));
+        drop(store);
+
+        // Человек дал спикеру настоящее имя.
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            let mut renamed = speakers[0].clone();
+            renamed.display_name = "Сергей".into();
+            store.upsert_speaker(&renamed).expect("rename");
+        }
+
+        let second = run_rebuild_to_completion(&core, &meeting_id);
+        assert_eq!(second, "succeeded");
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        let after = store.list_speakers(&meeting_id).expect("speakers");
+        assert_eq!(after.len(), 1, "пересбор не должен плодить дубликаты");
+        assert_eq!(after[0].display_name, "Сергей", "имя затёрто пересбором");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn run_rebuild_to_completion(core: &MeetingCore, meeting_id: &str) -> String {
+        let job_id = core.start_final_rebuild_named(
+            meeting_id.to_string(),
+            "Вы".to_string(),
+            "Собеседник".to_string(),
+        );
+        for _ in 0..300 {
+            let progress = core.final_rebuild_progress(job_id.clone());
+            if matches!(
+                progress.state.as_str(),
+                "succeeded" | "failed" | "cancelled"
+            ) {
+                return progress.state;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        "timeout".to_string()
     }
 
     /// Второй запуск по той же встрече не плодит параллельный проход.

@@ -8,7 +8,9 @@
 
 use std::path::PathBuf;
 
-use domain::{AudioChannel, FinalTranscript, LanguagePolicy, TranscriptSegment};
+use domain::{
+    AudioChannel, FinalSegment, FinalTranscript, LanguagePolicy, Speaker, TranscriptSegment,
+};
 use glossary::{GlossaryEngine, active_terms};
 use postcall::{
     DEFAULT_BATCH_SIZE, JobHandle, LlmClient, NullLlmClient, OllamaNativeClient,
@@ -29,6 +31,10 @@ pub struct RebuildParams {
     pub llm_engine: String,
     pub llm_base_url: String,
     pub llm_model_id: String,
+    /// Имена спикеров по умолчанию; приходят из презентационного слоя,
+    /// как и название встречи, — формулировка локале-зависима.
+    pub mic_speaker_name: String,
+    pub system_speaker_name: String,
 }
 
 /// Доли прогресса: распознавание — основная стоимость прохода.
@@ -93,8 +99,39 @@ pub fn run_rebuild(params: RebuildParams, handle: &JobHandle) -> Result<(), Stri
         })
         .map_err(|e| e.to_string())?;
 
+    assign_default_speakers(&mut store, &params, version, &segments)?;
+
     handle.set_note(provenance(&engine_note, &polish));
     report(handle, 1.0);
+    Ok(())
+}
+
+/// Завести спикеров по умолчанию и раздать их по каналам.
+///
+/// Для звонка один на один это и есть вся атрибуция: канал `mic` —
+/// владелец машины, `system` — собеседник. Дальше человеку остаётся
+/// только заменить имя.
+fn assign_default_speakers(
+    store: &mut AudioManifestStore,
+    params: &RebuildParams,
+    version: u32,
+    segments: &[FinalSegment],
+) -> Result<(), String> {
+    for (channel, name) in [
+        (AudioChannel::Mic, &params.mic_speaker_name),
+        (AudioChannel::System, &params.system_speaker_name),
+    ] {
+        // Канала не было — спикера не заводим: пустой «Собеседник» в
+        // списке участников это мусор, а не информация.
+        if !segments.iter().any(|segment| segment.channel == channel) {
+            continue;
+        }
+        let speaker = Speaker::default_for(&params.meeting_id, channel, name);
+        store.ensure_speaker(&speaker).map_err(|e| e.to_string())?;
+        store
+            .set_channel_speaker(&params.meeting_id, version, channel, &speaker.id)
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
