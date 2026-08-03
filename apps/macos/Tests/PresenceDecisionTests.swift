@@ -66,9 +66,9 @@ final class PresenceDecisionTests: XCTestCase {
 
     /// Настройка переживает перезапуск: сбрасывать её каждый раз —
     /// раздражать без причины.
-    func testSettingsPersistAcrossInstances() {
+    func testSettingsPersistAcrossInstances() throws {
         let suite = "presence-tests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
 
         let first = PresenceSettingsStore(defaults: defaults)
         first.showsOverlay = false
@@ -80,8 +80,10 @@ final class PresenceDecisionTests: XCTestCase {
         XCTAssertEqual(second.overlayOpacity, 0.4, accuracy: 0.001)
     }
 
-    func testDefaultsEnableOverlay() {
-        let defaults = UserDefaults(suiteName: "presence-fresh-\(UUID().uuidString)")!
+    func testDefaultsEnableOverlay() throws {
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: "presence-fresh-\(UUID().uuidString)")
+        )
 
         let store = PresenceSettingsStore(defaults: defaults)
 
