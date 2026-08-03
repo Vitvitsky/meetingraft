@@ -160,6 +160,26 @@ struct SettingsView: View {
                     TextField("Model id", text: Bindable(providerStore).llmModelId)
                         .textFieldStyle(.roundedBorder)
                 }
+                if providerStore.llmEngine.needsBackendModelPicker {
+                    if providerStore.backendLlmModels.isEmpty {
+                        Text(
+                            providerStore.backendLlmModelsMessage.isEmpty
+                                ? "Нет моделей — настройте PROVIDERS_JSON / LLM_* на backend"
+                                : providerStore.backendLlmModelsMessage
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Model", selection: Bindable(providerStore).selectedBackendLlmId) {
+                            ForEach(providerStore.backendLlmSelections) { selection in
+                                Text(selection.pickerLabel).tag(selection.id)
+                            }
+                        }
+                    }
+                    Button("Обновить") {
+                        refreshBackendLlmModels()
+                    }
+                }
                 if providerStore.llmEngine.needsUrl {
                     TextField("LLM base URL", text: Bindable(providerStore).llmBaseUrl)
                         .textFieldStyle(.roundedBorder)
@@ -212,10 +232,16 @@ struct SettingsView: View {
         .onChange(of: providerStore.apiToken) { _, _ in
             applyApiConfig()
         }
-        .onChange(of: providerStore.llmEngine) { _, _ in
+        .onChange(of: providerStore.llmEngine) { _, engine in
             applyApiConfig()
+            if engine.needsBackendModelPicker {
+                refreshBackendLlmModels()
+            }
         }
         .onChange(of: providerStore.llmModelId) { _, _ in
+            applyApiConfig()
+        }
+        .onChange(of: providerStore.llmProviderId) { _, _ in
             applyApiConfig()
         }
         .onChange(of: providerStore.llmBaseUrl) { _, _ in
@@ -308,8 +334,30 @@ struct SettingsView: View {
         core?.setLlmConfig(
             engineCode: providerStore.llmEngine.rawValue,
             modelId: providerStore.llmModelId,
-            baseUrl: providerStore.llmBaseUrl
+            baseUrl: providerStore.llmBaseUrl,
+            providerId: providerStore.llmProviderId
         )
+    }
+
+    private func refreshBackendLlmModels() {
+        applyApiConfig()
+        guard let core else { return }
+        let models = core.listBackendLlmModels()
+        providerStore.backendLlmModels = models
+        if models.isEmpty {
+            providerStore.backendLlmModelsMessage =
+                "Нет моделей — настройте PROVIDERS_JSON / LLM_* на backend"
+            return
+        }
+        providerStore.backendLlmModelsMessage = ""
+        let currentKey = providerStore.selectedBackendLlmId
+        let keys = Set(
+            models.map { BackendLlmSelection.selectionKey(providerId: $0.providerId, model: $0.model) }
+        )
+        if !keys.contains(currentKey), let first = models.first {
+            providerStore.llmProviderId = first.providerId
+            providerStore.llmModelId = first.model
+        }
     }
 
     private func chooseExportFolder() {

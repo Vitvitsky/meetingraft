@@ -387,7 +387,8 @@ final class MeetingsViewModelTests: XCTestCase {
             apiToken: "test-token",
             llmEngineCode: "ollama",
             llmModelId: "gemma2",
-            llmBaseUrl: "http://127.0.0.1:11434"
+            llmBaseUrl: "http://127.0.0.1:11434",
+            llmProviderId: "default"
         )
         viewModel.generate(meetingId: "meeting-1", kind: .brief)
 
@@ -396,6 +397,7 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertEqual(core.lastLlmEngineCode, "ollama")
         XCTAssertEqual(core.lastLlmModelId, "gemma2")
         XCTAssertEqual(core.lastLlmBaseUrl, "http://127.0.0.1:11434")
+        XCTAssertEqual(core.lastLlmProviderId, "default")
         XCTAssertEqual(viewModel.selectedArtifact, generated)
     }
 
@@ -465,6 +467,7 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
     private(set) var lastLlmEngineCode = ""
     private(set) var lastLlmModelId = ""
     private(set) var lastLlmBaseUrl = ""
+    private(set) var lastLlmProviderId = ""
     private(set) var lastUpsertId: String?
     private(set) var lastUpsertDisplayName: String?
     private(set) var lastUpsertSortIndex: Int64?
@@ -569,10 +572,11 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
         apiToken = token
     }
 
-    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String) {
+    func setLlmConfig(engineCode: String, modelId: String, baseUrl: String, providerId: String) {
         lastLlmEngineCode = engineCode
         lastLlmModelId = modelId
         lastLlmBaseUrl = baseUrl
+        lastLlmProviderId = providerId
     }
 
     func submitBackendJob(meetingId _: String, kindCode _: String) -> FfiBackendJob {

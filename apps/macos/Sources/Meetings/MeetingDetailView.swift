@@ -357,7 +357,8 @@ struct MeetingDetailView: View {
             apiToken: providerStore.apiToken,
             llmEngineCode: providerStore.llmEngine.rawValue,
             llmModelId: providerStore.llmModelId,
-            llmBaseUrl: providerStore.llmBaseUrl
+            llmBaseUrl: providerStore.llmBaseUrl,
+            llmProviderId: providerStore.llmProviderId
         )
     }
 

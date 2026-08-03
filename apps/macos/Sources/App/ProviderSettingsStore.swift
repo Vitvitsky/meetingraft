@@ -29,6 +29,12 @@ final class ProviderSettingsStore {
     /// Base URL локального Ollama или OpenAI-compatible сервера.
     var llmBaseUrl: String = "http://127.0.0.1:11434"
     var llmModelId: String = "gemma2"
+    /// `provider_id` из backend registry (GET /v1/models); для local LLM — `"default"`.
+    var llmProviderId: String = "default"
+    /// Каталог моделей с backend; пусто до «Обновить» или при ошибке API.
+    var backendLlmModels: [FfiLlmModelRef] = []
+    /// Подпись под picker (пустой каталог / ошибка).
+    var backendLlmModelsMessage: String = ""
     /// Папка экспорта markdown (Obsidian vault / Documents); tilde раскрывается при записи.
     var exportFolderPath: String = "~/Documents/MeetingRaft"
     /// On-device Whisper ggml id; `auto` — resolve по установленным файлам (ADR-005).
@@ -37,6 +43,27 @@ final class ProviderSettingsStore {
     let postCallEngines = PostCallSttEngine.allCases
     let sttModelIds = WhisperModelId.allCases
     let llmEngines = LlmEngine.allCases
+
+    /// Элементы Picker для backend LLM (`provider_id|model`).
+    var backendLlmSelections: [BackendLlmSelection] {
+        backendLlmModels.map { model in
+            BackendLlmSelection(
+                providerId: model.providerId,
+                model: model.model,
+                displayName: model.displayName
+            )
+        }
+    }
+
+    /// Ключ выбора в Picker; при смене обновляет `llmProviderId` + `llmModelId`.
+    var selectedBackendLlmId: String {
+        get { BackendLlmSelection.selectionKey(providerId: llmProviderId, model: llmModelId) }
+        set {
+            guard let parsed = BackendLlmSelection.parse(selectionKey: newValue) else { return }
+            llmProviderId = parsed.providerId
+            llmModelId = parsed.model
+        }
+    }
 
     /// Подпись для баннера Artifacts.
     var artifactsPipelineCaption: String {
@@ -48,8 +75,39 @@ final class ProviderSettingsStore {
         case .openaiCompat:
             "Генерация из Final · LLM: OpenAI-compat (\(llmModelId))"
         case .backend:
-            "Генерация из Final · LLM: backend"
+            if llmModelId.isEmpty {
+                "Генерация из Final · LLM: backend"
+            } else {
+                "Генерация из Final · LLM: backend (\(llmProviderId) · \(llmModelId))"
+            }
         }
+    }
+}
+
+/// Идентичность выбора модели backend в Settings Picker.
+struct BackendLlmSelection: Hashable, Identifiable {
+    var id: String {
+        Self.selectionKey(providerId: providerId, model: model)
+    }
+
+    let providerId: String
+    let model: String
+    let displayName: String
+
+    var pickerLabel: String {
+        displayName.isEmpty ? "\(providerId) · \(model)" : displayName
+    }
+
+    static func selectionKey(providerId: String, model: String) -> String {
+        "\(providerId)|\(model)"
+    }
+
+    static func parse(selectionKey: String) -> (providerId: String, model: String)? {
+        guard let separator = selectionKey.firstIndex(of: "|") else { return nil }
+        let providerId = String(selectionKey[..<separator])
+        let model = String(selectionKey[selectionKey.index(after: separator)...])
+        guard !providerId.isEmpty, !model.isEmpty else { return nil }
+        return (providerId, model)
     }
 }
 
@@ -109,11 +167,16 @@ enum LlmEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
         isAvailable ? displayName : "\(displayName) — скоро"
     }
 
+    /// Free-text Model id (Ollama / OpenAI-compat). Backend — picker каталога.
     var needsModel: Bool {
         switch self {
-        case .builtinTemplates: false
-        case .ollama, .openaiCompat, .backend: true
+        case .builtinTemplates, .backend: false
+        case .ollama, .openaiCompat: true
         }
+    }
+
+    var needsBackendModelPicker: Bool {
+        self == .backend
     }
 
     var needsUrl: Bool {
