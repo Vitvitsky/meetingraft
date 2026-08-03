@@ -22,7 +22,9 @@ protocol AudioTapping: AnyObject {
 extension AudioTapping {
     /// По умолчанию источник доступен и не требует разведки — так ведёт
     /// себя микрофон, у которого доступность решается разрешением TCC.
-    var isAvailable: Bool { true }
+    var isAvailable: Bool {
+        true
+    }
 
     func prepare() {}
 }

@@ -40,22 +40,41 @@ final class PCMDownmixer {
             return []
         }
 
-        // Конвертер должен получить буфер ровно один раз, иначе out.frameLength == 0.
+        // Один входной буфер + endOfStream, иначе ресемплер не отдаёт хвост
+        // (на 48→16 kHz теряется ~15% кадров при noDataNow).
         var consumed = false
         var error: NSError?
-        converter.convert(to: out, error: &error) { _, status in
-            if consumed {
-                status.pointee = .noDataNow
-                return nil
+        var samples: [Float] = []
+
+        while true {
+            let status = converter.convert(to: out, error: &error) { _, status in
+                if consumed {
+                    status.pointee = .endOfStream
+                    return nil
+                }
+                consumed = true
+                status.pointee = .haveData
+                return buffer
             }
-            consumed = true
-            status.pointee = .haveData
-            return buffer
+
+            if error != nil {
+                break
+            }
+            if out.frameLength > 0, let channel = out.floatChannelData?[0] {
+                samples.append(
+                    contentsOf: UnsafeBufferPointer(start: channel, count: Int(out.frameLength))
+                )
+            }
+            if status == .endOfStream || status == .error {
+                break
+            }
+            if status == .haveData, out.frameLength == 0 {
+                break
+            }
         }
 
-        guard error == nil, out.frameLength > 0, let channel = out.floatChannelData?[0] else {
-            return []
-        }
-        return Array(UnsafeBufferPointer(start: channel, count: Int(out.frameLength)))
+        // После endOfStream конвертер нужно сбросить для следующего чанка.
+        converter.reset()
+        return samples
     }
 }

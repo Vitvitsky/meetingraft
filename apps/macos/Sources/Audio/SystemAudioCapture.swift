@@ -264,7 +264,7 @@ final class SystemAudioCapture: AudioTapping {
 }
 
 /// Почему системный звук недоступен — определяет, что показывать в UI.
-enum SystemAudioStatus: Equatable, Sendable {
+enum SystemAudioStatus: Error, Equatable, Sendable {
     /// Разведка ещё не проводилась.
     case unknown
     /// Tap создаётся — разрешение есть.
