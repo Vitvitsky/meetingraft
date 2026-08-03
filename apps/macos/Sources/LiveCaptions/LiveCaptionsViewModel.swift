@@ -125,12 +125,7 @@ final class LiveCaptionsViewModel {
 
     private func ingestLiveEvents(_ events: [FfiCaptionEvent], intoCaptions: Bool) {
         for event in events {
-            let phase: CaptionPhase = switch event.phase {
-            case .partial: .partial
-            case .final: .final
-            }
-            let id = UUID(uuidString: event.id) ?? UUID()
-            let line = CaptionLine(id: id, text: event.text, phase: phase)
+            let line = CaptionLine(event: event)
             if intoCaptions {
                 appendCaption(line)
             } else {

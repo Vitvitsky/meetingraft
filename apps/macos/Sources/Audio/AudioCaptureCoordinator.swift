@@ -8,6 +8,8 @@ final class AudioCaptureCoordinator {
     private(set) var isRecording = false
     private(set) var lastError: String?
     private(set) var systemAudioAvailable = false
+    /// Почему системный звук недоступен — для actionable-состояния в UI.
+    private(set) var systemAudioStatus: SystemAudioStatus = .unknown
     private(set) var sessionId: String?
     /// Обновляется при каждом успешном ingest — чтобы UI видел рост.
     private(set) var chunkCount: UInt64 = 0
@@ -16,16 +18,33 @@ final class AudioCaptureCoordinator {
     private(set) var captionEventCount: UInt64 = 0
 
     private let core: MeetingCore
-    private let microphone = MicrophoneCapture()
-    private let systemAudio = SystemAudioCapture()
+    private let microphone: any AudioTapping
+    private let systemAudio: any AudioTapping
     private var micPipeline = AudioChunkPipeline()
     private var systemPipeline = AudioChunkPipeline()
 
-    init(core: MeetingCore) {
+    /// Запрос разрешения вынесен в зависимость: в тестовом бандле
+    /// системный промпт недоступен и подвесил бы тест.
+    private let requestMicrophonePermission: @Sendable () async -> Bool
+
+    init(
+        core: MeetingCore,
+        microphone: any AudioTapping = MicrophoneCapture(),
+        systemAudio: any AudioTapping = SystemAudioCapture(),
+        requestMicrophonePermission: @escaping @Sendable () async -> Bool = {
+            await AudioPermissions.requestMicrophone()
+        }
+    ) {
         self.core = core
+        self.microphone = microphone
+        self.systemAudio = systemAudio
+        self.requestMicrophonePermission = requestMicrophonePermission
     }
 
     init(dataRoot: String? = nil) {
+        microphone = MicrophoneCapture()
+        systemAudio = SystemAudioCapture()
+        requestMicrophonePermission = { await AudioPermissions.requestMicrophone() }
         if let dataRoot {
             core = MeetingCore.withDataRoot(dataRoot: dataRoot)
         } else {
@@ -51,7 +70,7 @@ final class AudioCaptureCoordinator {
         chunkCount = 0
         captionEventCount = 0
         sttBackend = "idle"
-        let granted = await AudioPermissions.requestMicrophone()
+        let granted = await requestMicrophonePermission()
         guard granted else {
             lastError = "Доступ к микрофону запрещён"
             return
@@ -72,6 +91,9 @@ final class AudioCaptureCoordinator {
 
         systemAudio.prepare()
         systemAudioAvailable = systemAudio.isAvailable
+        systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unknown
+        // Пока tap не запущен, микшер не должен ждать системный канал.
+        core.setSystemAudioExpected(expected: false)
 
         do {
             try microphone.start { [weak self] samples in
@@ -90,10 +112,16 @@ final class AudioCaptureCoordinator {
         }
 
         if systemAudioAvailable {
-            try? systemAudio.start { [weak self] samples in
-                Task { @MainActor in
-                    self?.ingest(samples: samples, channel: .system)
+            do {
+                try systemAudio.start { [weak self] samples in
+                    Task { @MainActor in
+                        self?.ingest(samples: samples, channel: .system)
+                    }
                 }
+                core.setSystemAudioExpected(expected: true)
+            } catch {
+                systemAudioAvailable = false
+                systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unsupported
             }
         }
     }
@@ -102,6 +130,7 @@ final class AudioCaptureCoordinator {
         microphone.stop()
         systemAudio.stop()
         core.stopRecording()
+        core.setSystemAudioExpected(expected: false)
         isRecording = false
         sttBackend = "idle"
     }

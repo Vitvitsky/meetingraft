@@ -42,11 +42,6 @@ final class RustCaptionStream: CaptionStreaming, @unchecked Sendable {
     }
 
     private static func map(_ event: FfiCaptionEvent) -> CaptionLine {
-        let phase: CaptionPhase = switch event.phase {
-        case .partial: .partial
-        case .final: .final
-        }
-        let id = UUID(uuidString: event.id) ?? UUID()
-        return CaptionLine(id: id, text: event.text, phase: phase)
+        CaptionLine(event: event)
     }
 }

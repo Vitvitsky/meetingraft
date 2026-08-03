@@ -212,9 +212,11 @@ UI-потоком, выравнивание двух потоков по вре�
 стороны; каналы остаются раздельными end-to-end; отказ в разрешении
 деградирует до mic-only явно, а не молча.
 
-План: `docs/superpowers/plans/2026-08-03-phase-8-system-audio.md`
-(включает ADR-009 про микс для live при раздельных каналах на диске).
-Maps to: Epic 5 (последний незакрытый пункт). Status: **planned**.
+План: `docs/superpowers/plans/2026-08-03-phase-8-system-audio.md`;
+решение по live-пути — `docs/adr/ADR-009-live-mix-channel-attribution.md`.
+Maps to: Epic 5 (последний незакрытый пункт). Status: **Rust-часть готова
+и проверена (T0, T1, T6, T7); Swift-часть написана, ждёт прогона на Mac
+(T2–T5, T8)**.
 
 ## Phase 9 — Meetings library
 

@@ -39,7 +39,7 @@ macOS App (SwiftUI)
    └─ HostTranslationBridge (ADR-008 Apple path)
 
 Rust Core via UniFFI (MeetingCore)
-├─ domain · session · glossary · postcall templates
+├─ domain · session (+ ChannelMixer) · glossary · postcall templates
 ├─ live STT (Whisper / Mock) · translate engines
 ├─ sync client → HTTP backend
 └─ SQLite local store facade
@@ -119,6 +119,8 @@ the phase exit. VAD window tuning (ADR-005) is the primary latency lever.
 
 ## Core principles
 
+- Live-путь получает микс каналов с атрибуцией говорящего (ADR-009);
+  на диске каналы остаются раздельными и доступны post-call отдельно.
 - Live and final transcripts are separate entities.
 - Realtime captions optimize latency.
 - Post-call pipeline optimizes quality.

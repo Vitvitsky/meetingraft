@@ -2,9 +2,9 @@
 import Foundation
 
 /// Захват микрофона через AVAudioEngine → 16 kHz Float mono callbacks.
-final class MicrophoneCapture {
+final class MicrophoneCapture: AudioTapping {
     private let engine = AVAudioEngine()
-    private var converter: AVAudioConverter?
+    private var downmixer: PCMDownmixer?
     private var onSamples: (([Float]) -> Void)?
 
     var isRunning: Bool {
@@ -23,20 +23,14 @@ final class MicrophoneCapture {
             throw CaptureError.invalidInputFormat
         }
 
-        let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: AudioChunkPipeline.targetSampleRate,
-            channels: 1,
-            interleaved: false
-        )!
-        converter = AVAudioConverter(from: hwFormat, to: targetFormat)
-        guard converter != nil else {
+        guard let downmixer = PCMDownmixer(from: hwFormat) else {
             throw CaptureError.converterUnavailable
         }
+        self.downmixer = downmixer
 
         engine.prepare()
         input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
-            self?.convert(buffer: buffer, targetFormat: targetFormat)
+            self?.emit(buffer: buffer)
         }
         try engine.start()
     }
@@ -48,32 +42,14 @@ final class MicrophoneCapture {
         if engine.isRunning {
             engine.stop()
         }
-        converter = nil
+        downmixer = nil
         onSamples = nil
     }
 
-    private func convert(buffer: AVAudioPCMBuffer, targetFormat: AVAudioFormat) {
-        guard let converter, let onSamples, buffer.frameLength > 0 else { return }
-
-        let ratio = targetFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
-        guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
-
-        // Конвертер должен получить буфер ровно один раз, иначе out.frameLength == 0.
-        var consumed = false
-        var error: NSError?
-        converter.convert(to: out, error: &error) { _, status in
-            if consumed {
-                status.pointee = .noDataNow
-                return nil
-            }
-            consumed = true
-            status.pointee = .haveData
-            return buffer
-        }
-
-        guard error == nil, out.frameLength > 0, let channel = out.floatChannelData?[0] else { return }
-        let samples = Array(UnsafeBufferPointer(start: channel, count: Int(out.frameLength)))
+    private func emit(buffer: AVAudioPCMBuffer) {
+        guard let downmixer, let onSamples else { return }
+        let samples = downmixer.convert(buffer)
+        guard !samples.isEmpty else { return }
         onSamples(samples)
     }
 

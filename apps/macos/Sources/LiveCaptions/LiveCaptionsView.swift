@@ -30,8 +30,7 @@ struct LiveCaptionsView: View {
                     Text("STT: \(capture.sttBackend)")
                         .foregroundStyle(.secondary)
                     if !capture.systemAudioAvailable {
-                        Text("mic only")
-                            .foregroundStyle(.orange)
+                        SystemAudioUnavailableBadge(status: capture.systemAudioStatus)
                     }
                     Button("Stop Live") { viewModel.stopLive(capture: capture) }
                 } else {
@@ -111,11 +110,32 @@ struct LiveCaptionsView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 4)
             List(lines) { line in
-                Text(line.text)
-                    .font(line.phase == .partial ? .body.italic() : .body)
-                    .foregroundStyle(line.phase == .partial ? .secondary : .primary)
-                    .accessibilityLabel("\(line.phase == .partial ? "Partial" : "Final"): \(line.text)")
+                captionRow(line)
             }
         }
+    }
+
+    /// Подпись говорящего показывается только когда системный канал
+    /// действительно пишется: в монологе она бессмысленна.
+    @ViewBuilder
+    private func captionRow(_ line: CaptionLine) -> some View {
+        let phaseLabel = line.phase == .partial ? "Partial" : "Final"
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if capture.systemAudioAvailable {
+                Text(line.speaker.label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(line.speaker == .you ? Color.accentColor : Color.secondary)
+                    .frame(width: 56, alignment: .leading)
+            }
+            Text(line.text)
+                .font(line.phase == .partial ? .body.italic() : .body)
+                .foregroundStyle(line.phase == .partial ? .secondary : .primary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            capture.systemAudioAvailable
+                ? "\(line.speaker.label), \(phaseLabel): \(line.text)"
+                : "\(phaseLabel): \(line.text)"
+        )
     }
 }
