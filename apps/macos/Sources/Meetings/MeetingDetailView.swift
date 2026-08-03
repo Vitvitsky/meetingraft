@@ -11,11 +11,13 @@ struct MeetingDetailView: View {
 
     @State private var section: MeetingDetailSection = .live
     @State private var rebuild: FinalRebuildViewModel
+    @State private var attribution: SpeakerAttributionViewModel
 
     init(meeting: FfiMeetingSummary, viewModel: MeetingsViewModel, core: MeetingCore) {
         self.meeting = meeting
         self.viewModel = viewModel
         _rebuild = State(initialValue: FinalRebuildViewModel(core: core))
+        _attribution = State(initialValue: SpeakerAttributionViewModel(core: core))
     }
 
     var body: some View {
@@ -47,16 +49,21 @@ struct MeetingDetailView: View {
         .onAppear {
             applyProviderConfig()
             viewModel.reload(meetingId: meeting.id)
+            reloadAttribution()
             rebuild.attach(meetingId: meeting.id)
         }
         .onDisappear {
             viewModel.resetBackendRefineSession()
             rebuild.stopPolling()
         }
+        .onChange(of: viewModel.selectedFinalVersion) { _, _ in
+            reloadAttribution()
+        }
         .onChange(of: rebuild.state) { _, newValue in
             // Проход закончился — перечитываем: появилась новая версия.
             if newValue == "succeeded" {
                 viewModel.reload(meetingId: meeting.id)
+                reloadAttribution()
             }
         }
         .alert(
@@ -74,6 +81,25 @@ struct MeetingDetailView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
+        .alert(
+            "Ошибка атрибуции",
+            isPresented: Binding(
+                get: { attribution.errorMessage != nil },
+                set: {
+                    if !$0 {
+                        attribution.dismissError()
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(attribution.errorMessage ?? "")
+        }
+    }
+
+    private func reloadAttribution() {
+        attribution.load(meetingId: meeting.id, version: viewModel.selectedFinalVersion)
     }
 
     private var liveCaptions: some View {
@@ -104,50 +130,20 @@ struct MeetingDetailView: View {
 
     private var speakersPanel: some View {
         VStack(spacing: 0) {
-            provenanceBanner("Ручные метки · diarization — скоро")
-
-            HStack {
-                Button("Add", systemImage: "person.badge.plus") {
-                    viewModel.addSpeaker(
-                        meetingId: meeting.id,
-                        primaryLanguage: languageStore.primary.rawValue
-                    )
-                }
-                Spacer()
-            }
-            .padding()
-
-            Divider()
-
-            List {
-                ForEach(viewModel.speakers, id: \.id) { speaker in
-                    SpeakerRow(
-                        speaker: speaker,
-                        onRename: { displayName in
-                            viewModel.renameSpeaker(
-                                meetingId: meeting.id,
-                                id: speaker.id,
-                                displayName: displayName
-                            )
-                        },
-                        onDelete: {
-                            viewModel.removeSpeaker(
-                                id: speaker.id,
-                                meetingId: meeting.id
-                            )
-                        }
-                    )
-                }
-            }
-            .overlay {
-                if viewModel.speakers.isEmpty {
-                    ContentUnavailableView(
-                        "Спикеров нет",
-                        systemImage: "person.3"
-                    )
-                }
-            }
+            provenanceBanner(speakersProvenance)
+            SpeakersPanelView(
+                viewModel: attribution,
+                primaryLanguage: languageStore.primary.rawValue
+            )
         }
+    }
+
+    /// Provenance говорит, откуда взялась атрибуция: по дорожкам она
+    /// точна, вручную — ровно настолько, насколько её проставили.
+    private var speakersProvenance: String {
+        attribution.hasSegments
+            ? "Атрибуция по дорожкам записи · правки вручную сохраняются"
+            : "Ручные метки · атрибуция по дорожкам появится после пересбора Final"
     }
 
     private var finalTranscript: some View {
@@ -162,12 +158,23 @@ struct MeetingDetailView: View {
             } else {
                 finalVersionPicker
                 Divider()
-                ScrollView {
-                    Text(markdown(viewModel.selectedFinalBody))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                }
+                finalBody
+            }
+        }
+    }
+
+    /// Версии до re-ASR (ADR-011) сегментов не имеют — показываем их
+    /// абзацами, а не пустым списком.
+    @ViewBuilder
+    private var finalBody: some View {
+        if attribution.hasSegments {
+            FinalSegmentsView(viewModel: attribution)
+        } else {
+            ScrollView {
+                Text(markdown(viewModel.selectedFinalBody))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
             }
         }
     }
@@ -551,41 +558,6 @@ private enum MeetingDetailSection: String, CaseIterable, Identifiable {
             "Speakers"
         case .artifacts:
             "Artifacts"
-        }
-    }
-}
-
-private struct SpeakerRow: View {
-    let speaker: FfiSpeaker
-    let onRename: (String) -> Void
-    let onDelete: () -> Void
-
-    @State private var displayName: String
-
-    init(
-        speaker: FfiSpeaker,
-        onRename: @escaping (String) -> Void,
-        onDelete: @escaping () -> Void
-    ) {
-        self.speaker = speaker
-        self.onRename = onRename
-        self.onDelete = onDelete
-        _displayName = State(initialValue: speaker.displayName)
-    }
-
-    var body: some View {
-        HStack {
-            TextField("Speaker name", text: $displayName)
-                .onSubmit {
-                    onRename(displayName)
-                }
-            Button("Delete", systemImage: "trash", role: .destructive) {
-                onDelete()
-            }
-            .labelStyle(.iconOnly)
-        }
-        .onChange(of: speaker.displayName) { _, newValue in
-            displayName = newValue
         }
     }
 }

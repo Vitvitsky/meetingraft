@@ -19,7 +19,7 @@ use postcall::{
 };
 mod rebuild;
 
-use postcall::{RebuildJobs, ThreadSpawner, diff_words, speaker_stats};
+use postcall::{RebuildJobs, ThreadSpawner, diff_words, render_segments, speaker_stats};
 use session::{ChannelMixer, MeetingSession};
 use storage::{AudioManifestError, AudioManifestStore};
 use stt::{
@@ -368,6 +368,50 @@ fn open_store(core: &MeetingCore) -> Option<AudioManifestStore> {
     let root = guard.data_root.clone();
     drop(guard);
     AudioManifestStore::open(&root).ok()
+}
+
+/// Пересобрать markdown всех версий Final после правки атрибуции.
+///
+/// `body_markdown` производен от сегментов (ADR-011). Без пересборки
+/// экспорт и Brief показывали бы имя, отменённое минуту назад, — молча и
+/// без единого признака расхождения с экраном.
+///
+/// Возвращает описание ошибки или пустую строку.
+fn rerender_final_bodies(store: &mut AudioManifestStore, meeting_id: &str) -> String {
+    let speakers = match store.list_speakers(meeting_id) {
+        Ok(speakers) => speakers,
+        Err(error) => return error.to_string(),
+    };
+    let transcripts = match store.list_final_transcripts(meeting_id) {
+        Ok(transcripts) => transcripts,
+        Err(error) => return error.to_string(),
+    };
+    for transcript in transcripts {
+        let segments = match store.list_final_segments(meeting_id, transcript.version) {
+            Ok(segments) => segments,
+            Err(error) => return error.to_string(),
+        };
+        // Версии, собранные до re-ASR, сегментов не имеют: их markdown —
+        // единственный носитель текста, и перезаписать его нечем.
+        if segments.is_empty() {
+            continue;
+        }
+        let body_markdown = render_segments(&segments, &speakers);
+        if body_markdown == transcript.body_markdown {
+            continue;
+        }
+        if let Err(error) = store.upsert_final_transcript(&FinalTranscript {
+            meeting_id: meeting_id.to_string(),
+            version: transcript.version,
+            body_markdown,
+            // Время создания версии не трогаем: правка имени новой версии
+            // не создаёт.
+            created_at_ms: transcript.created_at_ms,
+        }) {
+            return error.to_string();
+        }
+    }
+    String::new()
 }
 
 /// Captions + опциональный отдельный translation event (не подменяет caption).
@@ -1124,24 +1168,33 @@ impl MeetingCore {
             } else {
                 id
             },
-            meeting_id,
+            meeting_id: meeting_id.clone(),
             display_name,
             sort_index,
         };
         let mut guard = self.inner.lock().expect("meeting core poisoned");
-        write_store(&mut guard, |store| store.upsert_speaker(&speaker))
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_default()
+        match write_store(&mut guard, |store| {
+            store.upsert_speaker(&speaker)?;
+            Ok(rerender_final_bodies(store, &meeting_id))
+        }) {
+            Ok(error) => error,
+            Err(error) => error.to_string(),
+        }
     }
 
-    /// Удалить ручную метку спикера.
-    pub fn delete_speaker(&self, id: String) -> String {
+    /// Удалить участника; его реплики остаются, но без имени.
+    ///
+    /// Встреча в параметрах не для поиска записи, а ради пересборки
+    /// markdown: без неё экспорт сохранит имя удалённого участника.
+    pub fn delete_speaker(&self, meeting_id: String, id: String) -> String {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
-        write_store(&mut guard, |store| store.delete_speaker(&id))
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_default()
+        match write_store(&mut guard, |store| {
+            store.delete_speaker(&id)?;
+            Ok(rerender_final_bodies(store, &meeting_id))
+        }) {
+            Ok(error) => error,
+            Err(error) => error.to_string(),
+        }
     }
 
     /// Встречи, доступные в локальной истории.
@@ -1257,7 +1310,7 @@ impl MeetingCore {
             AudioChannel::from_code(&channel_code),
             &speaker_id,
         ) {
-            Ok(_) => String::new(),
+            Ok(_) => rerender_final_bodies(&mut store, &meeting_id),
             Err(error) => error.to_string(),
         }
     }
@@ -1274,7 +1327,7 @@ impl MeetingCore {
             return "storage unavailable".to_string();
         };
         match store.set_segment_speaker(&meeting_id, version, index, &speaker_id) {
-            Ok(()) => String::new(),
+            Ok(()) => rerender_final_bodies(&mut store, &meeting_id),
             Err(error) => error.to_string(),
         }
     }
@@ -1285,7 +1338,7 @@ impl MeetingCore {
             return "storage unavailable".to_string();
         };
         match store.unpin_segment_speaker(&meeting_id, version, index) {
-            Ok(()) => String::new(),
+            Ok(()) => rerender_final_bodies(&mut store, &meeting_id),
             Err(error) => error.to_string(),
         }
     }
@@ -2125,6 +2178,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Правка атрибуции обязана дойти до markdown: он и уходит в экспорт
+    /// и в Brief, а расходится с экраном молча.
+    #[test]
+    fn attribution_edits_rewrite_final_markdown() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-render-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-render".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store
+                .replace_final_segments(
+                    &meeting_id,
+                    1,
+                    &[domain::FinalSegment {
+                        index: 0,
+                        start_ms: 0,
+                        end_ms: 2_000,
+                        channel: AudioChannel::System,
+                        speaker_id: String::new(),
+                        speaker_pinned: false,
+                        text: "нужно решить к пятнице".into(),
+                    }],
+                )
+                .expect("segments");
+            store
+                .upsert_final_transcript(&FinalTranscript {
+                    meeting_id: meeting_id.clone(),
+                    version: 1,
+                    body_markdown: "нужно решить к пятнице".into(),
+                    created_at_ms: 111,
+                })
+                .expect("transcript");
+            store
+                .upsert_speaker(&domain::Speaker {
+                    id: "sp-peter".into(),
+                    meeting_id: meeting_id.clone(),
+                    display_name: "Пётр".into(),
+                    sort_index: 0,
+                })
+                .expect("speaker");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        assert!(
+            core.assign_channel_speaker(meeting_id.clone(), 1, "system".into(), "sp-peter".into())
+                .is_empty()
+        );
+        assert_eq!(
+            core.get_final_transcript_version(meeting_id.clone(), 1)
+                .body_markdown,
+            "**Пётр:** нужно решить к пятнице"
+        );
+
+        // Переименование участника — тоже правка атрибуции.
+        assert!(
+            core.upsert_speaker(meeting_id.clone(), "sp-peter".into(), "Пётр И.".into(), 0)
+                .is_empty()
+        );
+        let renamed = core.get_final_transcript_version(meeting_id.clone(), 1);
+        assert_eq!(renamed.body_markdown, "**Пётр И.:** нужно решить к пятнице");
+        assert_eq!(renamed.created_at_ms, 111, "правка имени не создаёт версию");
+
+        // Удаление снимает подпись, а не текст.
+        assert!(
+            core.delete_speaker(meeting_id.clone(), "sp-peter".into())
+                .is_empty()
+        );
+        assert_eq!(
+            core.get_final_transcript_version(meeting_id.clone(), 1)
+                .body_markdown,
+            "нужно решить к пятнице"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn speaker_stats_report_share_of_speech() {
         let root = std::env::temp_dir().join(format!(
@@ -2562,7 +2694,10 @@ mod tests {
             .is_empty()
         );
         assert_eq!(core.list_speakers("m1".into())[0].display_name, "Алиса");
-        assert!(core.delete_speaker(list[0].id.clone()).is_empty());
+        assert!(
+            core.delete_speaker("m1".into(), list[0].id.clone())
+                .is_empty()
+        );
         assert!(core.list_speakers("m1".into()).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -90,16 +90,21 @@ pub fn run_rebuild(params: RebuildParams, handle: &JobHandle) -> Result<(), Stri
     store
         .replace_final_segments(&params.meeting_id, version, &segments)
         .map_err(|e| e.to_string())?;
+
+    // Спикеры назначаются до рендера: markdown производен от сегментов,
+    // и собранный раньше он остался бы без имён (Phase 11, T6).
+    let speakers = assign_default_speakers(&mut store, &params, version, &segments)?;
+    let attributed = store
+        .list_final_segments(&params.meeting_id, version)
+        .map_err(|e| e.to_string())?;
     store
         .upsert_final_transcript(&FinalTranscript {
             meeting_id: params.meeting_id.clone(),
             version,
-            body_markdown: render_segments(&segments),
+            body_markdown: render_segments(&attributed, &speakers),
             created_at_ms: crate::now_ms(),
         })
         .map_err(|e| e.to_string())?;
-
-    assign_default_speakers(&mut store, &params, version, &segments)?;
 
     handle.set_note(provenance(&engine_note, &polish));
     report(handle, 1.0);
@@ -111,12 +116,14 @@ pub fn run_rebuild(params: RebuildParams, handle: &JobHandle) -> Result<(), Stri
 /// Для звонка один на один это и есть вся атрибуция: канал `mic` —
 /// владелец машины, `system` — собеседник. Дальше человеку остаётся
 /// только заменить имя.
+/// Возвращает участников встречи после назначения — их имена нужны
+/// рендеру, а `ensure_speaker` мог оставить прежнее имя, данное человеком.
 fn assign_default_speakers(
     store: &mut AudioManifestStore,
     params: &RebuildParams,
     version: u32,
     segments: &[FinalSegment],
-) -> Result<(), String> {
+) -> Result<Vec<Speaker>, String> {
     for (channel, name) in [
         (AudioChannel::Mic, &params.mic_speaker_name),
         (AudioChannel::System, &params.system_speaker_name),
@@ -132,7 +139,9 @@ fn assign_default_speakers(
             .set_channel_speaker(&params.meeting_id, version, channel, &speaker.id)
             .map_err(|e| e.to_string())?;
     }
-    Ok(())
+    store
+        .list_speakers(&params.meeting_id)
+        .map_err(|e| e.to_string())
 }
 
 /// Что фактически отработало. Полировка попадает сюда только если прошла
