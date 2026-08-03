@@ -77,7 +77,7 @@ final class AudioCaptureCoordinator {
         }
 
         let id = UUID().uuidString
-        let err = core.startRecording(sessionId: id)
+        let err = core.startRecording(sessionId: id, title: MeetingTitle.forNewMeeting())
         guard err.isEmpty else {
             lastError = err
             return

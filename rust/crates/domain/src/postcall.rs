@@ -31,9 +31,58 @@ pub struct Artifact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeetingSummary {
     pub id: String,
+    /// Пустое название допустимо: подстановку делает презентационный слой.
+    pub title: String,
     pub started_at_ms: u64,
+    /// `None`, пока встреча не завершена.
+    pub ended_at_ms: Option<u64>,
     pub has_final: bool,
     pub artifact_count: u64,
+}
+
+impl MeetingSummary {
+    /// Длительность встречи, если она завершена.
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.ended_at_ms
+            .map(|ended| ended.saturating_sub(self.started_at_ms))
+    }
+}
+
+/// Где нашлось совпадение полнотекстового поиска.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchHitKind {
+    Caption,
+    Final,
+    Artifact,
+}
+
+impl SearchHitKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Caption => "caption",
+            Self::Final => "final",
+            Self::Artifact => "artifact",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Self {
+        match code {
+            "final" => Self::Final,
+            "artifact" => Self::Artifact,
+            _ => Self::Caption,
+        }
+    }
+}
+
+/// Одно совпадение поиска по материалам встреч.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    pub meeting_id: String,
+    pub kind: SearchHitKind,
+    /// Идентификатор исходной записи: id caption/артефакта или номер версии.
+    pub ref_id: String,
+    /// Фрагмент с подсветкой найденного.
+    pub snippet: String,
 }
 
 #[cfg(test)]

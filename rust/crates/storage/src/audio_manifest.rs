@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionEvent, CaptionPhase, FinalTranscript,
-    GlossaryScope, GlossaryTerm, MeetingSummary, Speaker, SpeechLanguage,
+    GlossaryScope, GlossaryTerm, MeetingSummary, SearchHit, SearchHitKind, Speaker, SpeechLanguage,
 };
 use rusqlite::{Connection, params};
 use thiserror::Error;
@@ -19,6 +19,10 @@ pub enum AudioManifestError {
     Io(#[from] std::io::Error),
     #[error("session not open")]
     SessionNotOpen,
+    #[error("meeting not found: {0}")]
+    MeetingNotFound(String),
+    #[error("meeting is being recorded: {0}")]
+    SessionActive(String),
 }
 
 /// Строка manifest.
@@ -61,15 +65,17 @@ impl AudioManifestStore {
         })
     }
 
-    /// Начать recording session.
+    /// Начать recording session. Пустое название допустимо.
     pub fn begin_session(
         &mut self,
         session_id: &str,
         started_at_ms: u64,
+        title: &str,
     ) -> Result<(), AudioManifestError> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO sessions (id, started_at_ms) VALUES (?1, ?2)",
-            params![session_id, started_at_ms as i64],
+            "INSERT OR REPLACE INTO sessions (id, started_at_ms, title, ended_at_ms)
+             VALUES (?1, ?2, ?3, NULL)",
+            params![session_id, started_at_ms as i64, title],
         )?;
         for channel in [AudioChannel::Mic, AudioChannel::System] {
             fs::create_dir_all(self.chunk_dir(session_id, channel))?;
@@ -79,9 +85,31 @@ impl AudioManifestStore {
         Ok(())
     }
 
-    /// Закончить session (сброс active).
-    pub fn end_session(&mut self) {
-        self.active_session = None;
+    /// Закончить session: записать время окончания и сбросить active.
+    pub fn end_session(&mut self, ended_at_ms: u64) -> Result<(), AudioManifestError> {
+        if let Some(session_id) = self.active_session.take() {
+            self.conn.execute(
+                "UPDATE sessions SET ended_at_ms = ?2 WHERE id = ?1",
+                params![session_id, ended_at_ms as i64],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Переименовать встречу. Неизвестный id — ошибка, а не тихий no-op.
+    pub fn set_meeting_title(
+        &mut self,
+        meeting_id: &str,
+        title: &str,
+    ) -> Result<(), AudioManifestError> {
+        let updated = self.conn.execute(
+            "UPDATE sessions SET title = ?2 WHERE id = ?1",
+            params![meeting_id, title],
+        )?;
+        if updated == 0 {
+            return Err(AudioManifestError::MeetingNotFound(meeting_id.to_owned()));
+        }
+        Ok(())
     }
 
     /// Записать PCM chunk на диск и в manifest.
@@ -205,6 +233,29 @@ impl AudioManifestStore {
                 event.channel.code()
             ],
         )?;
+        if event.phase == domain::CaptionPhase::Final {
+            Self::index_text(&self.conn, session_id, "caption", &event.id, &event.text)?;
+        }
+        Ok(())
+    }
+
+    /// Записать текст в поисковый индекс, заменив прежнюю версию.
+    fn index_text(
+        conn: &Connection,
+        meeting_id: &str,
+        kind: &str,
+        ref_id: &str,
+        body: &str,
+    ) -> Result<(), AudioManifestError> {
+        conn.execute(
+            "DELETE FROM meeting_fts WHERE meeting_id = ?1 AND kind = ?2 AND ref_id = ?3",
+            params![meeting_id, kind, ref_id],
+        )?;
+        conn.execute(
+            "INSERT INTO meeting_fts (meeting_id, kind, ref_id, body)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![meeting_id, kind, ref_id, body],
+        )?;
         Ok(())
     }
 
@@ -258,6 +309,13 @@ impl AudioManifestStore {
                 transcript.body_markdown,
                 transcript.created_at_ms as i64
             ],
+        )?;
+        Self::index_text(
+            &self.conn,
+            &transcript.meeting_id,
+            "final",
+            &transcript.version.to_string(),
+            &transcript.body_markdown,
         )?;
         Ok(())
     }
@@ -345,6 +403,13 @@ impl AudioManifestStore {
                 artifact.created_at_ms as i64
             ],
         )?;
+        Self::index_text(
+            &self.conn,
+            &artifact.meeting_id,
+            "artifact",
+            &artifact.id,
+            &artifact.body_markdown,
+        )?;
         Ok(())
     }
 
@@ -376,7 +441,9 @@ impl AudioManifestStore {
         let mut statement = self.conn.prepare(
             "SELECT
                  sessions.id,
+                 sessions.title,
                  sessions.started_at_ms,
+                 sessions.ended_at_ms,
                  EXISTS(
                      SELECT 1
                      FROM final_transcripts
@@ -393,13 +460,95 @@ impl AudioManifestStore {
         let rows = statement.query_map([], |row| {
             Ok(MeetingSummary {
                 id: row.get(0)?,
-                started_at_ms: row.get::<_, i64>(1)? as u64,
-                has_final: row.get(2)?,
-                artifact_count: row.get::<_, i64>(3)? as u64,
+                title: row.get(1)?,
+                started_at_ms: row.get::<_, i64>(2)? as u64,
+                ended_at_ms: row.get::<_, Option<i64>>(3)?.map(|value| value as u64),
+                has_final: row.get(4)?,
+                artifact_count: row.get::<_, i64>(5)? as u64,
             })
         })?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Удалить встречу целиком: строки БД, поисковый индекс и PCM-чанки
+    /// на диске (`architecture.md`: удаление удаляет всё).
+    ///
+    /// Активную сессию удалить нельзя — сначала остановите запись.
+    pub fn delete_meeting(&mut self, meeting_id: &str) -> Result<(), AudioManifestError> {
+        if self.active_session.as_deref() == Some(meeting_id) {
+            return Err(AudioManifestError::SessionActive(meeting_id.to_owned()));
+        }
+
+        let transaction = self.conn.transaction()?;
+        let removed =
+            transaction.execute("DELETE FROM sessions WHERE id = ?1", params![meeting_id])?;
+        for statement in [
+            "DELETE FROM audio_manifest WHERE session_id = ?1",
+            "DELETE FROM caption_events WHERE session_id = ?1",
+            "DELETE FROM final_transcripts WHERE meeting_id = ?1",
+            "DELETE FROM artifacts WHERE meeting_id = ?1",
+            "DELETE FROM speakers WHERE meeting_id = ?1",
+            "DELETE FROM meeting_fts WHERE meeting_id = ?1",
+        ] {
+            transaction.execute(statement, params![meeting_id])?;
+        }
+        transaction.commit()?;
+
+        if removed == 0 {
+            return Err(AudioManifestError::MeetingNotFound(meeting_id.to_owned()));
+        }
+
+        // Файлы — после успешного коммита: иначе откат оставил бы строки
+        // без чанков.
+        let dir = self.root.join("sessions").join(meeting_id);
+        if dir.exists() {
+            fs::remove_dir_all(dir)?;
+        }
+        Ok(())
+    }
+
+    /// Полнотекстовый поиск по материалам встреч.
+    ///
+    /// Запрос пользователя не является выражением FTS: кавычки, звёздочки
+    /// и скобки в нём — обычные символы, поэтому каждое слово
+    /// экранируется и превращается в префиксное.
+    pub fn search(&self, query: &str, limit: u32) -> Result<Vec<SearchHit>, AudioManifestError> {
+        let Some(expression) = Self::to_fts_query(query) else {
+            return Ok(Vec::new());
+        };
+        let mut statement = self.conn.prepare(
+            "SELECT meeting_id, kind, ref_id,
+                    snippet(meeting_fts, 3, '[', ']', '…', 12)
+             FROM meeting_fts
+             WHERE meeting_fts MATCH ?1
+             ORDER BY bm25(meeting_fts)
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![expression, limit], |row| {
+            let kind: String = row.get(1)?;
+            Ok(SearchHit {
+                meeting_id: row.get(0)?,
+                kind: SearchHitKind::from_code(&kind),
+                ref_id: row.get(2)?,
+                snippet: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// `биллинг счёт` → `"биллинг"* "счёт"*`; пустой запрос → `None`.
+    fn to_fts_query(query: &str) -> Option<String> {
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .map(|word| word.replace('"', "\"\""))
+            .filter(|word| !word.is_empty())
+            .map(|word| format!("\"{word}\"*"))
+            .collect();
+        if terms.is_empty() {
+            return None;
+        }
+        Some(terms.join(" "))
     }
 
     /// Добавить или обновить термин по id либо уникальному ключу.
@@ -647,7 +796,7 @@ mod tests {
         let root = tmp_root();
         {
             let mut store = AudioManifestStore::open(&root).unwrap();
-            store.begin_session("s1", 1).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
             store
                 .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
                 .unwrap();
@@ -719,7 +868,7 @@ mod tests {
         let root = tmp_root();
         {
             let mut store = AudioManifestStore::open(&root).unwrap();
-            store.begin_session("s1", 1).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
             let event = domain::CaptionEvent::new(
                 "c1".into(),
                 "привет".into(),
@@ -727,6 +876,165 @@ mod tests {
             );
             store.append_caption("s1", &event, 42).unwrap();
             assert_eq!(store.caption_count("s1").unwrap(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_finds_russian_prefix_with_snippet() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "Встреча").unwrap();
+            store
+                .upsert_final_transcript(&FinalTranscript {
+                    meeting_id: "m1".into(),
+                    version: 1,
+                    body_markdown: "Обсудили изменения биллинга и сроки".into(),
+                    created_at_ms: 10,
+                })
+                .unwrap();
+
+            let hits = store.search("биллин", 10).unwrap();
+
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].meeting_id, "m1");
+            assert_eq!(hits[0].kind, SearchHitKind::Final);
+            assert!(hits[0].snippet.contains("биллинга"), "{}", hits[0].snippet);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Спецсимволы FTS в пользовательском вводе не должны ронять запрос.
+    #[test]
+    fn search_survives_fts_special_characters() {
+        let root = tmp_root();
+        {
+            let store = AudioManifestStore::open(&root).unwrap();
+            for query in ["\"", "*", "(", "NEAR(", "a OR", ""] {
+                assert!(store.search(query, 10).is_ok(), "запрос {query:?} упал");
+            }
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Только финальные captions попадают в индекс.
+    #[test]
+    fn search_indexes_final_captions_only() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let mut partial = CaptionEvent::new(
+                "p".into(),
+                "черновик про кофе".into(),
+                CaptionPhase::Partial,
+            );
+            partial.channel = AudioChannel::Mic;
+            let final_event =
+                CaptionEvent::new("f".into(), "решили про кофе".into(), CaptionPhase::Final);
+            store.append_caption("m1", &partial, 1).unwrap();
+            store.append_caption("m1", &final_event, 2).unwrap();
+
+            let hits = store.search("кофе", 10).unwrap();
+
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].ref_id, "f");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_meeting_removes_rows_index_and_chunks() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "Встреча").unwrap();
+            store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
+                .unwrap();
+            store
+                .append_caption(
+                    "m1",
+                    &CaptionEvent::new("c1".into(), "уникальное слово".into(), CaptionPhase::Final),
+                    5,
+                )
+                .unwrap();
+            store.end_session(10).unwrap();
+
+            store.delete_meeting("m1").unwrap();
+
+            assert!(store.list_meeting_summaries().unwrap().is_empty());
+            assert!(store.list_captions("m1").unwrap().is_empty());
+            assert!(store.search("уникальное", 10).unwrap().is_empty());
+            assert!(!root.join("sessions").join("m1").exists());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_meeting_rejects_active_session_and_unknown_id() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+
+            let active = store.delete_meeting("m1").unwrap_err();
+            assert!(matches!(active, AudioManifestError::SessionActive(_)));
+
+            let unknown = store.delete_meeting("missing").unwrap_err();
+            assert!(matches!(unknown, AudioManifestError::MeetingNotFound(_)));
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Название и длительность переживают переоткрытие базы.
+    #[test]
+    fn title_and_duration_survive_reopen() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1_000, "Weekly sync").unwrap();
+            store.end_session(4_000).unwrap();
+        }
+
+        {
+            let store = AudioManifestStore::open(&root).unwrap();
+            let summary = store.list_meeting_summaries().unwrap().remove(0);
+            assert_eq!(summary.title, "Weekly sync");
+            assert_eq!(summary.ended_at_ms, Some(4_000));
+            assert_eq!(summary.duration_ms(), Some(3_000));
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Незавершённая встреча не имеет длительности.
+    #[test]
+    fn running_meeting_has_no_duration() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1_000, "").unwrap();
+            let summary = store.list_meeting_summaries().unwrap().remove(0);
+            assert_eq!(summary.ended_at_ms, None);
+            assert_eq!(summary.duration_ms(), None);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_meeting_persists_and_rejects_unknown_id() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1_000, "Черновик").unwrap();
+            store.set_meeting_title("m1", "Ретро спринта").unwrap();
+            assert_eq!(
+                store.list_meeting_summaries().unwrap()[0].title,
+                "Ретро спринта"
+            );
+
+            let err = store.set_meeting_title("missing", "x").unwrap_err();
+            assert!(matches!(err, AudioManifestError::MeetingNotFound(_)));
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -901,8 +1209,8 @@ mod tests {
         let root = tmp_root();
         {
             let mut store = AudioManifestStore::open(&root).unwrap();
-            store.begin_session("meeting-1", 100).unwrap();
-            store.begin_session("meeting-2", 200).unwrap();
+            store.begin_session("meeting-1", 100, "").unwrap();
+            store.begin_session("meeting-2", 200, "").unwrap();
             store
                 .upsert_final_transcript(&FinalTranscript {
                     meeting_id: "meeting-1".into(),

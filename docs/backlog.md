@@ -36,6 +36,13 @@
 - [x] System audio process tap (ADR-004) — Core Audio process tap +
   приватное aggregate-устройство; каналы раздельны на диске, live-путь
   идёт через микс с атрибуцией (ADR-009)
+- Непрерывный ресемплер в `PCMDownmixer` — сейчас `converter.reset()`
+  после каждого чанка сбрасывает состояние ресемплера, из-за чего на
+  границах 100 мс кусков остаются мелкие разрывы. Сделано ради хвоста
+  через `endOfStream` (без него терялось ~15% кадров на 48→16 kHz).
+  Правильное решение — держать конвертер живым и не сигналить
+  `endOfStream` на каждом чанке. Важно для Phase 10, где точность и есть
+  цель.
 
 ## Epic 6 — Live Subtitle Flow
 - [x] Open session with STT pipeline (Mock; Whisper when model + feature)
@@ -110,6 +117,16 @@
 - [x] Compare live vs final transcript — Meetings **Compare** tab: side-by-side
   Live finals | Final vN (`feat/final-versions-compare`)
 - Diarization / speaker binding to Final segments — **deferred**
+
+## Epic 11 — Meetings library
+- [x] Название встречи (задаётся при старте записи, переименование в UI)
+- [x] Время окончания и длительность
+- [x] Полнотекстовый поиск FTS5 по finals / live-финалам / артефактам
+- [x] Каскадное удаление встречи (строки, индекс, PCM-чанки)
+- [x] Meetings — стартовый раздел приложения
+- [x] Скачивание STT-модели при первом запуске вне Settings
+- Фильтры по времени (Today / This week / Older) — ТЗ редизайна §4.2
+- Участники встречи — после diarization (Epic 9)
 
 ## Epic 10 — Quality
 - Unit tests for state machine

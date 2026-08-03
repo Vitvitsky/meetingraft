@@ -15,6 +15,9 @@ struct MarkdownExportResult: Equatable {
 /// Контракт истории встреч для presentation model и тестов.
 protocol MeetingsCoreProviding: AnyObject {
     func listMeetings() -> [FfiMeetingSummary]
+    func renameMeeting(meetingId: String, title: String) -> String
+    func deleteMeeting(meetingId: String) -> String
+    func searchMeetings(query: String, limit: UInt32) -> [FfiSearchHit]
     func listCaptions(meetingId: String) -> [FfiCaptionEvent]
     func getFinalTranscript(meetingId: String) -> FfiFinalTranscript
     func listFinalTranscripts(meetingId: String) -> [FfiFinalTranscript]
@@ -61,9 +64,21 @@ final class MeetingsViewModel {
     private(set) var backendJobId = ""
     private(set) var backendArtifactMarkdown = ""
     private(set) var exportStatusMessage = ""
+    /// Строка поиска; пустая — показываем полный список.
+    var query = "" {
+        didSet {
+            guard query != oldValue else { return }
+            scheduleSearch()
+        }
+    }
+
+    private(set) var searchHits: [FfiSearchHit] = []
+    private(set) var isSearching = false
 
     private let core: any MeetingsCoreProviding
     private var backendRefineTask: Task<Void, Never>?
+    private var searchTask: Task<Void, Never>?
+    private let searchDebounceNanoseconds: UInt64
     private let maxPollAttempts: Int
     private let pollDelayNanoseconds: UInt64
 
@@ -80,16 +95,74 @@ final class MeetingsViewModel {
     init(
         core: any MeetingsCoreProviding,
         maxPollAttempts: Int = 20,
-        pollDelayNanoseconds: UInt64 = 250_000_000
+        pollDelayNanoseconds: UInt64 = 250_000_000,
+        searchDebounceNanoseconds: UInt64 = 200_000_000
     ) {
         self.core = core
         self.maxPollAttempts = maxPollAttempts
         self.pollDelayNanoseconds = pollDelayNanoseconds
+        self.searchDebounceNanoseconds = searchDebounceNanoseconds
     }
 
     func reload() {
         meetings = core.listMeetings()
         errorMessage = nil
+    }
+
+    /// Переименовать встречу; список обновляется только при успехе.
+    func rename(meetingId: String, title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let error = core.renameMeeting(meetingId: meetingId, title: trimmed)
+        guard error.isEmpty else {
+            errorMessage = error
+            return
+        }
+        reload()
+    }
+
+    /// Удалить встречу со всеми материалами.
+    func delete(meetingId: String) {
+        let error = core.deleteMeeting(meetingId: meetingId)
+        guard error.isEmpty else {
+            errorMessage = error
+            return
+        }
+        if !query.isEmpty {
+            searchHits.removeAll { $0.meetingId == meetingId }
+        }
+        reload()
+    }
+
+    /// Дебаунс: пользователь печатает быстрее, чем имеет смысл искать.
+    private func scheduleSearch() {
+        searchTask?.cancel()
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            searchHits = []
+            isSearching = false
+            return
+        }
+        isSearching = true
+        searchTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: searchDebounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            searchHits = core.searchMeetings(query: text, limit: 50)
+            isSearching = false
+        }
+    }
+
+    /// Название для показа: пустое поле заменяется датой встречи.
+    func displayTitle(for meeting: FfiMeetingSummary) -> String {
+        let trimmed = meeting.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty else { return trimmed }
+        return MeetingTitle.fallback(startedAtMs: meeting.startedAtMs)
+    }
+
+    /// Длительность завершённой встречи; `nil` пока идёт запись.
+    func duration(for meeting: FfiMeetingSummary) -> Duration? {
+        guard meeting.endedAtMs > meeting.startedAtMs else { return nil }
+        return .milliseconds(meeting.endedAtMs - meeting.startedAtMs)
     }
 
     func reload(meetingId: String) {

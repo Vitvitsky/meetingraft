@@ -6,11 +6,13 @@ struct AppShellView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
     @Environment(TranslationSettingsStore.self) private var translationStore
     @Environment(ProviderSettingsStore.self) private var providerStore
-    @State private var selection: AppDestination? = .liveCaptions
+    @State private var selection: AppDestination? = .meetings
     @State private var captionsViewModel: LiveCaptionsViewModel
     @State private var captureCoordinator: AudioCaptureCoordinator
     @State private var glossaryViewModel: GlossaryViewModel
     @State private var meetingsViewModel: MeetingsViewModel
+    @State private var modelBootstrap = FirstRunModelBootstrap()
+    private let core: MeetingCore
 
     init() {
         let support = FileManager.default.urls(
@@ -20,6 +22,7 @@ struct AppShellView: View {
         let root = support.appendingPathComponent("meetingraft", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let core = MeetingCore.withDataRoot(dataRoot: root.path)
+        self.core = core
         _captureCoordinator = State(initialValue: AudioCaptureCoordinator(core: core))
         _captionsViewModel = State(initialValue: LiveCaptionsViewModel(core: core))
         _glossaryViewModel = State(initialValue: GlossaryViewModel(core: core))
@@ -30,7 +33,7 @@ struct AppShellView: View {
         NavigationSplitView {
             SidebarView(selection: $selection)
         } detail: {
-            switch selection ?? .liveCaptions {
+            switch selection ?? .meetings {
             case .liveCaptions:
                 LiveCaptionsView(
                     viewModel: captionsViewModel,
@@ -70,6 +73,10 @@ struct AppShellView: View {
         .onAppear {
             captionsViewModel.applySessionLanguage(languageStore.primary)
             captionsViewModel.applyTranslationSettings(translationStore)
+        }
+        .task {
+            // Модель качается на старте, а не при заходе в Settings.
+            await modelBootstrap.ensureModel(core: core)
         }
         .onChange(of: languageStore.primary) { _, newValue in
             captionsViewModel.applySessionLanguage(newValue)

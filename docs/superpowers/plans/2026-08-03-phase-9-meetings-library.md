@@ -22,7 +22,11 @@ UniFFI, TDD на логику ядра, Conventional Commits с русским s
 - Существующая база пользователя обновляется миграцией без потери данных.
 - Первый запуск больше не приводит к Mock-субтитрам молча.
 
-## T0 — первый запуск: скачивание модели вне Settings
+## T0 — первый запуск: скачивание модели вне Settings — **код готов, не проверен**
+
+`FirstRunModelBootstrap`, вызов из `AppShellView.task`; из `SettingsView`
+триггер удалён.
+
 
 Сейчас `maybeFirstRunDownload()` вызывается только из
 `SettingsView.onAppear` (`SettingsView.swift:272, 287`); пользователь,
@@ -49,7 +53,11 @@ Phase 8 добавляет колонку `channel` в `caption_events` и уп�
 старта этой фазы `PRAGMA user_version` уже работает, и задачи T2, T5, T6
 просто добавляют свои шаги.
 
-## T2 — sessions: title и ended_at_ms
+## T2 — sessions: title и ended_at_ms — **сделано**
+
+Миграция 3, `end_session(ended_at_ms)`, `set_meeting_title`,
+`MeetingSummary::duration_ms`.
+
 
 - Шаг миграции 2: `ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL
   DEFAULT ''`; `ALTER TABLE sessions ADD COLUMN ended_at_ms INTEGER`.
@@ -64,7 +72,10 @@ Phase 8 добавляет колонку `channel` в `caption_events` и уп�
 
 Коммит: `feat: название и время окончания встречи в storage`.
 
-## T3 — название по умолчанию задаёт Swift
+## T3 — название по умолчанию задаёт Swift — **код готов, не проверен**
+
+`MeetingTitle.forNewMeeting()`; `start_recording` принимает `title`.
+
 
 Формат даты локале-зависим, поэтому генерация дефолтного имени — забота
 презентационного слоя (`AGENTS.md`: форматирование не уезжает в Rust).
@@ -80,7 +91,8 @@ Phase 8 добавляет колонку `channel` в `caption_events` и уп�
 
 Коммит: `feat: имя встречи по умолчанию из shell при старте записи`.
 
-## T4 — FFI: переименование и расширенная сводка
+## T4 — FFI: переименование и расширенная сводка — **сделано**
+
 
 - `FfiMeetingSummary` получает `title: String`, `endedAtMs: u64`
   (0 = не завершена — совместимо с текущим стилем `UInt64`-полей).
@@ -91,7 +103,11 @@ Phase 8 добавляет колонку `channel` в `caption_events` и уп�
 
 Коммит: `feat: UniFFI rename_meeting и расширенная MeetingSummary`.
 
-## T5 — FTS5-индекс
+## T5 — FTS5-индекс — **сделано**
+
+Миграция 4 с backfill; индексация в тех же методах, что и запись строк;
+запрос экранируется и делается префиксным.
+
 
 - Шаг миграции 3:
   ```sql
@@ -119,7 +135,8 @@ Phase 8 добавляет колонку `channel` в `caption_events` и уп�
 
 Коммит: `feat: FTS5-индекс и поиск по материалам встреч`.
 
-## T6 — удаление встречи
+## T6 — удаление встречи — **сделано** (Rust); UI-подтверждение не проверено
+
 
 `architecture.md:109` обещает каскадное удаление; функции нет нигде.
 
@@ -136,7 +153,11 @@ Phase 8 добавляет колонку `channel` в `caption_events` и уп�
 
 Коммит: `feat: каскадное удаление встречи`.
 
-## T7 — Meetings как дом и читаемый список
+## T7 — Meetings как дом и читаемый список — **код готов, не проверен**
+
+Поиск с дебаунсом, переименование, удаление с подтверждением,
+`AppDestination` начинается с `meetings`.
+
 
 - `AppDestination` (`apps/macos/Sources/App/AppDestination.swift`): порядок
   `meetings, liveCaptions, glossary`; `AppShellView.swift:9` —
@@ -154,7 +175,8 @@ Phase 8 добавляет колонку `channel` в `caption_events` и уп�
 
 Коммит: `feat: Meetings как стартовый раздел с поиском и переименованием`.
 
-## T8 — синхронизация документации
+## T8 — синхронизация документации — **сделано**
+
 
 - `docs/architecture.md` — раздел про библиотеку встреч и поиск.
 - `docs/backlog.md` — новый Epic 11 «Meetings library» с отметками.

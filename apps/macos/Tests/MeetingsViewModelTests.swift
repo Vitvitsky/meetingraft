@@ -467,11 +467,15 @@ final class MeetingsViewModelTests: XCTestCase {
 
     private func makeMeeting(
         id: String,
-        artifactCount: UInt64 = 0
+        title: String = "",
+        artifactCount: UInt64 = 0,
+        endedAtMs: UInt64 = 0
     ) -> FfiMeetingSummary {
         FfiMeetingSummary(
             id: id,
+            title: title,
             startedAtMs: 1_754_159_200_000,
+            endedAtMs: endedAtMs,
             hasFinal: true,
             artifactCount: artifactCount
         )
@@ -522,6 +526,12 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
     var getArtifactResult: FfiBackendArtifact = .init(
         id: "", kind: "", bodyMarkdown: "", createdAt: "", error: ""
     )
+    var renameError = ""
+    var deleteError = ""
+    var searchHits: [FfiSearchHit] = []
+    private(set) var renameCalls: [(String, String)] = []
+    private(set) var deleteCalls: [String] = []
+    private(set) var searchQueries: [String] = []
     private(set) var listMeetingsCallCount = 0
     private(set) var listArtifactsCallCount = 0
     private(set) var submitBackendJobCallCount = 0
@@ -582,6 +592,38 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding {
             meetings = meetingsAfterGenerate
         }
         return meetings
+    }
+
+    func renameMeeting(meetingId: String, title: String) -> String {
+        renameCalls.append((meetingId, title))
+        if renameError.isEmpty {
+            meetings = meetings.map { meeting in
+                guard meeting.id == meetingId else { return meeting }
+                return FfiMeetingSummary(
+                    id: meeting.id,
+                    title: title,
+                    startedAtMs: meeting.startedAtMs,
+                    endedAtMs: meeting.endedAtMs,
+                    hasFinal: meeting.hasFinal,
+                    artifactCount: meeting.artifactCount
+                )
+            }
+        }
+        return renameError
+    }
+
+    func deleteMeeting(meetingId: String) -> String {
+        deleteCalls.append(meetingId)
+        if deleteError.isEmpty {
+            meetings.removeAll { $0.id == meetingId }
+        }
+        return deleteError
+    }
+
+    func searchMeetings(query: String, limit: UInt32) -> [FfiSearchHit] {
+        searchQueries.append(query)
+        _ = limit
+        return searchHits
     }
 
     func listCaptions(meetingId _: String) -> [FfiCaptionEvent] {
