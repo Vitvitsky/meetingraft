@@ -79,9 +79,12 @@
     OpenAI-compat провайдер из env (`LLM_BASE_URL` / `LLM_API_KEY` /
     `LLM_MODEL`)
   - Streaming/tools **deferred**
-- Backend provider platform — **deferred:** реестр нескольких провайдеров
-  (URL, keys, лимиты), UI «добавить провайдера», `GET /v1/models`
-- Тарификация / billing провайдеров — **deferred**
+- Backend provider platform — **partial:** static JSON registry
+  (`PROVIDERS_JSON` / `LLM_PROVIDERS_FILE`), `GET /v1/models`, Settings picker
+  `(provider_id, model)`, job routing по `provider_id`; compat `LLM_*` →
+  `default` (`feat/backend-provider-registry`)
+  - CRUD API / UI «добавить провайдера», billing, live upstream discovery —
+    **deferred**
 - Parakeet on-device STT (второй engine рядом с Whisper) — **deferred**
 - Remote STT API (latency risk для live; не default) — **deferred**
 - Более жирная модель для глубокого анализа полного аудио / refined

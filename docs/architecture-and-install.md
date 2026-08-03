@@ -5,9 +5,10 @@
 `docs/adr/`.
 
 **Статус прототипа (2026-08):** Phase 0–6 local MVP + ADR-007 **slice A**
-(FastAPI jobs; optional OpenAI-compat LLM via `LLM_*`) + **Speakers skeleton** +
-локальные LLM (Ollama / OpenAI-compatible). WhisperX / diarization /
-provider registry — ещё не в рантайме.
+(FastAPI jobs; optional OpenAI-compat LLM via `LLM_*` или JSON-реестр +
+`GET /v1/models`) + **Speakers skeleton** + локальные LLM (Ollama /
+OpenAI-compatible). WhisperX / diarization — ещё не в рантайме; provider
+registry — **partial** (static JSON + models API, без CRUD/billing).
 
 ---
 
@@ -203,8 +204,11 @@ apps/macos/Scripts/generate-ffi.sh
 ### 2.5 Backend stub — настройка (опционально)
 
 Сейчас это **ADR-007 slice A**: FastAPI in-memory jobs без Postgres / Redis /
-WhisperX. `refine` (и `brief`/`follow_up` без `LLM_BASE_URL`) — stub markdown.
-С `LLM_*` jobs `brief`/`follow_up` вызывают OpenAI-compatible провайдер.
+WhisperX. `refine` (и `brief`/`follow_up` без LLM-конфига) — stub markdown.
+Jobs `brief`/`follow_up` вызывают OpenAI-compatible провайдер из **JSON-реестра**
+(`PROVIDERS_JSON` / `LLM_PROVIDERS_FILE`) или, если реестра нет, из compat
+`LLM_*` (синтетический провайдер `id=default`). Каталог моделей отдаёт
+`GET /v1/models` (ключи и `base_url` провайдеров в ответ не попадают).
 Контракт: [`shared/openapi.yaml`](../shared/openapi.yaml).
 
 #### Шаг 1. Поднять API
@@ -216,24 +220,49 @@ WhisperX. `refine` (и `brief`/`follow_up` без `LLM_BASE_URL`) — stub markd
 # без LLM — только stub jobs:
 docker compose up --build
 
-# с реальным LLM (пример):
+# с одним LLM (compat LLM_* → provider default):
 export LLM_BASE_URL=http://93.189.243.223:58001   # без /v1
 export LLM_API_KEY=LOCAL-API-KEY
 export LLM_MODEL=Google/gemma-4-12b-it
 docker compose up --build
+
+# с реестром нескольких провайдеров (inline JSON):
+export PROVIDERS_JSON='{"providers":[{"id":"home-llm","base_url":"http://93.189.243.223:58001","api_key":"LOCAL-API-KEY","default_model":"Google/gemma-4-12b-it","models":[{"id":"Google/gemma-4-12b-it","display_name":"Gemma 4 12B"},{"id":"Qwen/Qwen3-32B","display_name":"Qwen3 32B"}]}]}'
+docker compose up --build
 # слушает http://127.0.0.1:8080
 # MEETINGRAFT_API_TOKEN=dev-token (см. docker-compose.yml)
 ```
+
+Пример файла реестра (альтернатива inline — `LLM_PROVIDERS_FILE`):
+
+```json
+{
+  "providers": [
+    {
+      "id": "home-llm",
+      "base_url": "http://93.189.243.223:58001",
+      "api_key": "LOCAL-API-KEY",
+      "default_model": "Google/gemma-4-12b-it",
+      "models": [
+        { "id": "Google/gemma-4-12b-it", "display_name": "Gemma 4 12B" },
+        { "id": "Qwen/Qwen3-32B", "display_name": "Qwen3 32B" }
+      ]
+    }
+  ]
+}
+```
+
+При валидном реестре `LLM_*` **игнорируются**. Невалидный JSON / дубликаты
+`provider.id` — backend не стартует (fail-fast).
 
 ```bash
 # Вариант B — локально через uv
 cd backend
 uv sync --extra dev
 MEETINGRAFT_API_TOKEN=dev-token \
-LLM_BASE_URL=http://93.189.243.223:58001 \
-LLM_API_KEY=LOCAL-API-KEY \
-LLM_MODEL=Google/gemma-4-12b-it \
+PROVIDERS_JSON='{"providers":[{"id":"home-llm","base_url":"http://93.189.243.223:58001","api_key":"LOCAL-API-KEY","default_model":"Google/gemma-4-12b-it","models":[{"id":"Google/gemma-4-12b-it"}]}]}' \
   uv run uvicorn app.main:app --host 127.0.0.1 --port 8080
+# compat без реестра: LLM_BASE_URL=... LLM_API_KEY=... LLM_MODEL=...
 ```
 
 Проверка без приложения:
@@ -241,6 +270,9 @@ LLM_MODEL=Google/gemma-4-12b-it \
 ```bash
 curl -s http://127.0.0.1:8080/health
 # {"status":"ok"}
+
+curl -s -H "Authorization: Bearer dev-token" http://127.0.0.1:8080/v1/models
+# {"models":[{"provider_id":"home-llm","model":"...","display_name":"..."}]}
 
 curl -s -o /dev/null -w "%{http_code}\n" \
   -H "Authorization: Bearer dev-token" \
@@ -255,13 +287,16 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 | URL | `http://127.0.0.1:8080` | порт compose / uvicorn |
 | Bearer token | `dev-token` | `MEETINGRAFT_API_TOKEN` |
 | Auth | HTTP Bearer | на все `/v1/*`; `/health` без токена |
-| `LLM_BASE_URL` | пусто (= stub brief/follow_up) | env backend; **без** `/v1` |
-| `LLM_API_KEY` | пусто (= без Authorization к LLM) | env backend |
-| `LLM_MODEL` | пусто (fallback, если model с app пуст) | env backend |
+| `PROVIDERS_JSON` | пусто | inline JSON реестра (приоритет) |
+| `LLM_PROVIDERS_FILE` | пусто | путь к JSON-файлу, если `PROVIDERS_JSON` пуст |
+| `LLM_BASE_URL` | пусто | compat: один провайдер `default`, **без** `/v1`; только если реестра нет |
+| `LLM_API_KEY` | пусто | compat: ключ для `default` |
+| `LLM_MODEL` | пусто | compat: `default_model` и единственная модель в каталоге |
 
 Смена токена MeetingRaft API: тот же `MEETINGRAFT_API_TOKEN` в окружении API
-**и** в Settings приложения (иначе 401). Секреты LLM провайдера — **только**
-в env backend, не во фронте.
+**и** в Settings приложения (иначе 401). Секреты LLM провайдера (`api_key`,
+`base_url`) — **только** в env backend / JSON-реестре, не во фронте и не в
+`GET /v1/models`.
 
 #### Шаг 2. Прописать в приложении
 
@@ -283,17 +318,29 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 
 #### Шаг 3. Что включать в Providers
 
-Backend URL нужен для двух сценариев (не путать с локальным Ollama §2.6):
+Backend URL нужен для двух сценариев (не путать с локальным Ollama §2.6).
+
+**Порядок для LLM = Backend:**
+
+1. **Settings → Backend API** — URL + token → **Test API** = OK.
+2. **Settings → Providers → LLM** — Engine: **Backend LLM**.
+3. **Обновить** — app вызывает `GET /v1/models` и заполняет picker
+   `(provider_id, model)`; при пустом каталоге Generate disabled.
+4. **Meetings** → Final → **Generate Brief** / **Generate Follow-up**.
+
+Детали:
 
 1. **LLM = Backend** (**Settings → Providers → LLM**)
    - Engine: **Backend LLM**
-   - **Model id** (например `Google/gemma-4-12b-it`) — уходит в job `payload.model`
+   - Picker **Model** (не free-text): пара `provider_id` + `model` из каталога
    - Language-aware `system`/`user` собирает Rust (`brief_prompts` /
-     `follow_up_prompts`) и кладёт в `payload`; backend только
-     `POST {LLM_BASE_URL}/v1/chat/completions`
+     `follow_up_prompts`) и кладёт в job `payload` вместе с `provider_id` и
+     `model`; backend резолвит провайдера и вызывает
+     `POST {base_url}/v1/chat/completions`
    - Meetings: **Generate Brief** / **Generate Follow-up** → jobs → артефакт
-     `backend.brief` / `backend.follow_up`
-   - Без `LLM_BASE_URL` на сервере — stub markdown; с LLM и ошибкой провайдера —
+     `backend.brief` / `backend.follow_up`; banner показывает
+     `backend · {provider_id}/{model}`
+   - Без LLM-конфига на сервере — stub markdown; с LLM и ошибкой провайдера —
      job `failed`, **без** silent stub и без fallback на templates
 
 2. **Artifacts → Submit refine (stub)**
@@ -308,9 +355,11 @@ Backend URL нужен для двух сценариев (не путать с 
 |---------|----------------|
 | Test API = Fail | `docker compose` / uvicorn запущен; URL без trailing slash; порт 8080 |
 | 401 / invalid token | токен в Settings == `MEETINGRAFT_API_TOKEN` на сервере |
-| Generate Brief → stub `# Stub brief` | задан ли `LLM_BASE_URL` на backend |
-| Generate Brief ошибка / failed job | `LLM_API_KEY`, model id, доступность провайдера; Final есть |
-| 401 от LLM | ключ в `LLM_API_KEY`, не в Settings Bearer MeetingRaft |
+| «Нет моделей» / пустой picker | `PROVIDERS_JSON` / `LLM_PROVIDERS_FILE` или compat `LLM_*`; **Обновить** |
+| Generate Brief → stub `# Stub brief` | задан ли реестр или `LLM_BASE_URL` на backend |
+| Generate Brief ошибка / failed job | `api_key`, выбранная модель, `provider_id`; Final есть |
+| 401 от LLM | ключ в реестре / `LLM_API_KEY`, не в Settings Bearer MeetingRaft |
+| Backend не стартует | JSON реестра: синтаксис, уникальность `provider.id` и model id |
 | Путаница с Ollama | Ollama — §2.6 (`:11434`); jobs API — `:8080` |
 
 ### 2.6 Локальный LLM: Ollama / OpenAI-compatible (опционально)
@@ -371,7 +420,7 @@ xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft \
 3. (Опц.) Whisper model + **Start Live** — captions / Mock.
 4. Stop Live → **Meetings** → Final / **Speakers** (Add, rename, delete) / Generate Brief.
 5. (Опц.) Backend по §2.5: `docker compose up` → Settings **Test API** = OK.
-6. (Опц.) Settings **LLM = Backend** → **Meetings** → Final → **Generate Brief** → markdown из stub job (`kind: brief`).
+6. (Опц.) Settings **LLM = Backend** → **Обновить** (models) → **Meetings** → Final → **Generate Brief** → markdown из stub или LLM job.
 7. (Опц.) Запустить Ollama с моделью → Settings **LLM = Ollama**, URL
    `http://127.0.0.1:11434`, model id → **Generate Brief**; затем выбрать
    **OpenAI-compatible** с тем же URL и повторить.

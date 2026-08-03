@@ -149,8 +149,11 @@ Brief/Follow-up → `.md` в Settings export folder; overwrite; без frontmatt
 **Done follow-up:** STT model picker (`feat/stt-model-picker`: Settings Live STT
 picker `auto|base|small|large-v3-turbo`, HF download в Swift, preference +
 resolve в Rust/UniFFI; first-run auto `ggml-base.bin` при пустом `models/`).
+**Done follow-up:** Backend provider registry (`feat/backend-provider-registry`:
+static JSON + `GET /v1/models` + Settings picker + job routing by `provider_id`;
+compat `LLM_*` → `default`).
 **Remaining:**
-Parakeet on-device STT, WhisperX / provider registry / billing, diarization
+Parakeet on-device STT, WhisperX / billing / provider CRUD+discovery, diarization
 (Epic 9), user-defined templates, mail draft export, Obsidian plugin / export
 API, remote STT.
 

@@ -5,7 +5,12 @@ services:
       - "8080:8080"
     environment:
       MEETINGRAFT_API_TOKEN: dev-token
-      # OpenAI-compatible LLM for brief/follow_up (optional). Base без /v1.
+      # LLM registry (optional): inline JSON или файл через LLM_PROVIDERS_FILE.
+      # При валидном реестре LLM_* игнорируются. Пример inline:
+      # PROVIDERS_JSON='{"providers":[{"id":"home-llm","base_url":"http://host:58001","api_key":"KEY","default_model":"model-id","models":[{"id":"model-id","display_name":"Label"}]}]}'
+      PROVIDERS_JSON: ${PROVIDERS_JSON:-}
+      LLM_PROVIDERS_FILE: ${LLM_PROVIDERS_FILE:-}
+      # Compat: один провайдер default, если реестра нет. Base без /v1.
       # Пример: LLM_BASE_URL=http://93.189.243.223:58001 LLM_API_KEY=... LLM_MODEL=...
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
