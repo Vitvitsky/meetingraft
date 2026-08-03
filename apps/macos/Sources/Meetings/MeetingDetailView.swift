@@ -205,13 +205,23 @@ struct MeetingDetailView: View {
     private var finalVersionPicker: some View {
         Picker("Версия Final", selection: $viewModel.selectedFinalVersion) {
             ForEach(viewModel.finalVersions, id: \.version) { transcript in
-                Text("v\(transcript.version)").tag(Optional(transcript.version))
+                Text(finalVersionLabel(transcript)).tag(Optional(transcript.version))
             }
         }
         .pickerStyle(.menu)
         .padding(.horizontal)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Метка picker: `v{N} · {short date/time}` из `createdAtMs`.
+    private func finalVersionLabel(_ transcript: FfiFinalTranscript) -> String {
+        "v\(transcript.version) · \(shortDateTime(fromMs: transcript.createdAtMs))"
+    }
+
+    private func shortDateTime(fromMs timestampMs: UInt64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000)
+        return date.formatted(date: .numeric, time: .shortened)
     }
 
     private var artifacts: some View {
