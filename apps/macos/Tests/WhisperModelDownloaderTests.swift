@@ -201,6 +201,11 @@ final class WhisperModelDownloaderTests: XCTestCase {
 
     /// Прогресс обязан доходить до UI: без него загрузка на сотни
     /// мегабайт выглядит зависшей.
+    ///
+    /// Метод изолирован явно: колбэк прогресса объявлен `@MainActor`, и
+    /// читать собранные значения можно только оттуда же — остальной класс
+    /// не изолирован.
+    @MainActor
     func testProgressFromTransportReachesCaller() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -222,12 +227,10 @@ final class WhisperModelDownloaderTests: XCTestCase {
     }
 }
 
-/// Собирает значения прогресса с MainActor.
+/// Собирает значения прогресса; живёт на MainActor, как и сам колбэк.
 @MainActor
 private final class ProgressSink {
     private(set) var values: [Double] = []
-
-    nonisolated init() {}
 
     func append(_ value: Double) {
         values.append(value)
