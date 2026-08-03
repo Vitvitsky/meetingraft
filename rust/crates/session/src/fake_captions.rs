@@ -68,11 +68,7 @@ impl FakeCaptionProducer {
             .map(|(i, (text, phase))| {
                 (
                     (i as u64) * 800,
-                    CaptionEvent {
-                        id: Uuid::new_v4().to_string(),
-                        text: (*text).to_string(),
-                        phase: *phase,
-                    },
+                    CaptionEvent::new(Uuid::new_v4().to_string(), (*text).to_string(), *phase),
                 )
             })
             .collect();

@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use domain::{CaptionPhase, SpeechLanguage};
+use domain::{AudioChannel, CaptionPhase, SpeechLanguage};
 use uuid::Uuid;
 
 /// DTO для Swift: перевести и вернуть через `complete_host_translation`.
@@ -36,8 +36,8 @@ impl HostTranslationRequest {
 #[derive(Debug, Default)]
 pub struct HostPendingQueue {
     requests: VecDeque<HostTranslationRequest>,
-    /// id → phase_final для complete.
-    awaiting: std::collections::HashMap<String, bool>,
+    /// id → (phase_final, канал говорящего) для complete.
+    awaiting: std::collections::HashMap<String, (bool, AudioChannel)>,
 }
 
 impl HostPendingQueue {
@@ -47,9 +47,11 @@ impl HostPendingQueue {
         source: SpeechLanguage,
         target: SpeechLanguage,
         phase: CaptionPhase,
+        channel: AudioChannel,
     ) {
         let req = HostTranslationRequest::new(text, source, target, phase);
-        self.awaiting.insert(req.id.clone(), req.phase_final);
+        self.awaiting
+            .insert(req.id.clone(), (req.phase_final, channel));
         self.requests.push_back(req);
     }
 
@@ -57,8 +59,8 @@ impl HostPendingQueue {
         self.requests.drain(..).collect()
     }
 
-    /// Возвращает phase_final, если id известен.
-    pub fn take_awaiting(&mut self, id: &str) -> Option<bool> {
+    /// Возвращает (phase_final, канал), если id известен.
+    pub fn take_awaiting(&mut self, id: &str) -> Option<(bool, AudioChannel)> {
         self.awaiting.remove(id)
     }
 

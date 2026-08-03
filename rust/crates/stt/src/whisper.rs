@@ -62,11 +62,7 @@ impl WhisperSttEngine {
     }
 
     fn event(text: String, phase: CaptionPhase) -> CaptionEvent {
-        CaptionEvent {
-            id: Uuid::new_v4().to_string(),
-            text,
-            phase,
-        }
+        CaptionEvent::new(Uuid::new_v4().to_string(), text.to_string(), phase)
     }
 
     fn accept_text(text: &str) -> Option<String> {

@@ -33,7 +33,9 @@
 - [x] Add permissions flow
 - [x] Add chunking pipeline
 - [x] Add local raw recording manifest
-- System audio process tap (ADR-004) — follow-up wiring
+- [x] System audio process tap (ADR-004) — Core Audio process tap +
+  приватное aggregate-устройство; каналы раздельны на диске, live-путь
+  идёт через микс с атрибуцией (ADR-009)
 
 ## Epic 6 — Live Subtitle Flow
 - [x] Open session with STT pipeline (Mock; Whisper when model + feature)

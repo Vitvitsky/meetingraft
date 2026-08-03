@@ -70,11 +70,22 @@ const STEPS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_speakers_meeting
         ON speakers(meeting_id, sort_index);
     ",
+    // 2 — канал говорящего в caption_events (ADR-009). Существующие записи
+    // сделаны только с микрофона, поэтому DEFAULT 'mic' корректен.
+    "
+    ALTER TABLE caption_events ADD COLUMN channel TEXT NOT NULL DEFAULT 'mic';
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.
 pub fn schema_version() -> u32 {
     STEPS.len() as u32
+}
+
+/// Схема шага 1 — то, как выглядит база, созданная до версионирования.
+#[cfg(test)]
+pub(crate) fn baseline_schema() -> &'static str {
+    STEPS[0]
 }
 
 /// Текущая версия схемы в базе.

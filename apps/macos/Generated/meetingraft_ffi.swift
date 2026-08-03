@@ -757,6 +757,12 @@ public protocol MeetingCoreProtocol: AnyObject, Sendable {
     func setSessionLanguage(primaryCode: String)  -> String
     
     /**
+     * Ждать ли системный канал: Swift сообщает это после старта tap.
+     * Пока tap не запущен, микшер не должен простаивать допуск впустую.
+     */
+    func setSystemAudioExpected(expected: Bool) 
+    
+    /**
      * Backend: `off` | `auto` | `stub` | `apple` | `backend` | `local_llm`.
      * `base_url` используется для `backend` / `auto→backend`.
      */
@@ -1318,6 +1324,19 @@ open func setSessionLanguage(primaryCode: String) -> String  {
 }
     
     /**
+     * Ждать ли системный канал: Swift сообщает это после старта tap.
+     * Пока tap не запущен, микшер не должен простаивать допуск впустую.
+     */
+open func setSystemAudioExpected(expected: Bool)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meetingraft_ffi_fn_method_meetingcore_set_system_audio_expected(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(expected),uniffiCallStatus
+    )
+}
+}
+    
+    /**
      * Backend: `off` | `auto` | `stub` | `apple` | `backend` | `local_llm`.
      * `base_url` используется для `backend` / `auto→backend`.
      */
@@ -1733,13 +1752,21 @@ public struct FfiCaptionEvent: Equatable, Hashable {
     public var id: String
     public var text: String
     public var phase: FfiCaptionPhase
+    /**
+     * `mic` — говорит пользователь, `system` — собеседники (ADR-009).
+     */
+    public var channel: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, text: String, phase: FfiCaptionPhase) {
+    public init(id: String, text: String, phase: FfiCaptionPhase, 
+        /**
+         * `mic` — говорит пользователь, `system` — собеседники (ADR-009).
+         */channel: String) {
         self.id = id
         self.text = text
         self.phase = phase
+        self.channel = channel
     }
 
     
@@ -1760,7 +1787,8 @@ public struct FfiConverterTypeFfiCaptionEvent: FfiConverterRustBuffer {
             try FfiCaptionEvent(
                 id: FfiConverterString.read(from: &buf), 
                 text: FfiConverterString.read(from: &buf), 
-                phase: FfiConverterTypeFfiCaptionPhase.read(from: &buf)
+                phase: FfiConverterTypeFfiCaptionPhase.read(from: &buf), 
+                channel: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -1768,6 +1796,7 @@ public struct FfiConverterTypeFfiCaptionEvent: FfiConverterRustBuffer {
         FfiConverterString.write(value.id, into: &buf)
         FfiConverterString.write(value.text, into: &buf)
         FfiConverterTypeFfiCaptionPhase.write(value.phase, into: &buf)
+        FfiConverterString.write(value.channel, into: &buf)
     }
 }
 
@@ -2927,6 +2956,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_session_language() != 29416) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_system_audio_expected() != 20960) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meetingraft_ffi_checksum_method_meetingcore_set_translation_backend() != 27048) {

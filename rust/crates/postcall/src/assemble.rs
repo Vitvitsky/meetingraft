@@ -32,21 +32,9 @@ mod tests {
     #[test]
     fn assemble_keeps_finals_only_and_normalizes() {
         let captions = vec![
-            CaptionEvent {
-                id: "1".into(),
-                text: "частичный".into(),
-                phase: CaptionPhase::Partial,
-            },
-            CaptionEvent {
-                id: "2".into(),
-                text: "привет униффи".into(),
-                phase: CaptionPhase::Final,
-            },
-            CaptionEvent {
-                id: "3".into(),
-                text: "вторая".into(),
-                phase: CaptionPhase::Final,
-            },
+            CaptionEvent::new("1".into(), "частичный".into(), CaptionPhase::Partial),
+            CaptionEvent::new("2".into(), "привет униффи".into(), CaptionPhase::Final),
+            CaptionEvent::new("3".into(), "вторая".into(), CaptionPhase::Final),
         ];
 
         let transcript = assemble_final(

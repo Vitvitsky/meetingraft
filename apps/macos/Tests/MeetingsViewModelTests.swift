@@ -15,7 +15,7 @@ final class MeetingsViewModelTests: XCTestCase {
     }
 
     func testReloadMeetingPublishesAllSavedContent() {
-        let caption = FfiCaptionEvent(id: "caption-1", text: "Привет", phase: .final)
+        let caption = FfiCaptionEvent(id: "caption-1", text: "Привет", phase: .final, channel: "mic")
         let transcript = makeTranscript(meetingId: "meeting-1")
         let artifact = makeArtifact(id: "artifact-1", meetingId: "meeting-1")
         let core = MeetingsCoreSpy(
@@ -162,9 +162,9 @@ final class MeetingsViewModelTests: XCTestCase {
 
     func testLiveFinalsTextJoinsFinalCaptions() {
         let captions = [
-            FfiCaptionEvent(id: "1", text: "partial only", phase: .partial),
-            FfiCaptionEvent(id: "2", text: "first final", phase: .final),
-            FfiCaptionEvent(id: "3", text: "second final", phase: .final),
+            FfiCaptionEvent(id: "1", text: "partial only", phase: .partial, channel: "mic"),
+            FfiCaptionEvent(id: "2", text: "first final", phase: .final, channel: "mic"),
+            FfiCaptionEvent(id: "3", text: "second final", phase: .final, channel: "mic"),
         ]
         let viewModel = MeetingsViewModel(core: MeetingsCoreSpy())
 

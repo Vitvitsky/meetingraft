@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use domain::{CaptionEvent, LanguagePolicy};
+use domain::{AudioChannel, CaptionEvent, CaptionPhase, LanguagePolicy};
 
 use crate::{MockSttEngine, SttEngine, resolve_whisper_model};
 
@@ -17,18 +17,30 @@ pub enum SttBackendKind {
 }
 
 /// Live pipeline над любым `SttEngine`.
+///
+/// Движок работает с миксом каналов и не знает, кто говорит, поэтому
+/// pipeline считает, сколько кадров с последнего события пришло с каждого
+/// канала, и ставит мажоритарный канал на выданные события (ADR-009).
 pub struct LiveCaptionPipeline {
     engine: Box<dyn SttEngine>,
     backend: SttBackendKind,
+    mic_frames: u32,
+    system_frames: u32,
 }
 
 impl LiveCaptionPipeline {
     pub fn mock(policy: LanguagePolicy) -> Self {
         let mut engine = MockSttEngine::new();
         engine.set_language_policy(policy);
+        Self::wrap(Box::new(engine), SttBackendKind::Mock)
+    }
+
+    fn wrap(engine: Box<dyn SttEngine>, backend: SttBackendKind) -> Self {
         Self {
-            engine: Box::new(engine),
-            backend: SttBackendKind::Mock,
+            engine,
+            backend,
+            mic_frames: 0,
+            system_frames: 0,
         }
     }
 
@@ -62,13 +74,54 @@ impl LiveCaptionPipeline {
         self.engine.set_language_policy(policy);
     }
 
+    /// Кадр микса с известным доминирующим каналом.
+    pub fn push_frame(
+        &mut self,
+        pcm: &[i16],
+        sample_rate: u32,
+        dominant: AudioChannel,
+    ) -> Vec<CaptionEvent> {
+        match dominant {
+            AudioChannel::Mic => self.mic_frames += 1,
+            AudioChannel::System => self.system_frames += 1,
+        }
+        let events = self.engine.push_pcm(pcm, sample_rate);
+        self.attribute(events)
+    }
+
+    /// Путь без микшера: сырые байты считаются микрофонными.
     pub fn push_pcm_bytes(&mut self, pcm: &[u8], sample_rate: u32) -> Vec<CaptionEvent> {
         let samples = pcm_bytes_to_i16(pcm);
-        self.engine.push_pcm(&samples, sample_rate)
+        self.push_frame(&samples, sample_rate, AudioChannel::Mic)
     }
 
     pub fn flush(&mut self) -> Vec<CaptionEvent> {
-        self.engine.flush()
+        let events = self.engine.flush();
+        self.attribute(events)
+    }
+
+    /// Проставить канал и сбросить счётчики после завершённого сегмента.
+    fn attribute(&mut self, mut events: Vec<CaptionEvent>) -> Vec<CaptionEvent> {
+        if events.is_empty() {
+            return events;
+        }
+        let channel = self.majority_channel();
+        for event in &mut events {
+            event.channel = channel;
+        }
+        if events.iter().any(|e| e.phase == CaptionPhase::Final) {
+            self.mic_frames = 0;
+            self.system_frames = 0;
+        }
+        events
+    }
+
+    fn majority_channel(&self) -> AudioChannel {
+        if self.system_frames > self.mic_frames {
+            AudioChannel::System
+        } else {
+            AudioChannel::Mic
+        }
     }
 }
 
@@ -84,10 +137,10 @@ fn try_whisper(
             Ok(mut engine) => {
                 engine.set_language_policy(policy);
                 eprintln!("meetingraft-stt: loaded Whisper model {}", model.display());
-                Some(LiveCaptionPipeline {
-                    engine: Box::new(engine),
-                    backend: SttBackendKind::Whisper,
-                })
+                Some(LiveCaptionPipeline::wrap(
+                    Box::new(engine),
+                    SttBackendKind::Whisper,
+                ))
             }
             Err(err) => {
                 eprintln!("meetingraft-stt: Whisper load failed ({err}) — Mock fallback");
@@ -105,7 +158,8 @@ fn try_whisper(
     }
 }
 
-fn pcm_bytes_to_i16(pcm: &[u8]) -> Vec<i16> {
+/// Декодирование PCM-байтов из Swift: i16 little-endian.
+pub fn pcm_bytes_to_i16(pcm: &[u8]) -> Vec<i16> {
     pcm.chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect()
@@ -114,7 +168,17 @@ fn pcm_bytes_to_i16(pcm: &[u8]) -> Vec<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::CaptionPhase;
+
+    /// Громкий кадр: Mock-движок считает это речью.
+    fn speech(frames: usize) -> Vec<i16> {
+        (0..frames)
+            .map(|i| if i % 2 == 0 { 3000 } else { -3000 })
+            .collect()
+    }
+
+    fn silence(frames: usize) -> Vec<i16> {
+        vec![0; frames]
+    }
 
     #[test]
     fn pipeline_mock_roundtrip() {
@@ -132,6 +196,52 @@ mod tests {
         }
         let finals = pipeline.push_pcm_bytes(&silence, 16_000);
         assert!(finals.iter().any(|e| e.phase == CaptionPhase::Final));
+    }
+
+    #[test]
+    fn events_take_majority_channel_of_the_segment() {
+        let mut pipeline = LiveCaptionPipeline::mock(LanguagePolicy::default_v1());
+
+        // Сегмент, где системный канал доминировал в большинстве кадров.
+        // Mock отдаёт partial, накопив 3200 кадров речи, — до этого момента
+        // нужно успеть набрать перевес.
+        pipeline.push_frame(&speech(1000), 16_000, AudioChannel::Mic);
+        pipeline.push_frame(&speech(1000), 16_000, AudioChannel::System);
+        pipeline.push_frame(&speech(1000), 16_000, AudioChannel::System);
+        let events = pipeline.push_frame(&speech(1000), 16_000, AudioChannel::System);
+
+        assert!(!events.is_empty(), "ожидался partial");
+        assert!(events.iter().all(|e| e.channel == AudioChannel::System));
+    }
+
+    #[test]
+    fn tally_resets_after_final_so_next_segment_is_attributed_separately() {
+        let mut pipeline = LiveCaptionPipeline::mock(LanguagePolicy::default_v1());
+
+        pipeline.push_frame(&speech(3200), 16_000, AudioChannel::System);
+        let finals = pipeline.push_frame(&silence(4800), 16_000, AudioChannel::System);
+        assert!(finals.iter().any(|e| e.phase == CaptionPhase::Final));
+        assert!(finals.iter().all(|e| e.channel == AudioChannel::System));
+
+        // Новый сегмент целиком с микрофона: прошлый перевес не наследуется.
+        let events = pipeline.push_frame(&speech(3200), 16_000, AudioChannel::Mic);
+
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|e| e.channel == AudioChannel::Mic));
+    }
+
+    #[test]
+    fn byte_path_without_mixer_is_mic() {
+        let mut pipeline = LiveCaptionPipeline::mock(LanguagePolicy::default_v1());
+        let mut pcm = Vec::new();
+        for sample in speech(3200) {
+            pcm.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        let events = pipeline.push_pcm_bytes(&pcm, 16_000);
+
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|e| e.channel == AudioChannel::Mic));
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # ADR-004: Audio capture — microphone + system audio via Core Audio process taps
 
 ## Status
-Accepted
+Accepted; реализован в Phase 8. Live-путь уточнён в ADR-009
+(один движок на миксе при раздельных каналах на диске).
 
 ## Context
 The product must record both sides of a meeting: the user's own voice and
