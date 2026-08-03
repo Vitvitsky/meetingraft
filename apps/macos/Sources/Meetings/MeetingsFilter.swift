@@ -10,7 +10,9 @@ enum MeetingsFilter: String, CaseIterable, Identifiable, Hashable {
     case thisWeek
     case older
 
-    var id: String { rawValue }
+    var id: String {
+        rawValue
+    }
 
     var title: String {
         switch self {

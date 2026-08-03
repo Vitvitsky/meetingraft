@@ -14,7 +14,9 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case backend
     case data
 
-    var id: String { rawValue }
+    var id: String {
+        rawValue
+    }
 
     var title: String {
         switch self {

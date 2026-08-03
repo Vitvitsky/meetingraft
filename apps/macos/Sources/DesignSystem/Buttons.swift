@@ -83,12 +83,25 @@ struct IconButtonStyle: ButtonStyle {
 }
 
 extension ButtonStyle where Self == ThemedButtonStyle {
-    static var themedPrimary: ThemedButtonStyle { ThemedButtonStyle(role: .primary) }
-    static var themedSecondary: ThemedButtonStyle { ThemedButtonStyle(role: .secondary) }
-    static var themedTertiary: ThemedButtonStyle { ThemedButtonStyle(role: .tertiary) }
-    static var themedDestructive: ThemedButtonStyle { ThemedButtonStyle(role: .destructive) }
+    static var themedPrimary: ThemedButtonStyle {
+        ThemedButtonStyle(role: .primary)
+    }
+
+    static var themedSecondary: ThemedButtonStyle {
+        ThemedButtonStyle(role: .secondary)
+    }
+
+    static var themedTertiary: ThemedButtonStyle {
+        ThemedButtonStyle(role: .tertiary)
+    }
+
+    static var themedDestructive: ThemedButtonStyle {
+        ThemedButtonStyle(role: .destructive)
+    }
 }
 
 extension ButtonStyle where Self == IconButtonStyle {
-    static var themedIcon: IconButtonStyle { IconButtonStyle() }
+    static var themedIcon: IconButtonStyle {
+        IconButtonStyle()
+    }
 }
