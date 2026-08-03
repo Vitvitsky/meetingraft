@@ -14,6 +14,7 @@ struct AppShellView: View {
     @State private var modelBootstrap = FirstRunModelBootstrap()
     @State private var overlay = OverlayWindowController()
     @Environment(PresenceSettingsStore.self) private var presenceStore
+    @Environment(RecordingBridge.self) private var recordingBridge
     private let core: MeetingCore
 
     init() {
@@ -89,8 +90,15 @@ struct AppShellView: View {
         }
         // Накладка следует за состоянием записи и за настройками: их
         // можно поменять посреди сессии, и решение должно пересчитаться.
-        .onChange(of: captureCoordinator.isRecording) { _, _ in
+        .onChange(of: captureCoordinator.isRecording) { _, isRecording in
+            recordingBridge.setRecording(isRecording)
             applyPresence()
+        }
+        .onAppear {
+            // Строка меню живёт в отдельной сцене и не видит координатор;
+            // окно отдаёт ей действия, а не состояние целиком.
+            recordingBridge.toggle = { toggleRecording() }
+            recordingBridge.openWindow = { overlay.restoreMainWindow() }
         }
         .onChange(of: presenceStore.showsOverlay) { _, _ in
             applyPresence()
@@ -126,6 +134,15 @@ struct AppShellView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(captureCoordinator.lastError ?? "")
+        }
+    }
+
+    /// Старт или остановка записи из строки меню.
+    private func toggleRecording() {
+        if captureCoordinator.isRecording {
+            captionsViewModel.stopLive(capture: captureCoordinator)
+        } else {
+            startLiveSession()
         }
     }
 
