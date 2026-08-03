@@ -144,9 +144,11 @@ Speakers skeleton (`feat/speakers-skeleton`: domain + SQLite + UniFFI + Meetings
 (`feat/ollama-openai-compat-llm`: Ollama native + OpenAI-compatible
 Brief/Follow-up, без silent fallback). **Done follow-up:** Backend LLM
 provider (`feat/backend-llm-provider`: jobs `brief`/`follow_up` → env
-OpenAI-compat; app шлёт model + language-aware prompts). **Remaining:**
+OpenAI-compat; app шлёт model + language-aware prompts). **Done follow-up:** Markdown export (`feat/markdown-export-obsidian`: Final +
+Brief/Follow-up → `.md` в Settings export folder; overwrite; без frontmatter).
+**Remaining:**
 WhisperX / provider registry / billing, diarization (Epic 9), user-defined
-templates, export .md/mail, remote STT.
+templates, mail draft export, Obsidian plugin / export API, remote STT.
 
 ## Phase 7 — Hardening and release
 

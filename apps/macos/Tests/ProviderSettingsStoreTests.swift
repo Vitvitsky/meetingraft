@@ -58,4 +58,9 @@ final class ProviderSettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.artifactsPipelineCaption.contains("Final"))
         XCTAssertTrue(store.artifactsPipelineCaption.contains("builtin"))
     }
+
+    func testExportFolderPathDefault() {
+        let store = ProviderSettingsStore()
+        XCTAssertTrue(store.exportFolderPath.contains("MeetingRaft"))
+    }
 }

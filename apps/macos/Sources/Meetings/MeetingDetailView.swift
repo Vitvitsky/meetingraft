@@ -178,10 +178,29 @@ struct MeetingDetailView: View {
                         || viewModel.backendJobStatus == .submitting
                         || viewModel.backendJobStatus == .polling
                 )
+                Button("Export to Markdown", systemImage: "square.and.arrow.up") {
+                    exportMarkdown()
+                }
+                .help(exportHelp)
+                Button("Choose folder…") {
+                    chooseExportFolderAndExport()
+                }
+                .help("Выбрать папку и экспортировать")
+                .disabled(viewModel.finalTranscript == nil)
                 Spacer()
             }
             .disabled(viewModel.finalTranscript == nil)
             .padding()
+
+            if !viewModel.exportStatusMessage.isEmpty {
+                Text(viewModel.exportStatusMessage)
+                    .font(.caption)
+                    .foregroundStyle(exportStatusColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                    .textSelection(.enabled)
+            }
 
             Divider()
 
@@ -259,6 +278,36 @@ struct MeetingDetailView: View {
         viewModel.finalTranscript == nil
             ? "Нужен Final transcript"
             : "Собрать артефакт из Final"
+    }
+
+    private var exportHelp: String {
+        viewModel.finalTranscript == nil
+            ? "Нужен Final transcript"
+            : "Экспорт Final и артефактов в \(providerStore.exportFolderPath)"
+    }
+
+    private var exportStatusColor: Color {
+        viewModel.exportStatusMessage.hasPrefix("Exported") ? .secondary : .red
+    }
+
+    private func expandedExportFolderURL() -> URL {
+        let path = NSString(string: providerStore.exportFolderPath).expandingTildeInPath
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    private func exportMarkdown(to folderURL: URL? = nil) {
+        let url = folderURL ?? expandedExportFolderURL()
+        _ = viewModel.exportMarkdown(
+            meetingId: meeting.id,
+            startedAtMs: meeting.startedAtMs,
+            folderURL: url
+        )
+    }
+
+    private func chooseExportFolderAndExport() {
+        guard let url = DirectoryPicker.chooseDirectory(prompt: "Export") else { return }
+        providerStore.exportFolderPath = url.path
+        exportMarkdown(to: url)
     }
 
     @ViewBuilder

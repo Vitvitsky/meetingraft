@@ -288,6 +288,93 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.errorMessage)
     }
 
+    func testExportMarkdownWritesFinalAndLatestArtifacts() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mr-vm-export-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcript = FfiFinalTranscript(
+            meetingId: "abcd1234-rest",
+            version: 1,
+            bodyMarkdown: "# Final body",
+            createdAtMs: 1
+        )
+        let briefOld = makeArtifact(
+            id: "b0", meetingId: "abcd1234-rest", kind: .brief, body: "old", createdAtMs: 10
+        )
+        let briefNew = makeArtifact(
+            id: "b1", meetingId: "abcd1234-rest", kind: .brief, body: "new brief", createdAtMs: 20
+        )
+        let follow = makeArtifact(
+            id: "f1", meetingId: "abcd1234-rest", kind: .followUp, body: "fu", createdAtMs: 15
+        )
+        let core = MeetingsCoreSpy(finalTranscript: transcript, artifacts: [briefOld, briefNew, follow])
+        let vm = MeetingsViewModel(core: core)
+
+        let result = vm.exportMarkdown(
+            meetingId: "abcd1234-rest",
+            startedAtMs: 1_785_715_200_000,
+            folderURL: dir
+        )
+
+        guard case let .success(ok) = result else {
+            return XCTFail("\(result)")
+        }
+        XCTAssertEqual(ok.writtenFileNames.count, 3)
+        XCTAssertFalse(vm.exportStatusMessage.isEmpty)
+        let briefFileName = try XCTUnwrap(ok.writtenFileNames.first { $0.contains("brief") })
+        let briefURL = dir.appendingPathComponent(briefFileName)
+        XCTAssertEqual(try String(contentsOf: briefURL, encoding: .utf8), "new brief")
+        let finalFileName = try XCTUnwrap(ok.writtenFileNames.first { $0.contains("final") })
+        let finalURL = dir.appendingPathComponent(finalFileName)
+        XCTAssertEqual(try String(contentsOf: finalURL, encoding: .utf8), "# Final body")
+    }
+
+    func testExportMarkdownWritesOnlyFinalWhenNoArtifacts() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mr-vm-export-final-only-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcript = FfiFinalTranscript(
+            meetingId: "abcd1234-rest",
+            version: 1,
+            bodyMarkdown: "# Final only",
+            createdAtMs: 1
+        )
+        let core = MeetingsCoreSpy(finalTranscript: transcript, artifacts: [])
+        let vm = MeetingsViewModel(core: core)
+
+        let result = vm.exportMarkdown(
+            meetingId: "abcd1234-rest",
+            startedAtMs: 1_785_715_200_000,
+            folderURL: dir
+        )
+
+        guard case let .success(ok) = result else {
+            return XCTFail("\(result)")
+        }
+        XCTAssertEqual(ok.writtenFileNames.count, 1)
+        XCTAssertTrue(ok.writtenFileNames[0].contains("final"))
+        let finalURL = dir.appendingPathComponent(ok.writtenFileNames[0])
+        XCTAssertEqual(try String(contentsOf: finalURL, encoding: .utf8), "# Final only")
+    }
+
+    func testExportMarkdownFailsWithoutFinal() {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mr-vm-export-empty-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let core = MeetingsCoreSpy(
+            finalTranscript: FfiFinalTranscript(meetingId: "", version: 0, bodyMarkdown: "", createdAtMs: 0)
+        )
+        let vm = MeetingsViewModel(core: core)
+
+        let result = vm.exportMarkdown(meetingId: "m1", startedAtMs: 1, folderURL: dir)
+
+        guard case let .failure(error) = result else {
+            return XCTFail("expected failure")
+        }
+        XCTAssertEqual(error.message, "Нужен Final transcript")
+        XCTAssertEqual(vm.exportStatusMessage, "Нужен Final transcript")
+    }
+
     func testApplyProviderConfigUpdatesCoreBeforeGenerate() {
         let generated = makeArtifact(id: "artifact-1", meetingId: "meeting-1")
         let core = MeetingsCoreSpy()
@@ -333,14 +420,20 @@ final class MeetingsViewModelTests: XCTestCase {
         )
     }
 
-    private func makeArtifact(id: String, meetingId: String) -> FfiArtifact {
+    private func makeArtifact(
+        id: String,
+        meetingId: String,
+        kind: FfiArtifactKind = .brief,
+        body: String = "# Brief",
+        createdAtMs: UInt64 = 1_754_159_400_000
+    ) -> FfiArtifact {
         FfiArtifact(
             id: id,
             meetingId: meetingId,
-            kind: .brief,
-            templateId: "brief.v1",
-            bodyMarkdown: "# Brief",
-            createdAtMs: 1_754_159_400_000
+            kind: kind,
+            templateId: kind == .followUp ? "follow-up.v1" : "brief.v1",
+            bodyMarkdown: body,
+            createdAtMs: createdAtMs
         )
     }
 }

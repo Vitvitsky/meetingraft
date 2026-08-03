@@ -317,6 +317,15 @@ ollama pull gemma2
 **Generate Brief** или **Generate Follow-up**. Ошибка локального LLM
 показывается явно: fallback на builtin templates не выполняется.
 
+### 2.6.1 Экспорт в Markdown (Obsidian)
+
+В **Settings → Export** задайте папку (по умолчанию `~/Documents/MeetingRaft`).
+На экране встречи с Final нажмите **Export to Markdown** — создаются до трёх
+файлов `{yyyy-MM-dd}-{shortId}-{final|brief|follow-up}.md` (перезапись при
+повторе). **Choose folder…** на экспорте обновляет путь в Settings. Для vault
+Obsidian укажите путь к vault или подпапке; HTTP API и community plugin —
+в backlog (§ Epic 8 в `backlog.md`).
+
 ### 2.7 Проверка тестами
 
 ```bash
@@ -349,6 +358,7 @@ CI: `.github/workflows/ci.yml` (rust + macos + backend).
    `http://127.0.0.1:11434`, model id → **Generate Brief**; затем выбрать
    **OpenAI-compatible** с тем же URL и повторить.
 8. (Опц.) **Meetings** → **Artifacts** → **Submit refine (stub)** → refine markdown из backend (§2.5 шаг 3).
+9. (Опц.) **Settings → Export** → папка vault → встреча с Final → **Export to Markdown** (§2.6.1).
 
 ### 2.9 Потенциальная «продакшен»-инсталляция (ещё не автоматизирована)
 

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Окно настроек: язык + карта Providers (STT / translation / LLM / backend / paths).
@@ -135,6 +136,20 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Export") {
+                TextField("Export folder", text: Bindable(providerStore).exportFolderPath)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Choose…") {
+                        chooseExportFolder()
+                    }
+                    Spacer()
+                }
+                Text("Markdown export (Final, Brief, Follow-up) → Obsidian vault or Documents.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Data roots") {
                 Text("App Support: \(dataRoot)")
                     .font(.caption)
@@ -194,6 +209,11 @@ struct SettingsView: View {
             modelId: providerStore.llmModelId,
             baseUrl: providerStore.llmBaseUrl
         )
+    }
+
+    private func chooseExportFolder() {
+        guard let url = DirectoryPicker.chooseDirectory(prompt: "Choose") else { return }
+        providerStore.exportFolderPath = url.path
     }
 
     private func testApiConnection() {
