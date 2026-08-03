@@ -1,5 +1,7 @@
 //! Post-call артефакты (отдельно от live caption — ADR-002).
 
+use crate::AudioChannel;
+
 /// Вид post-call артефакта.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ArtifactKind {
@@ -45,6 +47,27 @@ impl MeetingSummary {
     pub fn duration_ms(&self) -> Option<u64> {
         self.ended_at_ms
             .map(|ended| ended.saturating_sub(self.started_at_ms))
+    }
+}
+
+/// Сегмент финального транскрипта: текст с положением во времени и
+/// каналом. В отличие от live, канал здесь известен точно — post-call
+/// распознаёт дорожки раздельно (ADR-009).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalSegment {
+    /// Порядковый номер внутри версии.
+    pub index: u32,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub channel: AudioChannel,
+    /// Пусто до диаризации (Phase 11).
+    pub speaker_id: String,
+    pub text: String,
+}
+
+impl FinalSegment {
+    pub fn duration_ms(&self) -> u64 {
+        self.end_ms.saturating_sub(self.start_ms)
     }
 }
 

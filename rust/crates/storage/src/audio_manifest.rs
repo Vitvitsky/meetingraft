@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use domain::FinalSegment;
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionEvent, CaptionPhase, FinalTranscript,
     GlossaryScope, GlossaryTerm, MeetingSummary, SearchHit, SearchHitKind, Speaker, SpeechLanguage,
@@ -477,6 +478,70 @@ impl AudioManifestStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Заменить сегменты версии Final целиком.
+    ///
+    /// Именно замена, а не добавление: пересбор той же версии должен
+    /// давать тот же результат, а не удваивать сегменты.
+    pub fn replace_final_segments(
+        &mut self,
+        meeting_id: &str,
+        version: u32,
+        segments: &[FinalSegment],
+    ) -> Result<(), AudioManifestError> {
+        let transaction = self.conn.transaction()?;
+        transaction.execute(
+            "DELETE FROM final_segments WHERE meeting_id = ?1 AND version = ?2",
+            params![meeting_id, version],
+        )?;
+        {
+            let mut statement = transaction.prepare(
+                "INSERT INTO final_segments
+                 (meeting_id, version, idx, start_ms, end_ms, channel, speaker_id, text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            for segment in segments {
+                statement.execute(params![
+                    meeting_id,
+                    version,
+                    segment.index,
+                    segment.start_ms as i64,
+                    segment.end_ms as i64,
+                    segment.channel.code(),
+                    segment.speaker_id,
+                    segment.text
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Сегменты версии Final в порядке следования.
+    pub fn list_final_segments(
+        &self,
+        meeting_id: &str,
+        version: u32,
+    ) -> Result<Vec<FinalSegment>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT idx, start_ms, end_ms, channel, speaker_id, text
+             FROM final_segments
+             WHERE meeting_id = ?1 AND version = ?2
+             ORDER BY idx",
+        )?;
+        let rows = statement.query_map(params![meeting_id, version], |row| {
+            let channel: String = row.get(3)?;
+            Ok(FinalSegment {
+                index: row.get::<_, i64>(0)? as u32,
+                start_ms: row.get::<_, i64>(1)? as u64,
+                end_ms: row.get::<_, i64>(2)? as u64,
+                channel: AudioChannel::from_code(&channel),
+                speaker_id: row.get(4)?,
+                text: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Собрать PCM канала за всю сессию в один поток.
     ///
     /// Каналы читаются раздельно: post-call проход (Phase 10) распознаёт
@@ -538,6 +603,7 @@ impl AudioManifestStore {
             "DELETE FROM audio_manifest WHERE session_id = ?1",
             "DELETE FROM caption_events WHERE session_id = ?1",
             "DELETE FROM final_transcripts WHERE meeting_id = ?1",
+            "DELETE FROM final_segments WHERE meeting_id = ?1",
             "DELETE FROM artifacts WHERE meeting_id = ?1",
             "DELETE FROM speakers WHERE meeting_id = ?1",
             "DELETE FROM meeting_fts WHERE meeting_id = ?1",
@@ -927,6 +993,128 @@ mod tests {
             );
             store.append_caption("s1", &event, 42).unwrap();
             assert_eq!(store.caption_count("s1").unwrap(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn segment(index: u32, start_ms: u64, channel: AudioChannel, text: &str) -> FinalSegment {
+        FinalSegment {
+            index,
+            start_ms,
+            end_ms: start_ms + 500,
+            channel,
+            speaker_id: String::new(),
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn final_segments_round_trip_in_order() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let segments = vec![
+                segment(0, 0, AudioChannel::Mic, "я говорю"),
+                segment(1, 600, AudioChannel::System, "они отвечают"),
+            ];
+
+            store.replace_final_segments("m1", 1, &segments).unwrap();
+        }
+
+        {
+            let store = AudioManifestStore::open(&root).unwrap();
+            let read = store.list_final_segments("m1", 1).unwrap();
+
+            assert_eq!(read.len(), 2);
+            assert_eq!(read[0].text, "я говорю");
+            assert_eq!(read[0].channel, AudioChannel::Mic);
+            assert_eq!(read[1].channel, AudioChannel::System);
+            assert_eq!(read[1].index, 1);
+            assert_eq!(read[1].duration_ms(), 500);
+            assert!(read[0].speaker_id.is_empty(), "спикеров ещё нет");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Пересбор той же версии заменяет сегменты, а не удваивает их.
+    #[test]
+    fn replacing_version_does_not_duplicate_segments() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store
+                .replace_final_segments("m1", 1, &[segment(0, 0, AudioChannel::Mic, "черновик")])
+                .unwrap();
+
+            store
+                .replace_final_segments("m1", 1, &[segment(0, 0, AudioChannel::Mic, "начисто")])
+                .unwrap();
+
+            let read = store.list_final_segments("m1", 1).unwrap();
+            assert_eq!(read.len(), 1);
+            assert_eq!(read[0].text, "начисто");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Версии независимы: пересбор одной не трогает другую.
+    #[test]
+    fn versions_of_final_segments_are_independent() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store
+                .replace_final_segments("m1", 1, &[segment(0, 0, AudioChannel::Mic, "версия 1")])
+                .unwrap();
+            store
+                .replace_final_segments("m1", 2, &[segment(0, 0, AudioChannel::Mic, "версия 2")])
+                .unwrap();
+
+            store
+                .replace_final_segments(
+                    "m1",
+                    2,
+                    &[segment(0, 0, AudioChannel::Mic, "версия 2 bis")],
+                )
+                .unwrap();
+
+            assert_eq!(
+                store.list_final_segments("m1", 1).unwrap()[0].text,
+                "версия 1"
+            );
+            assert_eq!(
+                store.list_final_segments("m1", 2).unwrap()[0].text,
+                "версия 2 bis"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn list_final_segments_of_unknown_version_is_empty() {
+        let root = tmp_root();
+        {
+            let store = AudioManifestStore::open(&root).unwrap();
+            assert!(store.list_final_segments("m1", 7).unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Удаление встречи уносит и сегменты — обещание architecture.md.
+    #[test]
+    fn delete_meeting_removes_final_segments() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            store
+                .replace_final_segments("m1", 1, &[segment(0, 0, AudioChannel::Mic, "текст")])
+                .unwrap();
+            store.end_session(10).unwrap();
+
+            store.delete_meeting("m1").unwrap();
+
+            assert!(store.list_final_segments("m1", 1).unwrap().is_empty());
         }
         let _ = fs::remove_dir_all(&root);
     }

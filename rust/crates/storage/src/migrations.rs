@@ -101,6 +101,24 @@ const STEPS: &[&str] = &[
         SELECT meeting_id, 'artifact', id, body_markdown
         FROM artifacts;
     ",
+    // 5 — сегменты финального транскрипта (Phase 10). Истина живёт здесь,
+    // а body_markdown остаётся рендером: Phase 11 привяжет спикера к
+    // сегменту, и по markdown это было бы невозможно без парсинга
+    // собственного формата обратно. speaker_id заводится сразу пустым,
+    // чтобы схему потом не менять.
+    "
+    CREATE TABLE IF NOT EXISTS final_segments (
+        meeting_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        idx INTEGER NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        channel TEXT NOT NULL,
+        speaker_id TEXT NOT NULL DEFAULT '',
+        text TEXT NOT NULL,
+        PRIMARY KEY (meeting_id, version, idx)
+    );
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.
