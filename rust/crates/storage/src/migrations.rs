@@ -75,6 +75,32 @@ const STEPS: &[&str] = &[
     "
     ALTER TABLE caption_events ADD COLUMN channel TEXT NOT NULL DEFAULT 'mic';
     ",
+    // 3 — название и время окончания встречи. Пустое название допустимо:
+    // fallback рисует презентационный слой.
+    "
+    ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT '';
+    ALTER TABLE sessions ADD COLUMN ended_at_ms INTEGER;
+    ",
+    // 4 — полнотекстовый поиск. unicode61 нормально режет русский текст;
+    // backfill поднимает уже накопленные материалы.
+    "
+    CREATE VIRTUAL TABLE meeting_fts USING fts5(
+        meeting_id UNINDEXED,
+        kind UNINDEXED,
+        ref_id UNINDEXED,
+        body,
+        tokenize = 'unicode61 remove_diacritics 2'
+    );
+    INSERT INTO meeting_fts (meeting_id, kind, ref_id, body)
+        SELECT session_id, 'caption', id, text
+        FROM caption_events WHERE phase = 'final';
+    INSERT INTO meeting_fts (meeting_id, kind, ref_id, body)
+        SELECT meeting_id, 'final', CAST(version AS TEXT), body_markdown
+        FROM final_transcripts;
+    INSERT INTO meeting_fts (meeting_id, kind, ref_id, body)
+        SELECT meeting_id, 'artifact', id, body_markdown
+        FROM artifacts;
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.

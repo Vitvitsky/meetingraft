@@ -12,7 +12,9 @@ pub use audio::AudioChannel;
 pub use caption::{CaptionEvent, CaptionPhase};
 pub use glossary::{GlossaryScope, GlossaryTerm};
 pub use language::{LanguagePolicy, SpeechLanguage};
-pub use postcall::{Artifact, ArtifactKind, FinalTranscript, MeetingSummary};
+pub use postcall::{
+    Artifact, ArtifactKind, FinalTranscript, MeetingSummary, SearchHit, SearchHitKind,
+};
 pub use session::SessionState;
 pub use speaker::Speaker;
 

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryScope,
-    GlossaryTerm, LanguagePolicy, MeetingSummary, SessionState, Speaker, SpeechLanguage,
+    GlossaryTerm, LanguagePolicy, MeetingSummary, SearchHit, SessionState, Speaker, SpeechLanguage,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
@@ -92,9 +92,23 @@ pub struct FfiGlossaryImportResult {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiMeetingSummary {
     pub id: String,
+    /// Пустая строка — названия нет; подстановку делает Swift.
+    pub title: String,
     pub started_at_ms: u64,
+    /// 0 — встреча ещё не завершена.
+    pub ended_at_ms: u64,
     pub has_final: bool,
     pub artifact_count: u64,
+}
+
+/// Совпадение поиска по материалам встреч.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiSearchHit {
+    pub meeting_id: String,
+    /// `caption` | `final` | `artifact` — куда вести из результата.
+    pub kind: String,
+    pub ref_id: String,
+    pub snippet: String,
 }
 
 /// Финальная версия транскрипта; пустой `meeting_id` означает отсутствие.
@@ -379,9 +393,20 @@ fn glossary_term_from_ffi(term: FfiGlossaryTerm) -> Result<GlossaryTerm, String>
 fn meeting_summary_to_ffi(summary: MeetingSummary) -> FfiMeetingSummary {
     FfiMeetingSummary {
         id: summary.id,
+        title: summary.title,
         started_at_ms: summary.started_at_ms,
+        ended_at_ms: summary.ended_at_ms.unwrap_or(0),
         has_final: summary.has_final,
         artifact_count: summary.artifact_count,
+    }
+}
+
+fn search_hit_to_ffi(hit: SearchHit) -> FfiSearchHit {
+    FfiSearchHit {
+        meeting_id: hit.meeting_id,
+        kind: hit.kind.code().to_string(),
+        ref_id: hit.ref_id,
+        snippet: hit.snippet,
     }
 }
 
@@ -1055,6 +1080,52 @@ impl MeetingCore {
     }
 
     /// Сохранённые live captions выбранной встречи.
+    /// Полнотекстовый поиск по названиям, транскриптам и артефактам.
+    /// Пустой запрос возвращает пустой список, а не всю базу.
+    pub fn search_meetings(&self, query: String, limit: u32) -> Vec<FfiSearchHit> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        let root = guard.data_root.clone();
+        drop(guard);
+        let Ok(store) = AudioManifestStore::open(&root) else {
+            return Vec::new();
+        };
+        store
+            .search(&query, limit)
+            .map(|hits| hits.into_iter().map(search_hit_to_ffi).collect())
+            .unwrap_or_default()
+    }
+
+    /// Удалить встречу целиком; пустая строка ошибки означает успех.
+    pub fn delete_meeting(&self, meeting_id: String) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        if guard.recording_session_id.as_deref() == Some(meeting_id.as_str()) {
+            return "meeting is being recorded".to_string();
+        }
+        let root = guard.data_root.clone();
+        drop(guard);
+        match AudioManifestStore::open(&root) {
+            Ok(mut store) => match store.delete_meeting(&meeting_id) {
+                Ok(()) => String::new(),
+                Err(err) => err.to_string(),
+            },
+            Err(err) => err.to_string(),
+        }
+    }
+
+    /// Переименовать встречу; пустая строка ошибки означает успех.
+    pub fn rename_meeting(&self, meeting_id: String, title: String) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        let root = guard.data_root.clone();
+        drop(guard);
+        match AudioManifestStore::open(&root) {
+            Ok(mut store) => match store.set_meeting_title(&meeting_id, &title) {
+                Ok(()) => String::new(),
+                Err(err) => err.to_string(),
+            },
+            Err(err) => err.to_string(),
+        }
+    }
+
     pub fn list_captions(&self, meeting_id: String) -> Vec<FfiCaptionEvent> {
         let guard = self.inner.lock().expect("meeting core poisoned");
         read_store(&guard, |store| store.list_captions(&meeting_id))
@@ -1284,12 +1355,15 @@ impl MeetingCore {
     }
 
     /// Recording + live STT (Whisper если модель есть и feature включён, иначе Mock).
-    pub fn start_recording(&self, session_id: String) -> String {
+    ///
+    /// `title` формирует Swift: формат даты локале-зависим и не должен
+    /// уезжать в ядро. Пустая строка допустима.
+    pub fn start_recording(&self, session_id: String, title: String) -> String {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
         let root = guard.data_root.clone();
         match AudioManifestStore::open(&root) {
             Ok(mut store) => {
-                if let Err(err) = store.begin_session(&session_id, now_ms()) {
+                if let Err(err) = store.begin_session(&session_id, now_ms(), &title) {
                     return err.to_string();
                 }
                 let terms = match store.list_glossary_terms() {
@@ -1441,7 +1515,7 @@ impl MeetingCore {
             }
         }
         if let Some(store) = guard.store.as_mut() {
-            store.end_session();
+            let _ = store.end_session(now_ms());
         }
         guard.store = None;
         guard.recording_session_id = None;
@@ -1528,6 +1602,76 @@ mod tests {
                 20,
             )
             .expect("caption должен сохраниться");
+    }
+
+    #[test]
+    fn rename_search_and_delete_meeting_round_trip() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-library-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let meeting_id = "m-library".to_string();
+        // Строку в sessions создаёт только start_recording — без неё
+        // встречи нет ни в списке, ни для переименования.
+        assert!(
+            core.start_recording(meeting_id.clone(), "Черновик".into())
+                .is_empty()
+        );
+        core.stop_recording();
+        seed_final_captions(&root, &meeting_id);
+        assert!(core.assemble_final_now(meeting_id.clone()).is_empty());
+
+        assert!(
+            core.rename_meeting(meeting_id.clone(), "Ретро спринта".into())
+                .is_empty()
+        );
+        let summary = core
+            .list_meetings()
+            .into_iter()
+            .find(|item| item.id == meeting_id)
+            .expect("встреча должна быть в списке");
+        assert_eq!(summary.title, "Ретро спринта");
+
+        let hits = core.search_meetings("финальная".into(), 10);
+        assert!(!hits.is_empty(), "поиск должен найти финальный транскрипт");
+        assert_eq!(hits[0].meeting_id, meeting_id);
+
+        assert!(core.delete_meeting(meeting_id.clone()).is_empty());
+        assert!(core.list_meetings().is_empty());
+        assert!(core.search_meetings("финальная".into(), 10).is_empty());
+    }
+
+    #[test]
+    fn rename_unknown_meeting_reports_error() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-rename-missing-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        assert!(!core.rename_meeting("missing".into(), "x".into()).is_empty());
+    }
+
+    #[test]
+    fn empty_query_returns_no_hits() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-empty-query-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.start_recording("m-empty".into(), String::new())
+                .is_empty()
+        );
+        core.stop_recording();
+        seed_final_captions(&root, "m-empty");
+        assert!(core.assemble_final_now("m-empty".into()).is_empty());
+
+        assert!(core.search_meetings("   ".into(), 10).is_empty());
     }
 
     #[test]
@@ -1695,7 +1839,10 @@ mod tests {
     fn recording_ingests_mic_and_system_chunks() {
         let root = std::env::temp_dir().join(format!("mr-ffi-rec-{}", now_ms()));
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
-        assert!(core.start_recording("rec-1".into()).is_empty());
+        assert!(
+            core.start_recording("rec-1".into(), String::new())
+                .is_empty()
+        );
         let pcm = vec![1_u8, 0, 2, 0, 3, 0, 4, 0];
         assert!(
             core.ingest_audio_chunk(FfiAudioChannel::Mic, pcm.clone(), 16_000, 0)
@@ -1776,7 +1923,10 @@ mod tests {
     fn loud_mic_produces_live_captions() {
         let root = std::env::temp_dir().join(format!("mr-ffi-stt-{}", now_ms()));
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
-        assert!(core.start_recording("live-1".into()).is_empty());
+        assert!(
+            core.start_recording("live-1".into(), String::new())
+                .is_empty()
+        );
         let mut loud = Vec::new();
         for _ in 0..4000 {
             loud.extend_from_slice(&3000_i16.to_le_bytes());
@@ -1829,7 +1979,10 @@ mod tests {
             })
             .is_empty()
         );
-        assert!(core.start_recording("glossary-1".into()).is_empty());
+        assert!(
+            core.start_recording("glossary-1".into(), String::new())
+                .is_empty()
+        );
 
         let mut loud = Vec::new();
         for _ in 0..4000 {
@@ -1865,7 +2018,10 @@ mod tests {
             std::thread::current().id()
         ));
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
-        assert!(core.start_recording("glossary-live".into()).is_empty());
+        assert!(
+            core.start_recording("glossary-live".into(), String::new())
+                .is_empty()
+        );
         assert!(
             core.upsert_glossary_term(FfiGlossaryTerm {
                 id: "term-live-uniffi".into(),
@@ -1913,7 +2069,10 @@ mod tests {
         ));
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
         let meeting_id = "postcall-1".to_string();
-        assert!(core.start_recording(meeting_id.clone()).is_empty());
+        assert!(
+            core.start_recording(meeting_id.clone(), String::new())
+                .is_empty()
+        );
 
         let mut loud = Vec::new();
         for _ in 0..4000 {

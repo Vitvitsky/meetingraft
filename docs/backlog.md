@@ -36,6 +36,13 @@
 - [x] System audio process tap (ADR-004) — Core Audio process tap +
   приватное aggregate-устройство; каналы раздельны на диске, live-путь
   идёт через микс с атрибуцией (ADR-009)
+- Непрерывный ресемплер в `PCMDownmixer` — сейчас `converter.reset()`
+  после каждого чанка сбрасывает состояние ресемплера, из-за чего на
+  границах 100 мс кусков остаются мелкие разрывы. Сделано ради хвоста
+  через `endOfStream` (без него терялось ~15% кадров на 48→16 kHz).
+  Правильное решение — держать конвертер живым и не сигналить
+  `endOfStream` на каждом чанке. Важно для Phase 10, где точность и есть
+  цель.
 
 ## Epic 6 — Live Subtitle Flow
 - [x] Open session with STT pipeline (Mock; Whisper when model + feature)
