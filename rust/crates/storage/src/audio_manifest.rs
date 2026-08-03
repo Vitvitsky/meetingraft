@@ -359,7 +359,7 @@ impl AudioManifestStore {
         let Some(row) = rows.next()? else {
             return Ok(None);
         };
-        Ok(Some(Self::map_final_transcript_row(&row)?))
+        Ok(Some(Self::map_final_transcript_row(row)?))
     }
 
     /// Вернуть последнюю версию финального транскрипта встречи.
@@ -378,7 +378,7 @@ impl AudioManifestStore {
         let Some(row) = rows.next()? else {
             return Ok(None);
         };
-        Ok(Some(Self::map_final_transcript_row(&row)?))
+        Ok(Some(Self::map_final_transcript_row(row)?))
     }
 
     /// Сохранить post-call артефакт.
