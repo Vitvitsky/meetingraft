@@ -16,7 +16,8 @@ use domain::{
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
     LlmClient, LlmError, OllamaNativeClient, OpenAiCompatLlmClient, assemble_final, brief_prompts,
-    follow_up_prompts, make_artifact, render_brief, render_follow_up,
+    follow_up_prompts, make_artifact, occurrences_to_edit, plan_edit, render_brief,
+    render_follow_up,
 };
 mod rebuild;
 
@@ -120,6 +121,19 @@ pub struct FfiFinalSegment {
     /// реплику не тронет.
     pub speaker_pinned: bool,
     pub text: String,
+    /// Текст заменён ручной правкой из журнала (Epic 19).
+    pub text_edited: bool,
+}
+
+/// Правка, не легшая ни на одну версию после пересбора.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiSegmentEdit {
+    pub id: String,
+    pub channel: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub original_text: String,
+    pub edited_text: String,
 }
 
 /// Кусок записи для прослушивания реплики.
@@ -1334,6 +1348,7 @@ impl MeetingCore {
                     speaker_name,
                     speaker_pinned: segment.speaker_pinned,
                     text: segment.text,
+                    text_edited: segment.text_edited,
                 }
             })
             .collect()
@@ -1439,6 +1454,155 @@ impl MeetingCore {
             Ok(()) => rerender_final_bodies(&mut store, &meeting_id),
             Err(error) => error.to_string(),
         }
+    }
+
+    /// Правка текста сегмента. Пустая строка в ответе — успех.
+    ///
+    /// Текст, совпавший с распознанным, удаляет правку: возврат к
+    /// исходному — это отмена, а не ещё одна правка (Epic 19).
+    pub fn edit_segment_text(
+        &self,
+        meeting_id: String,
+        version: u32,
+        index: u32,
+        text: String,
+    ) -> String {
+        let Some(mut store) = open_store(self) else {
+            return "storage unavailable".to_string();
+        };
+
+        let segments = store
+            .list_final_segments(&meeting_id, version)
+            .unwrap_or_default();
+        let Some(segment) = segments.into_iter().find(|s| s.index == index) else {
+            return format!("сегмент {index} не найден");
+        };
+
+        // Предыдущая правка ищется до разбора: list_final_segments уже
+        // отдал правленый текст, а сравнивать введённое надо с
+        // распознанным. Иначе повторный ввод того же текста читался бы
+        // как возврат к исходному и правка бы удалилась.
+        let existing = store.list_segment_edits(&meeting_id).unwrap_or_default();
+        let previous = existing.into_iter().find(|edit| {
+            edit.channel == segment.channel
+                && edit.start_ms == segment.start_ms
+                && edit.end_ms == segment.end_ms
+        });
+
+        let mut recognized = segment.clone();
+        if let Some(previous) = &previous {
+            recognized.text = previous.original_text.clone();
+            recognized.text_edited = false;
+        }
+
+        let terms = store.list_glossary_terms().unwrap_or_default();
+        let language = {
+            let guard = self.inner.lock().expect("meeting core poisoned");
+            guard.language_policy.primary
+        };
+
+        let outcome = plan_edit(
+            &meeting_id,
+            version,
+            &recognized,
+            &text,
+            language,
+            &terms,
+            &Uuid::new_v4().to_string(),
+            &Uuid::new_v4().to_string(),
+            now_ms(),
+        );
+
+        match (outcome.edit, previous) {
+            (Some(mut edit), previous) => {
+                // Правка того же места перезаписывается, а не копится.
+                if let Some(previous) = previous {
+                    edit.id = previous.id;
+                }
+                if let Err(error) = store.upsert_segment_edit(&edit) {
+                    return error.to_string();
+                }
+            }
+            (None, Some(previous)) => {
+                if let Err(error) = store.delete_segment_edit(&previous.id) {
+                    return error.to_string();
+                }
+            }
+            (None, None) => {}
+        }
+
+        if let Some(term) = outcome.term
+            && let Err(error) = store.upsert_glossary_term(&term, now_ms())
+        {
+            return error.to_string();
+        }
+        // Тело markdown производно от сегментов — после правки его надо
+        // пересобрать, как это делает назначение спикера.
+        rerender_final_bodies(&mut store, &meeting_id)
+    }
+
+    /// Правки, не легшие на текущую версию после пересбора.
+    pub fn list_unapplied_edits(&self, meeting_id: String) -> Vec<FfiSegmentEdit> {
+        let Some(store) = open_store(self) else {
+            return Vec::new();
+        };
+        store
+            .list_unapplied_segment_edits(&meeting_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|edit| FfiSegmentEdit {
+                id: edit.id,
+                channel: edit.channel.code().to_string(),
+                start_ms: edit.start_ms,
+                end_ms: edit.end_ms,
+                original_text: edit.original_text,
+                edited_text: edit.edited_text,
+            })
+            .collect()
+    }
+
+    /// Превратить подсказку в замену: применять всюду.
+    ///
+    /// Единственный способ получить замену из правки — явный жест
+    /// человека. Автоматически рождаются только подсказки.
+    pub fn promote_term_to_replacement(
+        &self,
+        term_id: String,
+        meeting_id: String,
+        version: u32,
+    ) -> String {
+        let Some(mut store) = open_store(self) else {
+            return "storage unavailable".to_string();
+        };
+        let terms = store.list_glossary_terms().unwrap_or_default();
+        let Some(mut term) = terms.into_iter().find(|term| term.id == term_id) else {
+            return format!("термин {term_id} не найден");
+        };
+        term.kind = GlossaryKind::Replacement;
+        if let Err(error) = store.upsert_glossary_term(&term, now_ms()) {
+            return error.to_string();
+        }
+
+        let segments = store
+            .list_final_segments(&meeting_id, version)
+            .unwrap_or_default();
+        let existing = store.list_segment_edits(&meeting_id).unwrap_or_default();
+        let mut ids = std::iter::repeat_with(|| Uuid::new_v4().to_string());
+        let created = occurrences_to_edit(
+            &term,
+            &meeting_id,
+            version,
+            &segments,
+            &existing,
+            now_ms(),
+            &mut ids,
+        );
+        for edit in &created {
+            if let Err(error) = store.upsert_segment_edit(edit) {
+                return error.to_string();
+            }
+        }
+        rerender_final_bodies(&mut store, &meeting_id)
     }
 
     /// Вернуть реплику под назначение по каналу.
