@@ -82,6 +82,50 @@ pub fn plan_edit(
     }
 }
 
+/// Правки, которые нужно завести, чтобы термин применился ко всем
+/// вхождениям во встрече.
+///
+/// Идём через журнал, а не переписыванием таблицы сегментов: распознанное
+/// должно остаться распознанным, иначе сравнить версии будет не с чем.
+///
+/// Места, уже правленные вручную, не трогаются — точечное решение
+/// человека сильнее массовой замены, ровно как у `speaker_pinned`.
+pub fn occurrences_to_edit(
+    term: &GlossaryTerm,
+    meeting_id: &str,
+    version: u32,
+    segments: &[FinalSegment],
+    existing: &[SegmentEdit],
+    now_ms: u64,
+    ids: &mut dyn Iterator<Item = String>,
+) -> Vec<SegmentEdit> {
+    segments
+        .iter()
+        .filter(|segment| segment.text.contains(term.surface.as_str()))
+        .filter(|segment| {
+            !existing.iter().any(|edit| {
+                edit.channel == segment.channel
+                    && edit.start_ms == segment.start_ms
+                    && edit.end_ms == segment.end_ms
+            })
+        })
+        .filter_map(|segment| {
+            let id = ids.next()?;
+            Some(SegmentEdit {
+                id,
+                meeting_id: meeting_id.to_owned(),
+                channel: segment.channel,
+                start_ms: segment.start_ms,
+                end_ms: segment.end_ms,
+                original_text: segment.text.clone(),
+                edited_text: segment.text.replace(term.surface.as_str(), &term.canonical),
+                created_at_ms: now_ms,
+                applied_version: Some(version),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use domain::{
@@ -244,5 +288,98 @@ mod tests {
 
         assert!(outcome.edit.is_some(), "правка сохраняется всегда");
         assert!(outcome.term.is_none(), "но термином не становится");
+    }
+
+    #[test]
+    fn replacement_covers_other_occurrences() {
+        use super::occurrences_to_edit;
+        use domain::SegmentEdit;
+
+        let term = GlossaryTerm {
+            id: "t1".into(),
+            surface: "интра ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Meeting {
+                meeting_id: "m1".into(),
+            },
+            kind: GlossaryKind::Replacement,
+        };
+        let segments = vec![
+            FinalSegment {
+                index: 0,
+                start_ms: 0,
+                end_ms: 100,
+                channel: AudioChannel::Mic,
+                speaker_id: String::new(),
+                speaker_pinned: false,
+                text: "открой интра ру".into(),
+                text_edited: false,
+            },
+            FinalSegment {
+                index: 1,
+                start_ms: 100,
+                end_ms: 200,
+                channel: AudioChannel::Mic,
+                speaker_id: String::new(),
+                speaker_pinned: false,
+                text: "тут ничего нет".into(),
+                text_edited: false,
+            },
+        ];
+        let existing: Vec<SegmentEdit> = Vec::new();
+        let mut ids = ["n1".to_string()].into_iter();
+
+        let created = occurrences_to_edit(&term, "m1", 1, &segments, &existing, 7, &mut ids);
+
+        assert_eq!(created.len(), 1, "правится только сегмент с вхождением");
+        assert_eq!(created[0].edited_text, "открой intra.ru");
+        assert_eq!(created[0].original_text, "открой интра ру");
+    }
+
+    #[test]
+    fn replacement_skips_already_edited_places() {
+        use super::occurrences_to_edit;
+        use domain::SegmentEdit;
+
+        let term = GlossaryTerm {
+            id: "t1".into(),
+            surface: "интра ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Meeting {
+                meeting_id: "m1".into(),
+            },
+            kind: GlossaryKind::Replacement,
+        };
+        let segments = vec![FinalSegment {
+            index: 0,
+            start_ms: 0,
+            end_ms: 100,
+            channel: AudioChannel::Mic,
+            speaker_id: String::new(),
+            speaker_pinned: false,
+            text: "открой интра ру".into(),
+            text_edited: false,
+        }];
+        let existing = vec![SegmentEdit {
+            id: "e0".into(),
+            meeting_id: "m1".into(),
+            channel: AudioChannel::Mic,
+            start_ms: 0,
+            end_ms: 100,
+            original_text: "открой интра ру".into(),
+            edited_text: "открой портал".into(),
+            created_at_ms: 0,
+            applied_version: Some(1),
+        }];
+        let mut ids = ["n1".to_string()].into_iter();
+
+        let created = occurrences_to_edit(&term, "m1", 1, &segments, &existing, 7, &mut ids);
+
+        assert!(
+            created.is_empty(),
+            "ручная правка человека сильнее массовой замены"
+        );
     }
 }

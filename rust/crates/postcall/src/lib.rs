@@ -16,7 +16,7 @@ mod term_from_edit;
 
 pub use assemble::assemble_final;
 pub use diff::{DiffOp, DiffSpan, diff_words};
-pub use edit_service::{EditOutcome, plan_edit};
+pub use edit_service::{EditOutcome, occurrences_to_edit, plan_edit};
 pub use edits::reattach_edits;
 pub use jobs::{
     InlineSpawner, JobHandle, RebuildJobs, RebuildProgress, RebuildState, Spawner, ThreadSpawner,
