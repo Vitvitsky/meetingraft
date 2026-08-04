@@ -35,4 +35,44 @@ final class LiveCaptionsPresentationTests: XCTestCase {
     func testSessionStartIsNilBeforeRecording() {
         XCTAssertNil(makeViewModel().sessionStartedAt)
     }
+
+    /// Ядро отказывает переводить на язык самой сессии. Раньше отказ
+    /// проглатывался: переключатель включён, перевода нет, причины не
+    /// видно нигде.
+    func testTargetEqualToSessionLanguageIsReported() {
+        let viewModel = makeViewModel()
+        viewModel.applySessionLanguage(.en)
+        let store = TranslationSettingsStore()
+        store.enabled = true
+        store.target = .en
+
+        viewModel.applyTranslationSettings(store)
+
+        XCTAssertFalse(viewModel.translationIssue.isEmpty)
+    }
+
+    /// Выключенный перевод — не проблема, о которой надо сообщать.
+    func testDisabledTranslationReportsNoIssue() {
+        let viewModel = makeViewModel()
+        viewModel.applySessionLanguage(.en)
+        let store = TranslationSettingsStore()
+        store.enabled = false
+        store.target = .en
+
+        viewModel.applyTranslationSettings(store)
+
+        XCTAssertTrue(viewModel.translationIssue.isEmpty)
+    }
+
+    func testValidTargetReportsNoIssue() {
+        let viewModel = makeViewModel()
+        viewModel.applySessionLanguage(.ru)
+        let store = TranslationSettingsStore()
+        store.enabled = true
+        store.target = .en
+
+        viewModel.applyTranslationSettings(store)
+
+        XCTAssertTrue(viewModel.translationIssue.isEmpty)
+    }
 }

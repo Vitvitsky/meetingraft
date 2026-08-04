@@ -40,8 +40,13 @@ struct LiveCaptionsView: View {
         .onAppear {
             viewModel.applyTranslationSettings(translationStore)
         }
+        // Уход с вкладки не останавливает запись: NavigationSplitView
+        // разрушает detail при переключении раздела, и запись обрывалась
+        // на полуслове у человека, который просто открыл глоссарий.
+        // Запись прекращает только явное действие — кнопка, меню, ⌘⇧R.
+        // Демо-поток здесь свой: он живёт этим экраном и ничего не пишет.
         .onDisappear {
-            viewModel.stopAll(capture: capture)
+            viewModel.stopDemo()
         }
         .onChange(of: translationStore.enabled) { _, _ in
             viewModel.applyTranslationSettings(translationStore)
@@ -231,7 +236,12 @@ struct LiveCaptionsView: View {
                 .font(Theme.Text.mono(size: 11))
                 .foregroundStyle(Theme.textTertiary)
             Spacer()
-            if translationStore.enabled, !viewModel.effectiveTranslationBackend.isEmpty {
+            if translationStore.enabled, !viewModel.translationIssue.isEmpty {
+                Text(viewModel.translationIssue)
+                    .font(Theme.Text.mono(size: 11))
+                    .foregroundStyle(Theme.warning)
+                    .textSelection(.enabled)
+            } else if translationStore.enabled, !viewModel.effectiveTranslationBackend.isEmpty {
                 Text(viewModel.effectiveTranslationBackend)
                     .font(Theme.Text.mono(size: 11))
                     .foregroundStyle(Theme.textTertiary)

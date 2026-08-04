@@ -1,3 +1,5 @@
+import AppKit
+import Combine
 import Foundation
 import SwiftUI
 
@@ -99,6 +101,17 @@ struct AppShellView: View {
             // окно отдаёт ей действия, а не состояние целиком.
             recordingBridge.toggle = { toggleRecording() }
             recordingBridge.openWindow = { overlay.restoreMainWindow() }
+        }
+        // Запись больше не привязана к экрану субтитров, поэтому выход из
+        // приложения — последний момент, когда её можно закрыть штатно.
+        // Без этого Final не собирается и сессия остаётся незакрытой в
+        // базе: тишина вместо получасовой записи.
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.willTerminateNotification
+            )
+        ) { _ in
+            captionsViewModel.stopAll(capture: captureCoordinator)
         }
         .onChange(of: presenceStore.showsOverlay) { _, _ in
             applyPresence()
