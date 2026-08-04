@@ -580,9 +580,27 @@ impl AudioManifestStore {
                 speaker_id: row.get(4)?,
                 speaker_pinned: row.get(5)?,
                 text: row.get(6)?,
+                text_edited: false,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        let mut segments = rows.collect::<Result<Vec<_>, _>>()?;
+
+        // Правка перекрывает распознанное: журнал — источник истины для
+        // текста, таблица сегментов хранит то, что выдала модель.
+        let edits = self.list_segment_edits(meeting_id)?;
+        for segment in &mut segments {
+            let applied = edits.iter().find(|edit| {
+                edit.applied_version == Some(version)
+                    && edit.channel == segment.channel
+                    && edit.start_ms == segment.start_ms
+                    && edit.end_ms == segment.end_ms
+            });
+            if let Some(edit) = applied {
+                segment.text = edit.edited_text.clone();
+                segment.text_edited = true;
+            }
+        }
+        Ok(segments)
     }
 
     /// Назначить спикера всем сегментам канала.
@@ -1225,6 +1243,7 @@ pub(crate) mod tests {
             speaker_id: String::new(),
             speaker_pinned: false,
             text: text.to_string(),
+            text_edited: false,
         }
     }
 

@@ -88,6 +88,7 @@ mod tests {
             speaker_id: speaker.to_string(),
             speaker_pinned: false,
             text: "текст".to_string(),
+            text_edited: false,
         }
     }
 

@@ -142,6 +142,57 @@ mod tests {
         assert_eq!(store.list_segment_edits("m1").expect("list").len(), 1);
     }
 
+    #[test]
+    fn edit_overrides_segment_text_of_its_version() {
+        use domain::FinalSegment;
+
+        let mut store = AudioManifestStore::open(tmp_root()).expect("store");
+        store
+            .replace_final_segments(
+                "m1",
+                1,
+                &[FinalSegment {
+                    index: 0,
+                    start_ms: 1000,
+                    end_ms: 2000,
+                    channel: AudioChannel::Mic,
+                    speaker_id: String::new(),
+                    speaker_pinned: false,
+                    text: "интра ру".into(),
+                    text_edited: false,
+                }],
+            )
+            .expect("segments");
+        store
+            .upsert_segment_edit(&edit("e1", Some(1)))
+            .expect("upsert");
+
+        let segments = store.list_final_segments("m1", 1).expect("list");
+        assert_eq!(segments[0].text, "intra.ru");
+        assert!(segments[0].text_edited);
+
+        // Правка другой версии не видна.
+        store
+            .replace_final_segments(
+                "m1",
+                2,
+                &[FinalSegment {
+                    index: 0,
+                    start_ms: 1000,
+                    end_ms: 2000,
+                    channel: AudioChannel::Mic,
+                    speaker_id: String::new(),
+                    speaker_pinned: false,
+                    text: "интра ру".into(),
+                    text_edited: false,
+                }],
+            )
+            .expect("segments");
+        let v2 = store.list_final_segments("m1", 2).expect("list");
+        assert_eq!(v2[0].text, "интра ру");
+        assert!(!v2[0].text_edited);
+    }
+
     /// Повторный `upsert_segment_edit` с тем же `id` проходит ветку
     /// `ON CONFLICT ... DO UPDATE`: обновляются только `edited_text` и
     /// `applied_version`, остальные поля (включая `original_text`) должны

@@ -92,6 +92,11 @@ pub struct FinalSegment {
     /// заметить это было бы нечем.
     pub speaker_pinned: bool,
     pub text: String,
+    /// Текст заменён ручной правкой из журнала (Epic 19).
+    ///
+    /// Не хранится в таблице сегментов — вычисляется при чтении, потому
+    /// что источником истины остаётся журнал.
+    pub text_edited: bool,
 }
 
 impl FinalSegment {

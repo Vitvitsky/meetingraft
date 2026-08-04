@@ -48,6 +48,7 @@ pub fn merge_channels(
             speaker_id: String::new(),
             speaker_pinned: false,
             text: segment.text,
+            text_edited: false,
         })
         .collect()
 }

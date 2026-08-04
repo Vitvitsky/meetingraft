@@ -2234,6 +2234,7 @@ mod tests {
                     speaker_id: String::new(),
                     speaker_pinned: false,
                     text: "я говорю".into(),
+                    text_edited: false,
                 },
                 domain::FinalSegment {
                     index: 1,
@@ -2243,6 +2244,7 @@ mod tests {
                     speaker_id: String::new(),
                     speaker_pinned: false,
                     text: "они отвечают".into(),
+                    text_edited: false,
                 },
             ];
             store
@@ -2311,6 +2313,7 @@ mod tests {
                         speaker_id: String::new(),
                         speaker_pinned: false,
                         text: "нужно решить к пятнице".into(),
+                        text_edited: false,
                     }],
                 )
                 .expect("segments");
@@ -2452,6 +2455,7 @@ mod tests {
                         speaker_id: "sp".into(),
                         speaker_pinned: false,
                         text: "текст".into(),
+                        text_edited: false,
                     }],
                 )
                 .expect("segments");
