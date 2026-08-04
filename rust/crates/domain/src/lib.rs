@@ -2,6 +2,7 @@
 
 mod audio;
 mod caption;
+mod diagnostics;
 mod glossary;
 mod language;
 mod postcall;
@@ -10,6 +11,7 @@ mod speaker;
 
 pub use audio::AudioChannel;
 pub use caption::{CaptionEvent, CaptionPhase};
+pub use diagnostics::{SttDiagnostic, SttDiagnosticKind};
 pub use glossary::{GlossaryScope, GlossaryTerm};
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use postcall::{

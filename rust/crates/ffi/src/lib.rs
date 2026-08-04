@@ -21,7 +21,7 @@ mod rebuild;
 
 use postcall::{RebuildJobs, ThreadSpawner, diff_words, render_segments, speaker_stats};
 use session::{ChannelMixer, MeetingSession};
-use storage::{AudioManifestError, AudioManifestStore};
+use storage::{AudioManifestError, AudioManifestStore, DiagnosticsLog};
 use stt::{
     LiveCaptionPipeline, SttBackendKind, models_dir, pcm_bytes_to_i16, resolve_whisper_model,
 };
@@ -251,6 +251,8 @@ struct MeetingCoreInner {
     mixer: ChannelMixer,
     glossary: GlossaryEngine,
     pending_live_captions: VecDeque<FfiCaptionEvent>,
+    /// Журнал решений распознавания; по умолчанию включён и локален.
+    diagnostics: DiagnosticsLog,
     /// Язык распознавания (captions); не путать с целевым языком перевода.
     language_policy: LanguagePolicy,
     translation_policy: TranslationPolicy,
@@ -344,8 +346,24 @@ fn transcribe_frames(
         .collect()
 }
 
+/// Записать в журнал то, что движок выбросил или придержал.
+///
+/// Без этого отсев галлюцинаций (Epic 16) остаётся непроверяемым: он
+/// молча удаляет текст, и попавшую под нож речь никто не увидит.
+fn drain_stt_diagnostics(inner: &mut MeetingCoreInner) {
+    let Some(pipeline) = inner.stt.as_mut() else {
+        return;
+    };
+    let records = pipeline.take_diagnostics();
+    if records.is_empty() {
+        return;
+    }
+    inner.diagnostics.append(&records, now_ms());
+}
+
 /// Нормализовать глоссарием, сохранить и отдать в очередь UI.
 fn store_and_enqueue(inner: &mut MeetingCoreInner, events: Vec<domain::CaptionEvent>) {
+    drain_stt_diagnostics(inner);
     let Some(session_id) = inner.recording_session_id.clone() else {
         return;
     };
@@ -743,13 +761,15 @@ impl MeetingCore {
 
     #[uniffi::constructor]
     pub fn with_data_root(data_root: String) -> std::sync::Arc<Self> {
+        let root = PathBuf::from(data_root);
         std::sync::Arc::new(Self {
             inner: Mutex::new(MeetingCoreInner {
                 session: MeetingSession::new(),
                 started_at: None,
                 store: None,
                 recording_session_id: None,
-                data_root: PathBuf::from(data_root),
+                diagnostics: DiagnosticsLog::new(&root, true),
+                data_root: root,
                 stt: None,
                 stt_backend: "idle".to_string(),
                 mixer: ChannelMixer::new(),
@@ -1142,6 +1162,40 @@ impl MeetingCore {
             skipped,
             error,
         }
+    }
+
+    /// Путь к локальному журналу диагностики.
+    ///
+    /// Журнал никуда не отправляется: он лежит рядом с записями встреч, и
+    /// уходит куда-либо, только если человек сам его отдаст.
+    pub fn diagnostics_log_path(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.diagnostics.path().to_string_lossy().into_owned()
+    }
+
+    pub fn diagnostics_log_size_bytes(&self) -> u64 {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.diagnostics.size_bytes()
+    }
+
+    pub fn is_diagnostics_log_enabled(&self) -> bool {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.diagnostics.is_enabled()
+    }
+
+    /// Выключение обязано и перестать писать, и не оставлять прошлое:
+    /// журнал содержит текст встреч, и «выключено» должно значить пусто.
+    pub fn set_diagnostics_log_enabled(&self, enabled: bool) {
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.diagnostics.set_enabled(enabled);
+        if !enabled {
+            guard.diagnostics.clear();
+        }
+    }
+
+    pub fn clear_diagnostics_log(&self) {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.diagnostics.clear();
     }
 
     /// Спикеры встречи в пользовательском порядке.
@@ -2253,6 +2307,33 @@ mod tests {
                 .body_markdown,
             "нужно решить к пятнице"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Журнал должен быть управляем целиком: путь виден, выключение
+    /// стирает прошлое. Иначе «выключено» означало бы «не пишем новое, но
+    /// старое лежит».
+    #[test]
+    fn diagnostics_log_is_local_and_erasable() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-diag-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        assert!(core.is_diagnostics_log_enabled());
+        let path = core.diagnostics_log_path();
+        assert!(path.starts_with(root.to_string_lossy().as_ref()));
+
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(&path, "{}\n").expect("write");
+        assert!(core.diagnostics_log_size_bytes() > 0);
+
+        core.set_diagnostics_log_enabled(false);
+        assert!(!core.is_diagnostics_log_enabled());
+        assert_eq!(core.diagnostics_log_size_bytes(), 0, "прошлое тоже стёрто");
 
         let _ = std::fs::remove_dir_all(&root);
     }

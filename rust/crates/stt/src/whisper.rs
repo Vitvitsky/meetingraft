@@ -1,6 +1,6 @@
 //! On-device Whisper (whisper-rs + Metal).
 
-use domain::{CaptionEvent, CaptionPhase, LanguagePolicy};
+use domain::{CaptionEvent, CaptionPhase, LanguagePolicy, SttDiagnostic, SttDiagnosticKind};
 use uuid::Uuid;
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
@@ -29,6 +29,8 @@ const MAX_BUFFER_FRAMES: usize = 16_000 * 30;
 const TRIM_GUARD_MS: u64 = 200;
 /// Переменная окружения для замеров латентности (ADR-010, T6).
 const TIMING_ENV: &str = "MEETINGRAFT_STT_TIMING";
+/// Потолок несобранных записей диагностики между вычитками.
+const MAX_PENDING_DIAGNOSTICS: usize = 256;
 
 /// Глушим вывод whisper.cpp один раз на процесс.
 ///
@@ -57,6 +59,8 @@ pub struct WhisperSttEngine {
     agreement: LocalAgreement,
     /// Начало фразы, похожей на титры, придержанное до следующей порции.
     held_final: String,
+    /// Что движок выбросил или придержал — для журнала слоем выше.
+    diagnostics: Vec<SttDiagnostic>,
 }
 
 impl WhisperSttEngine {
@@ -80,6 +84,7 @@ impl WhisperSttEngine {
             initial_prompt: String::new(),
             agreement: LocalAgreement::new(MAX_PENDING_WORDS),
             held_final: String::new(),
+            diagnostics: Vec::new(),
         })
     }
 
@@ -122,14 +127,31 @@ impl WhisperSttEngine {
             format!("{} {trimmed}", self.held_final)
         };
         self.held_final.clear();
+        let buffer_ms = (self.buffer.len() / 16) as u64;
         if is_whisper_hallucination(&candidate) {
+            self.note(
+                SttDiagnosticKind::DroppedHallucination,
+                &candidate,
+                buffer_ms,
+            );
             return None;
         }
         if is_hallucination_prefix(&candidate) {
+            self.note(SttDiagnosticKind::HeldPrefix, &candidate, buffer_ms);
             self.held_final = candidate;
             return None;
         }
         Some(candidate)
+    }
+
+    /// Запомнить решение. Потолок не даёт журналу расти без предела,
+    /// если движок «поехал»: тогда важны первые записи, а не последние.
+    fn note(&mut self, kind: SttDiagnosticKind, text: &str, buffer_ms: u64) {
+        if self.diagnostics.len() >= MAX_PENDING_DIAGNOSTICS {
+            return;
+        }
+        self.diagnostics
+            .push(SttDiagnostic::new(kind, text, buffer_ms));
     }
 
     /// Отдать придержанный текст: реплика кончилась, продолжения не будет.
@@ -138,7 +160,10 @@ impl WhisperSttEngine {
     /// похожая началом на титры.
     fn release_held(&mut self) -> Option<CaptionEvent> {
         let held = std::mem::take(&mut self.held_final);
-        Self::accept_text(&held).map(|text| Self::event(text, CaptionPhase::Final))
+        let buffer_ms = (self.buffer.len() / 16) as u64;
+        let text = Self::accept_text(&held)?;
+        self.note(SttDiagnosticKind::ReleasedHeld, &text, buffer_ms);
+        Some(Self::event(text, CaptionPhase::Final))
     }
 
     /// Гипотеза по буферу: слова с временем окончания.
@@ -356,6 +381,10 @@ impl SttEngine for WhisperSttEngine {
             }
         }
         out
+    }
+
+    fn take_diagnostics(&mut self) -> Vec<SttDiagnostic> {
+        std::mem::take(&mut self.diagnostics)
     }
 
     fn flush(&mut self) -> Vec<CaptionEvent> {
