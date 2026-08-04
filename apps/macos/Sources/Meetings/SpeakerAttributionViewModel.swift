@@ -1,0 +1,284 @@
+import Foundation
+import Observation
+
+/// Контракт атрибуции говорящих для presentation model и тестов.
+protocol SpeakerAttributionCoreProviding: AnyObject {
+    func listSpeakers(meetingId: String) -> [FfiSpeaker]
+    func upsertSpeaker(meetingId: String, id: String, displayName: String, sortIndex: Int64) -> String
+    func deleteSpeaker(meetingId: String, id: String) -> String
+    func listFinalSegments(meetingId: String, version: UInt32) -> [FfiFinalSegment]
+    func listSpeakerStats(meetingId: String, version: UInt32) -> [FfiSpeakerStat]
+    func assignChannelSpeaker(
+        meetingId: String,
+        version: UInt32,
+        channelCode: String,
+        speakerId: String
+    ) -> String
+    func assignSegmentSpeaker(
+        meetingId: String,
+        version: UInt32,
+        index: UInt32,
+        speakerId: String
+    ) -> String
+    func unpinSegmentSpeaker(meetingId: String, version: UInt32, index: UInt32) -> String
+}
+
+extension MeetingCore: SpeakerAttributionCoreProviding {}
+
+/// Строка экрана Speakers: участник и его вклад в разговор.
+struct SpeakerRowModel: Identifiable, Equatable {
+    let id: String
+    let displayName: String
+    /// Пусто, если у участника нет реплик в этой версии Final.
+    let channelCode: String
+    let segmentCount: UInt32
+    let speakingMs: UInt64
+    /// Доля от общего времени речи, 0…1.
+    let share: Double
+
+    /// Имя для показа: удалённая запись оставляет реплики без имени, но
+    /// прятать их нельзя — это время встречи.
+    var label: String {
+        displayName.isEmpty ? "Без имени" : displayName
+    }
+}
+
+/// Presentation model атрибуции говорящих: экраны Speakers и Final.
+///
+/// Обе вкладки читают одни данные — сегменты версии Final и сводку по
+/// участникам, — поэтому модель одна: две разошлись бы в момент, когда
+/// на одном экране правят имя, а на другом смотрят реплики.
+@Observable
+@MainActor
+final class SpeakerAttributionViewModel {
+    private(set) var speakers: [FfiSpeaker] = []
+    private(set) var segments: [FfiFinalSegment] = []
+    private(set) var rows: [SpeakerRowModel] = []
+    private(set) var errorMessage: String?
+
+    private let core: any SpeakerAttributionCoreProviding
+    private var meetingId = ""
+    /// `nil` — версии Final нет; тогда сегментов и статистики не бывает.
+    private var version: UInt32?
+
+    init(core: any SpeakerAttributionCoreProviding) {
+        self.core = core
+    }
+
+    /// Сегменты есть только у версий, собранных повторным распознаванием
+    /// (ADR-011). У старых Final их нет — это не ошибка.
+    var hasSegments: Bool {
+        !segments.isEmpty
+    }
+
+    var canAssign: Bool {
+        version != nil && !segments.isEmpty
+    }
+
+    func load(meetingId: String, version: UInt32?) {
+        self.meetingId = meetingId
+        self.version = version
+        reload()
+    }
+
+    func addSpeaker(primaryLanguage: String) {
+        let number = speakers.count + 1
+        let displayName = primaryLanguage == "ru"
+            ? "Спикер \(number)"
+            : "Speaker \(number)"
+        let error = core.upsertSpeaker(
+            meetingId: meetingId,
+            id: "",
+            displayName: displayName,
+            sortIndex: Int64(speakers.count)
+        )
+        finish(error: error)
+    }
+
+    func rename(id: String, displayName: String) {
+        guard let speaker = speakers.first(where: { $0.id == id }) else { return }
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != speaker.displayName else { return }
+        let error = core.upsertSpeaker(
+            meetingId: meetingId,
+            id: id,
+            displayName: trimmed,
+            sortIndex: speaker.sortIndex
+        )
+        finish(error: error)
+    }
+
+    /// Удаление снимает привязку: висячий идентификатор выглядел бы как
+    /// «атрибуция не сработала», а не как «участник удалён».
+    func remove(id: String) {
+        finish(error: core.deleteSpeaker(meetingId: meetingId, id: id))
+    }
+
+    /// Назначить участника всему каналу — основная операция для звонка
+    /// один на один.
+    func assignChannel(_ channelCode: String, to speakerId: String) {
+        guard let version else { return }
+        let error = core.assignChannelSpeaker(
+            meetingId: meetingId,
+            version: version,
+            channelCode: channelCode,
+            speakerId: speakerId
+        )
+        finish(error: error)
+    }
+
+    /// Переназначить одну реплику; она перестаёт подчиняться каналу.
+    func assignSegment(index: UInt32, to speakerId: String) {
+        guard let version else { return }
+        let error = core.assignSegmentSpeaker(
+            meetingId: meetingId,
+            version: version,
+            index: index,
+            speakerId: speakerId
+        )
+        finish(error: error)
+    }
+
+    func unpinSegment(index: UInt32) {
+        guard let version else { return }
+        finish(error: core.unpinSegmentSpeaker(
+            meetingId: meetingId,
+            version: version,
+            index: index
+        ))
+    }
+
+    /// Кто сейчас закреплён за каналом — большинством непоправленных
+    /// реплик. Точечные правки на подпись канала не влияют: иначе одна
+    /// исправленная реплика переписывала бы заголовок всего канала.
+    func channelSpeakerName(_ channelCode: String) -> String {
+        var counts: [String: Int] = [:]
+        for segment in segments
+            where segment.channel == channelCode
+            && !segment.speakerPinned
+            && !segment.speakerId.isEmpty
+        {
+            counts[segment.speakerId, default: 0] += 1
+        }
+        guard let winner = counts.max(by: { left, right in
+            left.value == right.value ? left.key > right.key : left.value < right.value
+        }) else {
+            return ""
+        }
+        return speakers.first(where: { $0.id == winner.key })?.displayName ?? ""
+    }
+
+    func dismissError() {
+        errorMessage = nil
+    }
+
+    private func reload() {
+        speakers = core.listSpeakers(meetingId: meetingId)
+        guard let version else {
+            segments = []
+            rows = Self.rows(speakers: speakers, stats: [])
+            return
+        }
+        segments = core.listFinalSegments(meetingId: meetingId, version: version)
+        let stats = core.listSpeakerStats(meetingId: meetingId, version: version)
+        rows = Self.rows(speakers: speakers, stats: stats)
+    }
+
+    private func finish(error: String) {
+        guard error.isEmpty else {
+            errorMessage = error
+            return
+        }
+        errorMessage = nil
+        reload()
+    }
+
+    /// Свести сводку и список участников в строки экрана.
+    ///
+    /// Участник без реплик всё равно показывается: он заведён вручную, и
+    /// молча пропасть из списка после добавления он не должен.
+    static func rows(speakers: [FfiSpeaker], stats: [FfiSpeakerStat]) -> [SpeakerRowModel] {
+        var result = stats.map { stat in
+            SpeakerRowModel(
+                id: stat.speakerId,
+                displayName: speakers
+                    .first(where: { $0.id == stat.speakerId })?
+                    .displayName ?? stat.displayName,
+                channelCode: stat.channel,
+                segmentCount: stat.segmentCount,
+                speakingMs: stat.speakingMs,
+                share: stat.share
+            )
+        }
+        let counted = Set(result.map(\.id))
+        for speaker in speakers where !counted.contains(speaker.id) {
+            result.append(
+                SpeakerRowModel(
+                    id: speaker.id,
+                    displayName: speaker.displayName,
+                    channelCode: "",
+                    segmentCount: 0,
+                    speakingMs: 0,
+                    share: 0
+                )
+            )
+        }
+        return result
+    }
+}
+
+/// Форматирование данных атрибуции для показа.
+enum SpeakerFormat {
+    static func channelLabel(_ code: String) -> String {
+        switch code {
+        case "mic": "Mic"
+        case "system": "System"
+        default: ""
+        }
+    }
+
+    /// Доля речи в процентах. Ненулевая доля никогда не показывается как
+    /// `0%`: участник, сказавший одну фразу, всё-таки говорил.
+    static func shareText(_ share: Double) -> String {
+        guard share > 0 else { return "0%" }
+        let percent = Int((share * 100).rounded())
+        return "\(max(percent, 1))%"
+    }
+
+    /// Длительность как `m:ss`, от часа — `h:mm:ss`.
+    static func durationText(ms: UInt64) -> String {
+        let totalSeconds = ms / 1000
+        let seconds = totalSeconds % 60
+        let minutes = (totalSeconds / 60) % 60
+        let hours = totalSeconds / 3600
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    /// Тайм-код реплики: тот же формат, но с ведущим нулём у минут —
+    /// в столбце он должен быть одной ширины.
+    static func timecode(ms: UInt64) -> String {
+        let totalSeconds = ms / 1000
+        let seconds = totalSeconds % 60
+        let minutes = (totalSeconds / 60) % 60
+        let hours = totalSeconds / 3600
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    static func segmentCountText(_ count: UInt32) -> String {
+        "\(count) репл."
+    }
+
+    /// Инициал для аватара; пусто — вопрос, а не пустой круг.
+    static func initial(_ name: String) -> String {
+        guard let first = name.trimmingCharacters(in: .whitespacesAndNewlines).first else {
+            return "?"
+        }
+        return String(first).uppercased()
+    }
+}

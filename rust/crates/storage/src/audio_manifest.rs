@@ -24,12 +24,46 @@ pub enum AudioManifestError {
     MeetingNotFound(String),
     #[error("meeting is being recorded: {0}")]
     SessionActive(String),
+    #[error("segment not found: {meeting_id} v{version} #{index}")]
+    SegmentNotFound {
+        meeting_id: String,
+        version: u32,
+        index: u32,
+    },
     #[error("chunk {path} truncated: expected {expected_frames} frames, got {actual_frames}")]
     ChunkTruncated {
         path: String,
         expected_frames: usize,
         actual_frames: usize,
     },
+}
+
+/// Максимальная длительность выдаваемого фрагмента.
+///
+/// Фрагмент едет через границу UniFFI целиком; час записи это больше
+/// сотни мегабайт, а слушают всегда одну реплику.
+const MAX_FRAGMENT_MS: u64 = 30_000;
+
+/// Кусок записи с частотой дискретизации, на которой он записан.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PcmFragment {
+    pub pcm: Vec<i16>,
+    /// 0 — в диапазоне ничего не нашлось.
+    pub sample_rate: u32,
+}
+
+impl PcmFragment {
+    pub fn duration_ms(&self) -> u64 {
+        if self.sample_rate == 0 {
+            return 0;
+        }
+        self.pcm.len() as u64 * 1000 / u64::from(self.sample_rate)
+    }
+}
+
+/// Номер отсчёта по смещению внутри чанка.
+fn frame_index(offset_ms: u64, sample_rate: u32) -> usize {
+    (offset_ms * u64::from(sample_rate) / 1000) as usize
 }
 
 /// Строка manifest.
@@ -496,8 +530,9 @@ impl AudioManifestStore {
         {
             let mut statement = transaction.prepare(
                 "INSERT INTO final_segments
-                 (meeting_id, version, idx, start_ms, end_ms, channel, speaker_id, text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (meeting_id, version, idx, start_ms, end_ms, channel, speaker_id,
+                  speaker_pinned, text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for segment in segments {
                 statement.execute(params![
@@ -508,6 +543,7 @@ impl AudioManifestStore {
                     segment.end_ms as i64,
                     segment.channel.code(),
                     segment.speaker_id,
+                    segment.speaker_pinned,
                     segment.text
                 ])?;
             }
@@ -523,7 +559,7 @@ impl AudioManifestStore {
         version: u32,
     ) -> Result<Vec<FinalSegment>, AudioManifestError> {
         let mut statement = self.conn.prepare(
-            "SELECT idx, start_ms, end_ms, channel, speaker_id, text
+            "SELECT idx, start_ms, end_ms, channel, speaker_id, speaker_pinned, text
              FROM final_segments
              WHERE meeting_id = ?1 AND version = ?2
              ORDER BY idx",
@@ -536,10 +572,77 @@ impl AudioManifestStore {
                 end_ms: row.get::<_, i64>(2)? as u64,
                 channel: AudioChannel::from_code(&channel),
                 speaker_id: row.get(4)?,
-                text: row.get(5)?,
+                speaker_pinned: row.get(5)?,
+                text: row.get(6)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Назначить спикера всем сегментам канала.
+    ///
+    /// Основная операция фазы: после Phase 8 канал `mic` — это владелец
+    /// машины, `system` — остальные, поэтому для звонка один на один
+    /// одного вызова достаточно, чтобы весь транскрипт стал подписанным.
+    ///
+    /// Сегменты с ручной правкой не трогаются: иначе человек терял бы
+    /// свои исправления при каждом переназначении, ничего об этом не
+    /// узнав.
+    pub fn set_channel_speaker(
+        &mut self,
+        meeting_id: &str,
+        version: u32,
+        channel: AudioChannel,
+        speaker_id: &str,
+    ) -> Result<u64, AudioManifestError> {
+        let updated = self.conn.execute(
+            "UPDATE final_segments
+             SET speaker_id = ?4
+             WHERE meeting_id = ?1 AND version = ?2 AND channel = ?3
+               AND speaker_pinned = 0",
+            params![meeting_id, version, channel.code(), speaker_id],
+        )?;
+        Ok(updated as u64)
+    }
+
+    /// Назначить спикера одной реплике и пометить её как правленую.
+    pub fn set_segment_speaker(
+        &mut self,
+        meeting_id: &str,
+        version: u32,
+        index: u32,
+        speaker_id: &str,
+    ) -> Result<(), AudioManifestError> {
+        let updated = self.conn.execute(
+            "UPDATE final_segments
+             SET speaker_id = ?4, speaker_pinned = 1
+             WHERE meeting_id = ?1 AND version = ?2 AND idx = ?3",
+            params![meeting_id, version, index, speaker_id],
+        )?;
+        if updated == 0 {
+            return Err(AudioManifestError::SegmentNotFound {
+                meeting_id: meeting_id.to_owned(),
+                version,
+                index,
+            });
+        }
+        Ok(())
+    }
+
+    /// Снять ручную правку, вернув реплику под назначение по каналу.
+    pub fn unpin_segment_speaker(
+        &mut self,
+        meeting_id: &str,
+        version: u32,
+        index: u32,
+    ) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "UPDATE final_segments
+             SET speaker_pinned = 0
+             WHERE meeting_id = ?1 AND version = ?2 AND idx = ?3",
+            params![meeting_id, version, index],
+        )?;
+        Ok(())
     }
 
     /// Собрать PCM канала за всю сессию в один поток.
@@ -585,6 +688,86 @@ impl AudioManifestStore {
             );
         }
         Ok(pcm)
+    }
+
+    /// Кусок записи по диапазону времени сегмента.
+    ///
+    /// Нужен, чтобы услышать спорную реплику перед правкой (Epic 19):
+    /// исправлять распознанное на слух, не имея слуха, нельзя.
+    ///
+    /// Читаются только перекрывающие диапазон чанки. Читать всю дорожку
+    /// ради трёх секунд означало бы поднимать с диска сотню мегабайт на
+    /// каждое нажатие.
+    pub fn read_pcm_range(
+        &self,
+        session_id: &str,
+        channel: AudioChannel,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<PcmFragment, AudioManifestError> {
+        if end_ms <= start_ms {
+            return Ok(PcmFragment::default());
+        }
+        // Потолок против запроса «дай всю встречу»: фрагмент едет через
+        // границу UniFFI целиком, и час записи это сотня мегабайт.
+        let end_ms = end_ms.min(start_ms + MAX_FRAGMENT_MS);
+
+        let mut statement = self.conn.prepare(
+            "SELECT path, sample_rate, frame_count, timestamp_ms
+             FROM audio_manifest
+             WHERE session_id = ?1 AND channel = ?2
+               AND timestamp_ms < ?3
+               AND timestamp_ms + (frame_count * 1000 / sample_rate) > ?4
+             ORDER BY seq",
+        )?;
+        let rows = statement.query_map(
+            params![
+                session_id,
+                channel.dir_name(),
+                end_ms as i64,
+                start_ms as i64
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as u32,
+                    row.get::<_, i64>(2)? as usize,
+                    row.get::<_, i64>(3)? as u64,
+                ))
+            },
+        )?;
+
+        let mut fragment = PcmFragment::default();
+        for row in rows {
+            let (relative, sample_rate, frame_count, chunk_start_ms) = row?;
+            if sample_rate == 0 {
+                continue;
+            }
+            if fragment.sample_rate == 0 {
+                fragment.sample_rate = sample_rate;
+            }
+            // Чанки с другой частотой пропускаем: пересэмплировать здесь
+            // значило бы тихо менять звук, который человек пришёл сверить
+            // с текстом.
+            if sample_rate != fragment.sample_rate {
+                continue;
+            }
+
+            let bytes = fs::read(self.root.join(&relative))?;
+            let samples: Vec<i16> = bytes
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            let available = samples.len().min(frame_count);
+
+            let from =
+                frame_index(start_ms.saturating_sub(chunk_start_ms), sample_rate).min(available);
+            let to = frame_index(end_ms.saturating_sub(chunk_start_ms), sample_rate).min(available);
+            if from < to {
+                fragment.pcm.extend_from_slice(&samples[from..to]);
+            }
+        }
+        Ok(fragment)
     }
 
     /// Удалить встречу целиком: строки БД, поисковый индекс и PCM-чанки
@@ -731,6 +914,26 @@ impl AudioManifestStore {
     }
 
     /// Добавить или обновить спикера по id.
+    /// Создать спикера, если его ещё нет.
+    ///
+    /// В отличие от `upsert_speaker`, имя существующего не трогается:
+    /// пересбор не имеет права переименовывать спикера обратно после
+    /// того, как человек дал ему настоящее имя.
+    pub fn ensure_speaker(&mut self, speaker: &Speaker) -> Result<bool, AudioManifestError> {
+        let inserted = self.conn.execute(
+            "INSERT INTO speakers (id, meeting_id, display_name, sort_index)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO NOTHING",
+            params![
+                speaker.id,
+                speaker.meeting_id,
+                speaker.display_name,
+                speaker.sort_index
+            ],
+        )?;
+        Ok(inserted > 0)
+    }
+
     pub fn upsert_speaker(&mut self, speaker: &Speaker) -> Result<(), AudioManifestError> {
         self.conn.execute(
             "INSERT INTO speakers (id, meeting_id, display_name, sort_index)
@@ -750,7 +953,15 @@ impl AudioManifestStore {
     }
 
     /// Удалить спикера по id.
+    /// Удалить спикера, сняв его со всех реплик.
+    ///
+    /// Без очистки ссылок сегменты остались бы с идентификатором
+    /// несуществующего спикера и молча показывались бы без имени.
     pub fn delete_speaker(&mut self, id: &str) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "UPDATE final_segments SET speaker_id = '' WHERE speaker_id = ?1",
+            params![id],
+        )?;
         self.conn
             .execute("DELETE FROM speakers WHERE id = ?1", params![id])?;
         Ok(())
@@ -1004,8 +1215,129 @@ mod tests {
             end_ms: start_ms + 500,
             channel,
             speaker_id: String::new(),
+            speaker_pinned: false,
             text: text.to_string(),
         }
+    }
+
+    fn seeded_segments(store: &mut AudioManifestStore) {
+        let segments = vec![
+            segment(0, 0, AudioChannel::Mic, "я"),
+            segment(1, 600, AudioChannel::System, "они"),
+            segment(2, 1200, AudioChannel::System, "они снова"),
+        ];
+        store.replace_final_segments("m1", 1, &segments).unwrap();
+    }
+
+    /// Основная операция фазы: одно назначение подписывает весь канал.
+    #[test]
+    fn channel_assignment_touches_only_its_channel() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+
+            let updated = store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            assert_eq!(updated, 2);
+            let read = store.list_final_segments("m1", 1).unwrap();
+            assert_eq!(read[0].speaker_id, "", "микрофон не тронут");
+            assert_eq!(read[1].speaker_id, "sp-peter");
+            assert_eq!(read[2].speaker_id, "sp-peter");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Ручная правка обязана пережить повторное назначение канала: иначе
+    /// человек терял бы свою работу молча.
+    #[test]
+    fn manual_assignment_survives_channel_reassignment() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+            store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            store.set_segment_speaker("m1", 1, 2, "sp-anna").unwrap();
+            store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            let read = store.list_final_segments("m1", 1).unwrap();
+            assert_eq!(read[1].speaker_id, "sp-peter");
+            assert_eq!(read[2].speaker_id, "sp-anna", "правка затёрта");
+            assert!(read[2].speaker_pinned);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unpinning_returns_segment_under_channel_rule() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+            store.set_segment_speaker("m1", 1, 2, "sp-anna").unwrap();
+
+            store.unpin_segment_speaker("m1", 1, 2).unwrap();
+            store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            let read = store.list_final_segments("m1", 1).unwrap();
+            assert_eq!(read[2].speaker_id, "sp-peter");
+            assert!(!read[2].speaker_pinned);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assigning_unknown_segment_is_an_error() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+
+            let err = store.set_segment_speaker("m1", 1, 99, "sp").unwrap_err();
+
+            assert!(
+                matches!(err, AudioManifestError::SegmentNotFound { .. }),
+                "{err:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Удалённый спикер не должен оставлять висячие ссылки: сегмент с
+    /// несуществующим id молча показывался бы без имени.
+    #[test]
+    fn deleting_speaker_clears_segment_references() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seeded_segments(&mut store);
+            store
+                .upsert_speaker(&Speaker {
+                    id: "sp-peter".into(),
+                    meeting_id: "m1".into(),
+                    display_name: "Пётр".into(),
+                    sort_index: 0,
+                })
+                .unwrap();
+            store
+                .set_channel_speaker("m1", 1, AudioChannel::System, "sp-peter")
+                .unwrap();
+
+            store.delete_speaker("sp-peter").unwrap();
+
+            let read = store.list_final_segments("m1", 1).unwrap();
+            assert!(read.iter().all(|s| s.speaker_id.is_empty()));
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1120,6 +1452,114 @@ mod tests {
     }
 
     /// Чанки склеиваются в порядке seq, каналы не смешиваются.
+    /// Секунда записи чанками по 100 мс: три чанка по 1600 отсчётов.
+    fn seed_second(store: &mut AudioManifestStore, channel: AudioChannel, chunks: u64) {
+        for index in 0..chunks {
+            // Каждый чанк заполнен своим номером — так видно, откуда срез.
+            let sample = (index as i16) + 1;
+            let bytes: Vec<u8> = (0..1_600).flat_map(|_| sample.to_le_bytes()).collect();
+            store
+                .append_chunk(channel, &bytes, 16_000, index * 100)
+                .unwrap();
+        }
+    }
+
+    /// Фрагмент вырезается по времени, а не по границам чанков: реплика
+    /// начинается там, где начинается, а не там, где удобно хранилищу.
+    #[test]
+    fn pcm_range_cuts_inside_chunks() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            seed_second(&mut store, AudioChannel::Mic, 10);
+
+            let fragment = store
+                .read_pcm_range("m1", AudioChannel::Mic, 150, 250)
+                .unwrap();
+
+            assert_eq!(fragment.sample_rate, 16_000);
+            assert_eq!(fragment.pcm.len(), 1_600, "100 мс на 16 кГц");
+            assert_eq!(fragment.duration_ms(), 100);
+            // Половина второго чанка и половина третьего.
+            assert_eq!(fragment.pcm[0], 2);
+            assert_eq!(fragment.pcm[1_599], 3);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Соседний канал в срез попадать не должен: слушают конкретного
+    /// говорящего, а не всё сразу.
+    #[test]
+    fn pcm_range_keeps_channels_apart() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            seed_second(&mut store, AudioChannel::Mic, 4);
+
+            let fragment = store
+                .read_pcm_range("m1", AudioChannel::System, 0, 400)
+                .unwrap();
+
+            assert!(fragment.pcm.is_empty());
+            assert_eq!(
+                fragment.sample_rate, 0,
+                "нечего играть — нечего и настраивать"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pcm_range_rejects_empty_and_inverted_ranges() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            seed_second(&mut store, AudioChannel::Mic, 4);
+
+            assert!(
+                store
+                    .read_pcm_range("m1", AudioChannel::Mic, 200, 200)
+                    .unwrap()
+                    .pcm
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .read_pcm_range("m1", AudioChannel::Mic, 300, 100)
+                    .unwrap()
+                    .pcm
+                    .is_empty()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Запрос «дай всю встречу» ограничивается потолком: фрагмент едет
+    /// через границу UniFFI целиком.
+    #[test]
+    fn pcm_range_is_capped() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            seed_second(&mut store, AudioChannel::Mic, 10);
+
+            let fragment = store
+                .read_pcm_range("m1", AudioChannel::Mic, 0, 60 * 60 * 1000)
+                .unwrap();
+
+            assert_eq!(
+                fragment.pcm.len(),
+                16_000,
+                "секунда записи, а не час запроса"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn read_session_pcm_concatenates_channel_in_order() {
         let root = tmp_root();

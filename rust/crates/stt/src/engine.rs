@@ -1,6 +1,6 @@
 //! Контракт STT-движка.
 
-use domain::{CaptionEvent, LanguagePolicy};
+use domain::{CaptionEvent, LanguagePolicy, SttDiagnostic};
 
 /// On-device / swappable STT (Whisper сейчас, cloud позже).
 pub trait SttEngine: Send {
@@ -14,4 +14,16 @@ pub trait SttEngine: Send {
 
     /// Сбросить хвост окна (конец сегмента / stop).
     fn flush(&mut self) -> Vec<CaptionEvent>;
+
+    /// Забрать накопленные записи о решениях движка.
+    ///
+    /// Движок ничего не пишет на диск сам: он лишь рассказывает, что
+    /// сделал. Куда это девать — решает слой выше, который и владеет
+    /// каталогом данных.
+    ///
+    /// По умолчанию пусто: движку, который ничего не выбрасывает,
+    /// объясняться не в чем.
+    fn take_diagnostics(&mut self) -> Vec<SttDiagnostic> {
+        Vec::new()
+    }
 }

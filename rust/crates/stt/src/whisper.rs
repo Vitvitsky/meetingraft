@@ -1,18 +1,21 @@
 //! On-device Whisper (whisper-rs + Metal).
 
-use domain::{CaptionEvent, CaptionPhase, LanguagePolicy};
+use domain::{CaptionEvent, CaptionPhase, LanguagePolicy, SttDiagnostic, SttDiagnosticKind};
 use uuid::Uuid;
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
     WhisperTokenId, convert_integer_to_float_audio, install_logging_hooks,
 };
 
-use crate::is_whisper_hallucination;
 use crate::local_agreement::{HypothesisWord, LocalAgreement, backfill_end_ms, words_from_tokens};
+use crate::noise_gate::NoiseGate;
+use crate::pacing::InferencePacer;
 use crate::{Stabilized, SttEngine};
+use crate::{is_hallucination_prefix, is_whisper_hallucination};
 
-/// Порог RMS для «есть речь» (выше → меньше галлюцинаций на тишине).
-const ENERGY_THRESHOLD: f32 = 450.0;
+// Порога-константы больше нет: он не может обслужить и городской шум за
+// окном, и тихого собеседника из системного канала (Epic 18, замер
+// 2026-08-04). Решает превышение речи над фоном комнаты — см. NoiseGate.
 const SILENCE_FRAMES: usize = 16_000 * 3 / 10;
 const MIN_SPEECH_FRAMES: usize = 16_000 / 5;
 /// Не гоняем Whisper чаще чем раз в ~1 с на partial.
@@ -29,6 +32,8 @@ const MAX_BUFFER_FRAMES: usize = 16_000 * 30;
 const TRIM_GUARD_MS: u64 = 200;
 /// Переменная окружения для замеров латентности (ADR-010, T6).
 const TIMING_ENV: &str = "MEETINGRAFT_STT_TIMING";
+/// Потолок несобранных записей диагностики между вычитками.
+const MAX_PENDING_DIAGNOSTICS: usize = 256;
 
 /// Глушим вывод whisper.cpp один раз на процесс.
 ///
@@ -55,6 +60,14 @@ pub struct WhisperSttEngine {
     frames_since_partial: usize,
     initial_prompt: String,
     agreement: LocalAgreement,
+    /// Начало фразы, похожей на титры, придержанное до следующей порции.
+    held_final: String,
+    /// Что движок выбросил или придержал — для журнала слоем выше.
+    diagnostics: Vec<SttDiagnostic>,
+    /// Темп прогонов: разжимается, когда согласия нет.
+    pacer: InferencePacer,
+    /// Речь против фона комнаты, а не против константы.
+    gate: NoiseGate,
 }
 
 impl WhisperSttEngine {
@@ -77,6 +90,10 @@ impl WhisperSttEngine {
             frames_since_partial: 0,
             initial_prompt: String::new(),
             agreement: LocalAgreement::new(MAX_PENDING_WORDS),
+            held_final: String::new(),
+            diagnostics: Vec::new(),
+            pacer: InferencePacer::new(PARTIAL_MIN_FRAMES),
+            gate: NoiseGate::new(),
         })
     }
 
@@ -99,6 +116,63 @@ impl WhisperSttEngine {
         } else {
             Some(trimmed.to_string())
         }
+    }
+
+    /// Фильтр окончательного текста с памятью на один шаг.
+    ///
+    /// LocalAgreement фиксирует текст порциями (ADR-010), поэтому
+    /// «Субтитры сделал DimaTorzok» приходит по кускам, и каждый кусок по
+    /// отдельности фильтр проходит. Здесь начало известной фразы
+    /// придерживается до следующей порции, где становится ясно, речь это
+    /// была или титры.
+    fn accept_final(&mut self, text: &str) -> Option<String> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let candidate = if self.held_final.is_empty() {
+            trimmed.to_string()
+        } else {
+            format!("{} {trimmed}", self.held_final)
+        };
+        self.held_final.clear();
+        let buffer_ms = (self.buffer.len() / 16) as u64;
+        if is_whisper_hallucination(&candidate) {
+            self.note(
+                SttDiagnosticKind::DroppedHallucination,
+                &candidate,
+                buffer_ms,
+            );
+            return None;
+        }
+        if is_hallucination_prefix(&candidate) {
+            self.note(SttDiagnosticKind::HeldPrefix, &candidate, buffer_ms);
+            self.held_final = candidate;
+            return None;
+        }
+        Some(candidate)
+    }
+
+    /// Запомнить решение. Потолок не даёт журналу расти без предела,
+    /// если движок «поехал»: тогда важны первые записи, а не последние.
+    fn note(&mut self, kind: SttDiagnosticKind, text: &str, buffer_ms: u64) {
+        if self.diagnostics.len() >= MAX_PENDING_DIAGNOSTICS {
+            return;
+        }
+        self.diagnostics
+            .push(SttDiagnostic::new(kind, text, buffer_ms));
+    }
+
+    /// Отдать придержанный текст: реплика кончилась, продолжения не будет.
+    ///
+    /// Молча его терять нельзя — это оказалась настоящая речь, просто
+    /// похожая началом на титры.
+    fn release_held(&mut self) -> Option<CaptionEvent> {
+        let held = std::mem::take(&mut self.held_final);
+        let buffer_ms = (self.buffer.len() / 16) as u64;
+        let text = Self::accept_text(&held)?;
+        self.note(SttDiagnosticKind::ReleasedHeld, &text, buffer_ms);
+        Some(Self::event(text, CaptionPhase::Final))
     }
 
     /// Гипотеза по буферу: слова с временем окончания.
@@ -186,6 +260,17 @@ impl WhisperSttEngine {
         }
         // Между сегментами время тоже обязано расти.
         backfill_end_ms(&mut words, 0);
+        // Титры whisper.cpp иногда режет по тайм-кодам на два сегмента —
+        // «Субтитры сделал» и имя, — и каждый по отдельности проходит
+        // посегментную проверку выше. Гипотеза целиком её не проходит.
+        let joined = words
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if is_whisper_hallucination(&joined) {
+            return Vec::new();
+        }
         words
     }
 
@@ -235,9 +320,9 @@ impl WhisperSttEngine {
     }
 
     /// События из результата стабилизации.
-    fn events(stabilized: &Stabilized) -> Vec<CaptionEvent> {
+    fn events(&mut self, stabilized: &Stabilized) -> Vec<CaptionEvent> {
         let mut out = Vec::new();
-        if let Some(text) = Self::accept_text(&stabilized.committed_text) {
+        if let Some(text) = self.accept_final(&stabilized.committed_text) {
             out.push(Self::event(text, CaptionPhase::Final));
         }
         if let Some(text) = Self::accept_text(&stabilized.pending_text) {
@@ -252,6 +337,8 @@ impl WhisperSttEngine {
         self.speech_frames = 0;
         self.silence_frames = 0;
         self.frames_since_partial = 0;
+        self.held_final.clear();
+        self.pacer.reset();
         self.agreement.reset();
     }
 }
@@ -268,7 +355,7 @@ impl SttEngine for WhisperSttEngine {
     fn push_pcm(&mut self, pcm: &[i16], _sample_rate: u32) -> Vec<CaptionEvent> {
         let mut out = Vec::new();
         let energy = Self::rms(pcm);
-        if energy >= ENERGY_THRESHOLD {
+        if self.gate.accepts(energy) {
             self.in_speech = true;
             self.silence_frames = 0;
             self.speech_frames += pcm.len();
@@ -283,14 +370,18 @@ impl SttEngine for WhisperSttEngine {
             }
 
             if self.speech_frames >= MIN_SPEECH_FRAMES
-                && self.frames_since_partial >= PARTIAL_MIN_FRAMES
+                && self.frames_since_partial >= self.pacer.frames_until_next()
             {
                 let started = std::time::Instant::now();
                 let hypothesis = self.current_hypothesis();
                 let inference_ms = started.elapsed().as_millis();
                 let stabilized = self.agreement.push(hypothesis);
+                // Темп зависит от того, движется ли фиксация: прогоны без
+                // согласия не приближают результат, а только греют машину.
+                self.pacer
+                    .record(stabilized.committed_text.split_whitespace().count());
                 Self::log_timing(inference_ms, self.buffer.len(), &stabilized);
-                out.extend(Self::events(&stabilized));
+                out.extend(self.events(&stabilized));
                 if let Some(until_ms) = stabilized.committed_until_ms {
                     self.trim_buffer(until_ms);
                 }
@@ -306,6 +397,10 @@ impl SttEngine for WhisperSttEngine {
         out
     }
 
+    fn take_diagnostics(&mut self) -> Vec<SttDiagnostic> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
     fn flush(&mut self) -> Vec<CaptionEvent> {
         if self.buffer.is_empty() && !self.in_speech {
             return Vec::new();
@@ -315,13 +410,15 @@ impl SttEngine for WhisperSttEngine {
         let hypothesis = self.current_hypothesis();
         let mut out = Vec::new();
         let stabilized = self.agreement.push(hypothesis);
-        if let Some(text) = Self::accept_text(&stabilized.committed_text) {
+        if let Some(text) = self.accept_final(&stabilized.committed_text) {
             out.push(Self::event(text, CaptionPhase::Final));
         }
         let tail = self.agreement.flush();
-        if let Some(text) = Self::accept_text(&tail.committed_text) {
+        if let Some(text) = self.accept_final(&tail.committed_text) {
             out.push(Self::event(text, CaptionPhase::Final));
         }
+        // Реплика кончилась: придержанное начало продолжения не дождётся.
+        out.extend(self.release_held());
         self.reset_segment();
         out
     }

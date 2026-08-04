@@ -11,6 +11,8 @@ final class LiveCaptionsViewModel {
     /// Начало live-сессии — для таймера в шапке.
     private(set) var sessionStartedAt: Date?
     private(set) var effectiveTranslationBackend: String = "off"
+    /// Почему перевод не включился, хотя переключатель включён.
+    private(set) var translationIssue = ""
 
     private let core: MeetingCore
     private let stream: RustCaptionStream
@@ -46,9 +48,10 @@ final class LiveCaptionsViewModel {
             enabled: enabled,
             targetCode: store.target.rawValue
         )
-        if !liveError.isEmpty, enabled {
-            // target == primary — UI может поправить target.
-        }
+        // Отказ ядра нельзя проглатывать: переключатель остаётся
+        // включённым, перевода нет, и причина (чаще всего target равен
+        // языку сессии) не видна нигде.
+        translationIssue = enabled ? liveError : ""
         effectiveTranslationBackend = core.effectiveTranslationBackend()
     }
 

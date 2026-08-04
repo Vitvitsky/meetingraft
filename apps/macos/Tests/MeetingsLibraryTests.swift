@@ -209,23 +209,6 @@ private final class LibraryCoreSpy: MeetingsCoreProviding {
         []
     }
 
-    func listSpeakers(meetingId _: String) -> [FfiSpeaker] {
-        []
-    }
-
-    func upsertSpeaker(
-        meetingId _: String,
-        id _: String,
-        displayName _: String,
-        sortIndex _: Int64
-    ) -> String {
-        ""
-    }
-
-    func deleteSpeaker(id _: String) -> String {
-        ""
-    }
-
     func setApiConfig(baseUrl _: String, token _: String) {}
 
     func setLlmConfig(engineCode _: String, modelId _: String, baseUrl _: String, providerId _: String) {}

@@ -119,6 +119,13 @@ const STEPS: &[&str] = &[
         PRIMARY KEY (meeting_id, version, idx)
     );
     ",
+    // 6 — признак ручной правки спикера (Phase 11). Без него массовое
+    // назначение по каналу затирало бы точечные исправления, и человек
+    // терял бы свою работу молча.
+    "
+    ALTER TABLE final_segments
+        ADD COLUMN speaker_pinned INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.

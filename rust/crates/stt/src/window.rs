@@ -95,6 +95,11 @@ impl LiveCaptionPipeline {
         self.push_frame(&samples, sample_rate, AudioChannel::Mic)
     }
 
+    /// Записи о решениях движка — журнал ведёт слой, владеющий данными.
+    pub fn take_diagnostics(&mut self) -> Vec<domain::SttDiagnostic> {
+        self.engine.take_diagnostics()
+    }
+
     pub fn flush(&mut self) -> Vec<CaptionEvent> {
         let events = self.engine.flush();
         self.attribute(events)
