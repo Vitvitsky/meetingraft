@@ -1,6 +1,6 @@
 //! Движок применения терминов глоссария.
 
-use domain::{GlossaryScope, GlossaryTerm, SpeechLanguage};
+use domain::{GlossaryKind, GlossaryScope, GlossaryTerm, SpeechLanguage};
 use std::collections::HashSet;
 
 use crate::normalize;
@@ -19,8 +19,11 @@ impl GlossaryEngine {
     }
 
     /// Заменяет целые surface-фразы на canonical-формы.
+    ///
+    /// Подсказки не участвуют: они существуют ради `initial_prompt` и
+    /// готовый текст не трогают (Epic 19).
     pub fn normalize_caption(&self, text: &str) -> String {
-        normalize::normalize(text, &self.terms)
+        normalize::normalize_with_kind(text, &self.terms, GlossaryKind::Replacement)
     }
 
     /// Собирает уникальные canonical-формы с приоритетом русского языка.

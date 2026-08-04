@@ -182,6 +182,7 @@ mod tests {
             speaker_id: String::new(),
             speaker_pinned: false,
             text: text.to_string(),
+            text_edited: false,
         }
     }
 

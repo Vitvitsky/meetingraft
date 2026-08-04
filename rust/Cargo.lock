@@ -880,6 +880,7 @@ dependencies = [
  "meetingraft-sync",
  "meetingraft-translate",
  "mockito",
+ "rusqlite",
  "serde_json",
  "uniffi",
  "uuid",
@@ -898,6 +899,7 @@ name = "meetingraft-postcall"
 version = "0.1.0"
 dependencies = [
  "meetingraft-domain",
+ "meetingraft-glossary",
  "mockito",
  "reqwest",
  "serde",

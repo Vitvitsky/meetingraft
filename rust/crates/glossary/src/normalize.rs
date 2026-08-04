@@ -1,8 +1,17 @@
 //! Замена surface-форм с сохранением canonical-регистра.
 
-use domain::GlossaryTerm;
+use domain::{GlossaryKind, GlossaryTerm};
 
-pub(crate) fn normalize(text: &str, terms: &[GlossaryTerm]) -> String {
+/// Заменяет surface-фразы терминов указанного вида.
+///
+/// Вид обязателен: замена без разбора вида — это ровно тот дефект, ради
+/// которого виды и заведены (Epic 19). Подсказка, применённая к готовому
+/// тексту, переписала бы его так же безусловно, как замена.
+pub(crate) fn normalize_with_kind(
+    text: &str,
+    terms: &[GlossaryTerm],
+    kind: GlossaryKind,
+) -> String {
     if terms.is_empty() {
         return text.to_owned();
     }
@@ -12,6 +21,9 @@ pub(crate) fn normalize(text: &str, terms: &[GlossaryTerm]) -> String {
 
     while cursor < text.len() {
         if let Some((end, canonical)) = terms.iter().find_map(|term| {
+            if term.kind != kind {
+                return None;
+            }
             match_end(text, cursor, &term.surface).map(|end| (end, &term.canonical))
         }) {
             output.push_str(canonical);

@@ -233,6 +233,11 @@ private struct GlossaryEditorDraft: Identifiable {
     var canonical: String
     var language: SpeechLanguage
     var scope: GlossaryScopeSelection
+    /// Вид записи термина. Экран его не показывает и не меняет: подсказка
+    /// становится заменой только по отдельному жесту «заменять всюду».
+    /// Здесь он лишь переносится обратно неизменным — иначе сохранение
+    /// правки словаря молча превращало бы подсказку в замену.
+    let kind: FfiGlossaryKind
 
     init() {
         id = UUID().uuidString
@@ -240,6 +245,9 @@ private struct GlossaryEditorDraft: Identifiable {
         canonical = ""
         language = .ru
         scope = .global
+        // Термин, заведённый руками на этом экране, — осознанная замена:
+        // человек сам вписал обе формы.
+        kind = .replacement
     }
 
     init(term: FfiGlossaryTerm) {
@@ -251,6 +259,7 @@ private struct GlossaryEditorDraft: Identifiable {
         case .global: .global
         case .meeting: .meeting
         }
+        kind = term.kind
     }
 }
 
@@ -326,7 +335,8 @@ private struct GlossaryEditorView: View {
             canonical: draft.canonical.trimmingCharacters(in: .whitespacesAndNewlines),
             language: draft.language.rawValue,
             scope: draft.scope == .meeting ? .meeting : .global,
-            meetingId: meetingId
+            meetingId: meetingId,
+            kind: draft.kind
         )
     }
 }

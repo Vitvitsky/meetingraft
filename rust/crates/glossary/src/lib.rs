@@ -9,7 +9,7 @@ pub use engine::{GlossaryEngine, active_terms};
 
 #[cfg(test)]
 mod tests {
-    use domain::{GlossaryScope, GlossaryTerm, SpeechLanguage};
+    use domain::{GlossaryKind, GlossaryScope, GlossaryTerm, SpeechLanguage};
 
     use crate::{GlossaryEngine, active_terms, parse_csv};
 
@@ -34,6 +34,7 @@ mod tests {
             canonical: canonical.into(),
             language,
             scope,
+            kind: GlossaryKind::Replacement,
         }
     }
 
@@ -136,5 +137,33 @@ mod tests {
             active_terms(std::slice::from_ref(&global), None),
             vec![global]
         );
+    }
+
+    #[test]
+    fn hint_does_not_rewrite_text() {
+        let engine = GlossaryEngine::from_terms(vec![GlossaryTerm {
+            id: "1".into(),
+            surface: "пошли".into(),
+            canonical: "пошёл".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Global,
+            kind: GlossaryKind::Hint,
+        }]);
+
+        assert_eq!(engine.normalize_caption("пошли дальше"), "пошли дальше");
+    }
+
+    #[test]
+    fn hint_still_reaches_whisper_prompt() {
+        let engine = GlossaryEngine::from_terms(vec![GlossaryTerm {
+            id: "1".into(),
+            surface: "интра ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Global,
+            kind: GlossaryKind::Hint,
+        }]);
+
+        assert_eq!(engine.build_whisper_prompt(100), "intra.ru");
     }
 }

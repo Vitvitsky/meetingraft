@@ -3,6 +3,7 @@
 mod audio_manifest;
 mod diagnostics_log;
 mod migrations;
+mod segment_edits;
 
 pub use audio_manifest::{AudioManifestError, AudioManifestStore, ManifestChunk, PcmFragment};
 pub use diagnostics_log::DiagnosticsLog;

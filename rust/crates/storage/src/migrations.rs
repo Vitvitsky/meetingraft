@@ -126,6 +126,32 @@ const STEPS: &[&str] = &[
     ALTER TABLE final_segments
         ADD COLUMN speaker_pinned INTEGER NOT NULL DEFAULT 0;
     ",
+    // 7 — вид записи глоссария (Epic 19). Подсказка идёт только в
+    // initial_prompt, замена ещё и переписывает готовый текст.
+    // Умолчание 1 = Replacement: существующие термины писал человек
+    // руками, и менять их поведение миграцией нельзя.
+    "
+    ALTER TABLE glossary_terms
+        ADD COLUMN kind INTEGER NOT NULL DEFAULT 1;
+    ",
+    // 8 — журнал ручных правок текста (Epic 19). Отдельно от сегментов:
+    // пересбор создаёт новую версию с другой нарезкой, и правка,
+    // лежащая в таблице сегментов, потерялась бы вместе со старой.
+    "
+    CREATE TABLE IF NOT EXISTS segment_edits (
+        id TEXT PRIMARY KEY NOT NULL,
+        meeting_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        original_text TEXT NOT NULL,
+        edited_text TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        applied_version INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_segment_edits_meeting
+        ON segment_edits(meeting_id, applied_version);
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.
@@ -231,5 +257,27 @@ mod tests {
             )
             .expect("legacy row survived");
         assert_eq!(started, 42);
+    }
+
+    #[test]
+    fn existing_glossary_terms_become_replacements() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(baseline_schema()).expect("baseline");
+        conn.execute(
+            "INSERT INTO glossary_terms
+             (id, surface, canonical, language, scope, meeting_id, updated_at_ms)
+             VALUES ('t1', 'униффи', 'UniFFI', 'ru', 'global', NULL, 0)",
+            [],
+        )
+        .expect("insert");
+
+        migrate(&conn).expect("migrate");
+
+        let kind: i64 = conn
+            .query_row("SELECT kind FROM glossary_terms WHERE id = 't1'", [], |r| {
+                r.get(0)
+            })
+            .expect("kind");
+        assert_eq!(kind, 1, "существующий термин остаётся заменой");
     }
 }

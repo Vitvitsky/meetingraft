@@ -10,7 +10,8 @@ final class GlossaryFilterTests: XCTestCase {
         canonical: String = "биллинг",
         language: String = "ru",
         scope: FfiGlossaryScope = .global,
-        meetingId: String = ""
+        meetingId: String = "",
+        kind: FfiGlossaryKind = .replacement
     ) -> FfiGlossaryTerm {
         FfiGlossaryTerm(
             id: id,
@@ -18,7 +19,8 @@ final class GlossaryFilterTests: XCTestCase {
             canonical: canonical,
             language: language,
             scope: scope,
-            meetingId: meetingId
+            meetingId: meetingId,
+            kind: kind
         )
     }
 

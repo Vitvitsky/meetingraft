@@ -2,6 +2,8 @@
 
 mod assemble;
 mod diff;
+mod edit_service;
+mod edits;
 mod jobs;
 mod llm;
 mod llm_http;
@@ -10,9 +12,12 @@ mod polish;
 mod prompts;
 mod speakers;
 mod templates;
+mod term_from_edit;
 
 pub use assemble::assemble_final;
 pub use diff::{DiffOp, DiffSpan, diff_words};
+pub use edit_service::{EditOutcome, occurrences_to_edit, plan_edit};
+pub use edits::reattach_edits;
 pub use jobs::{
     InlineSpawner, JobHandle, RebuildJobs, RebuildProgress, RebuildState, Spawner, ThreadSpawner,
 };
@@ -25,3 +30,4 @@ pub use polish::{
 pub use prompts::{brief_prompts, follow_up_prompts};
 pub use speakers::{SpeakerStat, speaker_stats};
 pub use templates::{make_artifact, render_brief, render_follow_up};
+pub use term_from_edit::term_from_edit;
