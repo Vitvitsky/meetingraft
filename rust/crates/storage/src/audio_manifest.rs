@@ -1,5 +1,6 @@
 //! SQLite audio_manifest + файлы чанков на диске.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -558,7 +559,10 @@ impl AudioManifestStore {
         Ok(())
     }
 
-    /// Сегменты версии Final в порядке следования.
+    /// Сегменты версии Final в порядке следования, с наложенными поверх
+    /// ручными правками из журнала `segment_edits` (Epic 19): текст берётся
+    /// из таблицы `final_segments`, но там, где на эту версию легла правка,
+    /// подменяется на правленый, а сегмент помечается `text_edited`.
     pub fn list_final_segments(
         &self,
         meeting_id: &str,
@@ -587,15 +591,19 @@ impl AudioManifestStore {
 
         // Правка перекрывает распознанное: журнал — источник истины для
         // текста, таблица сегментов хранит то, что выдала модель.
-        let edits = self.list_segment_edits(meeting_id)?;
+        //
+        // Из базы берём только правки этой версии (журнал не чистится при
+        // пересборе и растёт без границы), а сверяем с сегментами по
+        // хэш-карте, а не перебором: иначе на каждое открытие экрана
+        // транскрипта уходило бы O(N · M_всего) вместо O(N + M_версии).
+        let edits = self.list_segment_edits_for_version(meeting_id, version)?;
+        let edits_by_position: HashMap<(AudioChannel, u64, u64), _> = edits
+            .into_iter()
+            .map(|edit| ((edit.channel, edit.start_ms, edit.end_ms), edit))
+            .collect();
         for segment in &mut segments {
-            let applied = edits.iter().find(|edit| {
-                edit.applied_version == Some(version)
-                    && edit.channel == segment.channel
-                    && edit.start_ms == segment.start_ms
-                    && edit.end_ms == segment.end_ms
-            });
-            if let Some(edit) = applied {
+            let key = (segment.channel, segment.start_ms, segment.end_ms);
+            if let Some(edit) = edits_by_position.get(&key) {
                 segment.text = edit.edited_text.clone();
                 segment.text_edited = true;
             }

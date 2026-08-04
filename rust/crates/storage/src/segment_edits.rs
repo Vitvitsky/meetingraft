@@ -62,6 +62,41 @@ impl AudioManifestStore {
         self.query_segment_edits(meeting_id, true)
     }
 
+    /// Правки, применённые именно к этой версии.
+    ///
+    /// Отдельно от `list_segment_edits`: журнал не чистится при пересборе
+    /// и растёт без верхней границы, а наложению на сегменты при чтении
+    /// (`list_final_segments`) нужны только правки текущей версии — тянуть
+    /// весь журнал ради них было бы лишним чтением из базы.
+    pub fn list_segment_edits_for_version(
+        &self,
+        meeting_id: &str,
+        version: u32,
+    ) -> Result<Vec<SegmentEdit>, AudioManifestError> {
+        let mut statement = self.connection().prepare(
+            "SELECT id, meeting_id, channel, start_ms, end_ms, original_text,
+                    edited_text, created_at_ms, applied_version
+             FROM segment_edits
+             WHERE meeting_id = ?1 AND applied_version = ?2
+             ORDER BY start_ms, id",
+        )?;
+        let rows = statement.query_map(params![meeting_id, version], |row| {
+            let channel: String = row.get(2)?;
+            Ok(SegmentEdit {
+                id: row.get(0)?,
+                meeting_id: row.get(1)?,
+                channel: AudioChannel::from_code(&channel),
+                start_ms: row.get::<_, i64>(3)? as u64,
+                end_ms: row.get::<_, i64>(4)? as u64,
+                original_text: row.get(5)?,
+                edited_text: row.get(6)?,
+                created_at_ms: row.get::<_, i64>(7)? as u64,
+                applied_version: row.get::<_, Option<i64>>(8)?.map(|v| v as u32),
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     fn query_segment_edits(
         &self,
         meeting_id: &str,
