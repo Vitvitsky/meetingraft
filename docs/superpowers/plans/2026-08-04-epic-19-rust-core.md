@@ -397,6 +397,30 @@ mod tests {
 
 В `rust/crates/storage/src/lib.rs` добавить `mod segment_edits;`.
 
+Плюс отдельный тест на ветку `ON CONFLICT` — повторная запись с тем же `id`:
+
+```rust
+    #[test]
+    fn repeated_upsert_keeps_recognized_text() {
+        let mut store = AudioManifestStore::open(tmp_root()).expect("store");
+        store.upsert_segment_edit(&edit("e1", Some(1))).expect("upsert");
+
+        let mut again = edit("e1", Some(2));
+        again.edited_text = "intra.ru точно".into();
+        again.original_text = "подменённое".into();
+        store.upsert_segment_edit(&again).expect("upsert");
+
+        let all = store.list_segment_edits("m1").expect("list");
+        assert_eq!(all.len(), 1, "правка того же места не копится");
+        assert_eq!(all[0].edited_text, "intra.ru точно");
+        assert_eq!(all[0].applied_version, Some(2));
+        assert_eq!(
+            all[0].original_text, "интра ру",
+            "распознанное переживает перезапись: иначе вернуть текст к исходному будет нечем"
+        );
+    }
+```
+
 - [ ] **Step 3: Убедиться, что не компилируется**
 
 Run: `cd rust && cargo test -p meetingraft-storage upsert_list_and_delete_edits`
