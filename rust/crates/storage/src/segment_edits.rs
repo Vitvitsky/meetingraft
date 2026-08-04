@@ -9,7 +9,13 @@ use rusqlite::params;
 use crate::{AudioManifestError, AudioManifestStore};
 
 impl AudioManifestStore {
-    /// Записать правку; повторный вызов с тем же id перезаписывает.
+    /// Записать правку. Повторный вызов с тем же `id` обновляет только
+    /// `edited_text` и `applied_version` — остальные поля, включая
+    /// `original_text`, `start_ms`/`end_ms`, `channel` и `created_at_ms`,
+    /// не трогаются. `original_text` — то, что распознала модель при
+    /// первой записи; если бы вторая правка того же места её
+    /// перезаписывала, после второй правки подряд исходный текст был бы
+    /// потерян безвозвратно, и сравнивать/откатывать стало бы не с чем.
     pub fn upsert_segment_edit(&mut self, edit: &SegmentEdit) -> Result<(), AudioManifestError> {
         self.connection().execute(
             "INSERT INTO segment_edits
@@ -134,5 +140,41 @@ mod tests {
 
         store.delete_segment_edit("e1").expect("delete");
         assert_eq!(store.list_segment_edits("m1").expect("list").len(), 1);
+    }
+
+    /// Повторный `upsert_segment_edit` с тем же `id` проходит ветку
+    /// `ON CONFLICT ... DO UPDATE`: обновляются только `edited_text` и
+    /// `applied_version`, остальные поля (включая `original_text`) должны
+    /// остаться от первой записи, а строка — по-прежнему одна.
+    #[test]
+    fn upsert_same_id_overwrites_only_edited_fields() {
+        let mut store = AudioManifestStore::open(tmp_root()).expect("store");
+
+        store
+            .upsert_segment_edit(&edit("e1", None))
+            .expect("upsert");
+
+        let mut second = edit("e1", Some(2));
+        second.original_text = "другой оригинал".into();
+        second.edited_text = "other edit".into();
+        second.start_ms = 9000;
+        second.end_ms = 9500;
+        second.channel = AudioChannel::System;
+        second.created_at_ms = 999;
+        store.upsert_segment_edit(&second).expect("upsert");
+
+        let all = store.list_segment_edits("m1").expect("list");
+        assert_eq!(all.len(), 1, "конфликт по id не должен плодить строки");
+
+        let stored = &all[0];
+        // Обновились: то, что и должно.
+        assert_eq!(stored.edited_text, "other edit");
+        assert_eq!(stored.applied_version, Some(2));
+        // Не тронуты: значения остались от первой записи.
+        assert_eq!(stored.original_text, "интра ру");
+        assert_eq!(stored.start_ms, 1000);
+        assert_eq!(stored.end_ms, 2000);
+        assert_eq!(stored.channel, AudioChannel::Mic);
+        assert_eq!(stored.created_at_ms, 5);
     }
 }
