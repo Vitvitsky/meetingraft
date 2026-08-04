@@ -1,5 +1,8 @@
 //! Post-call артефакты (отдельно от live caption — ADR-002).
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+
 use crate::AudioChannel;
 
 /// Вид post-call артефакта.
@@ -103,7 +106,18 @@ impl FinalSegment {
     pub fn duration_ms(&self) -> u64 {
         self.end_ms.saturating_sub(self.start_ms)
     }
+
+    /// Место сегмента в записи: канал и границы во времени.
+    pub fn position(&self) -> EditPosition {
+        (self.channel, self.start_ms, self.end_ms)
+    }
 }
+
+/// Место реплики: канал и границы во времени.
+///
+/// Правка привязана к месту, а не к порядковому номеру: пересбор режет
+/// запись заново и номера меняются, а место остаётся тем же.
+pub type EditPosition = (AudioChannel, u64, u64);
 
 /// Ручная правка текста сегмента.
 ///
@@ -124,6 +138,63 @@ pub struct SegmentEdit {
     pub created_at_ms: u64,
     /// Версия, в которой правка сейчас применена. `None` — не применилась.
     pub applied_version: Option<u32>,
+}
+
+impl SegmentEdit {
+    /// Место, к которому привязана правка.
+    pub fn position(&self) -> EditPosition {
+        (self.channel, self.start_ms, self.end_ms)
+    }
+
+    /// Кто побеждает при коллизии двух правок на одном месте.
+    ///
+    /// Позднейшая по `created_at_ms` — это последнее решение человека по
+    /// этому месту. При равном времени берётся больший `id`: нужен хоть
+    /// какой-то детерминизм, а порядок выборки из базы к давности правки
+    /// отношения не имеет.
+    fn precedence(&self) -> (u64, &str) {
+        (self.created_at_ms, self.id.as_str())
+    }
+}
+
+/// Разложить журнал по местам одной версии.
+///
+/// Единственное правило сопоставления правки с местом на все три случая,
+/// где оно нужно: чтение сегментов, ручная правка текста и массовая
+/// замена по термину. Раньше каждое место решало по-своему, и правка
+/// первой версии молча перехватывалась правкой того же места во второй —
+/// исходный текст при этом оставался от первой версии, и «вернуть
+/// исходное» становилось недостижимым.
+///
+/// Фильтр по версии обязателен: пересбор при неизменной модели даёт ту же
+/// нарезку, поэтому совпадение координат между версиями — норма, а не
+/// редкость.
+///
+/// На одно место может прийтись несколько правок — пересбор пересаживает
+/// журнал на новую нарезку по перекрытию времени, и слияние двух ранее
+/// правленых сегментов в один даёт им общий ключ. Побеждает та, что
+/// сильнее по [`SegmentEdit::precedence`].
+pub fn edits_by_position(
+    edits: &[SegmentEdit],
+    version: u32,
+) -> HashMap<EditPosition, &SegmentEdit> {
+    let mut by_position: HashMap<EditPosition, &SegmentEdit> = HashMap::new();
+    for edit in edits {
+        if edit.applied_version != Some(version) {
+            continue;
+        }
+        match by_position.entry(edit.position()) {
+            Entry::Vacant(slot) => {
+                slot.insert(edit);
+            }
+            Entry::Occupied(mut slot) => {
+                if edit.precedence() > slot.get().precedence() {
+                    slot.insert(edit);
+                }
+            }
+        }
+    }
+    by_position
 }
 
 /// Где нашлось совпадение полнотекстового поиска.
@@ -165,10 +236,58 @@ pub struct SearchHit {
 
 #[cfg(test)]
 mod tests {
-    use super::ArtifactKind;
+    use super::{ArtifactKind, SegmentEdit, edits_by_position};
+    use crate::AudioChannel;
 
     #[test]
     fn artifact_kind_brief_distinct_from_follow_up() {
         assert_ne!(ArtifactKind::Brief, ArtifactKind::FollowUp);
+    }
+
+    fn edit(id: &str, version: Option<u32>, created_at_ms: u64) -> SegmentEdit {
+        SegmentEdit {
+            id: id.into(),
+            meeting_id: "m1".into(),
+            channel: AudioChannel::Mic,
+            start_ms: 1000,
+            end_ms: 2000,
+            original_text: "интра ру".into(),
+            edited_text: id.into(),
+            created_at_ms,
+            applied_version: version,
+        }
+    }
+
+    /// Пересбор при неизменной модели даёт ту же нарезку, поэтому одно и
+    /// то же место в двух версиях — обычное дело. Без фильтра по версии
+    /// правка второй версии перехватывала бы место первой.
+    #[test]
+    fn takes_only_edits_of_the_asked_version() {
+        let edits = vec![edit("e1", Some(1), 10), edit("e2", Some(2), 20)];
+
+        let first = edits_by_position(&edits, 1);
+        let second = edits_by_position(&edits, 2);
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first.values().next().expect("правка").id, "e1");
+        assert_eq!(second.values().next().expect("правка").id, "e2");
+    }
+
+    #[test]
+    fn skips_unapplied_edits() {
+        let edits = vec![edit("e1", None, 10)];
+
+        assert!(edits_by_position(&edits, 1).is_empty());
+    }
+
+    /// Две правки на одном месте: побеждает последнее решение человека,
+    /// а не порядок выборки из базы.
+    #[test]
+    fn latest_by_created_at_wins_the_position() {
+        let edits = vec![edit("e1", Some(1), 200), edit("e2", Some(1), 100)];
+
+        let by_position = edits_by_position(&edits, 1);
+
+        assert_eq!(by_position.values().next().expect("правка").id, "e1");
     }
 }

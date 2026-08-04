@@ -24,17 +24,25 @@ pub fn reattach_edits(
     edits
         .iter()
         .map(|edit| {
-            let best = segments
-                .iter()
-                .filter(|segment| segment.channel == edit.channel)
-                .filter(|segment| segment.text.contains(edit.original_text.as_str()))
-                .filter_map(|segment| overlap_ms(edit, segment).map(|ms| (ms, segment)))
-                // При равном перекрыве выбираем сегмент с меньшим индексом.
-                // Reverse инвертирует порядок сравнения, так что меньшие индексы побеждают.
-                // Это гарантирует результат, не зависящий от порядка элементов входного среза:
-                // голый max_by_key при ничьей выбрал бы последний элемент в итерации,
-                // а нам нужна воспроизводимость. При ничьей выбираем более ранний сегмент.
-                .max_by_key(|(ms, segment)| (*ms, std::cmp::Reverse(segment.index)));
+            // Пустой исходный текст содержится в любой строке, поэтому
+            // такая правка села бы на первый попавшийся перекрывающийся
+            // сегмент и молча переписала бы чужую реплику. Опознать место
+            // нечем — правка честно остаётся неприменившейся.
+            let best = if edit.original_text.trim().is_empty() {
+                None
+            } else {
+                segments
+                    .iter()
+                    .filter(|segment| segment.channel == edit.channel)
+                    .filter(|segment| segment.text.contains(edit.original_text.as_str()))
+                    .filter_map(|segment| overlap_ms(edit, segment).map(|ms| (ms, segment)))
+                    // При равном перекрыве выбираем сегмент с меньшим индексом.
+                    // Reverse инвертирует порядок сравнения, так что меньшие индексы побеждают.
+                    // Это гарантирует результат, не зависящий от порядка элементов входного среза:
+                    // голый max_by_key при ничьей выбрал бы последний элемент в итерации,
+                    // а нам нужна воспроизводимость. При ничьей выбираем более ранний сегмент.
+                    .max_by_key(|(ms, segment)| (*ms, std::cmp::Reverse(segment.index)))
+            };
 
             let mut moved = edit.clone();
             match best {
@@ -137,6 +145,24 @@ mod tests {
         let result = reattach_edits(&edits, &[other], 2);
 
         assert_eq!(result[0].applied_version, None);
+    }
+
+    /// Правка без исходного текста опознать своё место не может: пустая
+    /// строка содержится в любой. Без раннего отказа она села бы на
+    /// первый попавшийся перекрывающийся сегмент и переписала бы чужую
+    /// реплику.
+    #[test]
+    fn edit_without_original_text_stays_unapplied() {
+        // Пустая строка содержится в любой, одиночный пробел — почти в
+        // любой: без раннего отказа обе правки сели бы на чужую реплику.
+        let edits = vec![edit(1000, 2000, ""), edit(1000, 2000, " ")];
+        let segments = vec![segment(0, 900, 2100, "совсем другая реплика")];
+
+        let result = reattach_edits(&edits, &segments, 2);
+
+        assert_eq!(result[0].applied_version, None, "пустой исходный текст");
+        assert_eq!(result[1].applied_version, None, "исходный текст из пробела");
+        assert_eq!(result[0].start_ms, 1000, "границы остаются прежними");
     }
 
     #[test]

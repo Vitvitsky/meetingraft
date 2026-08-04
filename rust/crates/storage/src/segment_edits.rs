@@ -4,18 +4,46 @@
 //! строк, а правки — самостоятельная сущность со своим жизненным циклом.
 
 use domain::{AudioChannel, SegmentEdit};
-use rusqlite::params;
+use rusqlite::{Row, params};
 
 use crate::{AudioManifestError, AudioManifestStore};
 
+/// Колонки журнала в том порядке, которого ждёт [`row_to_edit`].
+///
+/// Один список на все запросы: рассинхрон порядка колонок между копиями
+/// SELECT не поймал бы ни компилятор, ни тест — типы совпадают, и правка
+/// просто прочиталась бы с перепутанными полями.
+const EDIT_COLUMNS: &str = "id, meeting_id, channel, start_ms, end_ms, original_text,
+                            edited_text, created_at_ms, applied_version";
+
+fn row_to_edit(row: &Row<'_>) -> rusqlite::Result<SegmentEdit> {
+    let channel: String = row.get(2)?;
+    Ok(SegmentEdit {
+        id: row.get(0)?,
+        meeting_id: row.get(1)?,
+        channel: AudioChannel::from_code(&channel),
+        start_ms: row.get::<_, i64>(3)? as u64,
+        end_ms: row.get::<_, i64>(4)? as u64,
+        original_text: row.get(5)?,
+        edited_text: row.get(6)?,
+        created_at_ms: row.get::<_, i64>(7)? as u64,
+        applied_version: row.get::<_, Option<i64>>(8)?.map(|v| v as u32),
+    })
+}
+
 impl AudioManifestStore {
-    /// Записать правку. Повторный вызов с тем же `id` обновляет только
-    /// `edited_text` и `applied_version` — остальные поля, включая
-    /// `original_text`, `start_ms`/`end_ms`, `channel` и `created_at_ms`,
-    /// не трогаются. `original_text` — то, что распознала модель при
-    /// первой записи; если бы вторая правка того же места её
-    /// перезаписывала, после второй правки подряд исходный текст был бы
-    /// потерян безвозвратно, и сравнивать/откатывать стало бы не с чем.
+    /// Записать правку. Повторный вызов с тем же `id` обновляет текст
+    /// правки, её границы и версию: пересбор пересаживает правку на
+    /// сегмент новой нарезки, то есть меняет именно `start_ms`/`end_ms`, и
+    /// без их обновления перенос был бы тихой пустышкой — версия новая,
+    /// координаты старые, а наложение при чтении ищет по ключу «канал,
+    /// начало, конец» и такую правку не найдёт никогда.
+    ///
+    /// `original_text`, `channel` и `created_at_ms` не трогаются.
+    /// `original_text` — то, что распознала модель при первой записи; если
+    /// бы вторая правка того же места её перезаписывала, после двух правок
+    /// подряд исходный текст был бы потерян безвозвратно, и сравнивать или
+    /// откатывать стало бы не с чем.
     pub fn upsert_segment_edit(&mut self, edit: &SegmentEdit) -> Result<(), AudioManifestError> {
         self.connection().execute(
             "INSERT INTO segment_edits
@@ -24,6 +52,8 @@ impl AudioManifestStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                edited_text = excluded.edited_text,
+               start_ms = excluded.start_ms,
+               end_ms = excluded.end_ms,
                applied_version = excluded.applied_version",
             params![
                 edit.id,
@@ -73,27 +103,14 @@ impl AudioManifestStore {
         meeting_id: &str,
         version: u32,
     ) -> Result<Vec<SegmentEdit>, AudioManifestError> {
-        let mut statement = self.connection().prepare(
-            "SELECT id, meeting_id, channel, start_ms, end_ms, original_text,
-                    edited_text, created_at_ms, applied_version
+        let sql = format!(
+            "SELECT {EDIT_COLUMNS}
              FROM segment_edits
              WHERE meeting_id = ?1 AND applied_version = ?2
-             ORDER BY start_ms, id",
-        )?;
-        let rows = statement.query_map(params![meeting_id, version], |row| {
-            let channel: String = row.get(2)?;
-            Ok(SegmentEdit {
-                id: row.get(0)?,
-                meeting_id: row.get(1)?,
-                channel: AudioChannel::from_code(&channel),
-                start_ms: row.get::<_, i64>(3)? as u64,
-                end_ms: row.get::<_, i64>(4)? as u64,
-                original_text: row.get(5)?,
-                edited_text: row.get(6)?,
-                created_at_ms: row.get::<_, i64>(7)? as u64,
-                applied_version: row.get::<_, Option<i64>>(8)?.map(|v| v as u32),
-            })
-        })?;
+             ORDER BY start_ms, id"
+        );
+        let mut statement = self.connection().prepare(&sql)?;
+        let rows = statement.query_map(params![meeting_id, version], row_to_edit)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -102,34 +119,19 @@ impl AudioManifestStore {
         meeting_id: &str,
         only_unapplied: bool,
     ) -> Result<Vec<SegmentEdit>, AudioManifestError> {
-        let sql = if only_unapplied {
-            "SELECT id, meeting_id, channel, start_ms, end_ms, original_text,
-                    edited_text, created_at_ms, applied_version
-             FROM segment_edits
-             WHERE meeting_id = ?1 AND applied_version IS NULL
-             ORDER BY start_ms, id"
+        let filter = if only_unapplied {
+            "meeting_id = ?1 AND applied_version IS NULL"
         } else {
-            "SELECT id, meeting_id, channel, start_ms, end_ms, original_text,
-                    edited_text, created_at_ms, applied_version
-             FROM segment_edits
-             WHERE meeting_id = ?1
-             ORDER BY start_ms, id"
+            "meeting_id = ?1"
         };
-        let mut statement = self.connection().prepare(sql)?;
-        let rows = statement.query_map(params![meeting_id], |row| {
-            let channel: String = row.get(2)?;
-            Ok(SegmentEdit {
-                id: row.get(0)?,
-                meeting_id: row.get(1)?,
-                channel: AudioChannel::from_code(&channel),
-                start_ms: row.get::<_, i64>(3)? as u64,
-                end_ms: row.get::<_, i64>(4)? as u64,
-                original_text: row.get(5)?,
-                edited_text: row.get(6)?,
-                created_at_ms: row.get::<_, i64>(7)? as u64,
-                applied_version: row.get::<_, Option<i64>>(8)?.map(|v| v as u32),
-            })
-        })?;
+        let sql = format!(
+            "SELECT {EDIT_COLUMNS}
+             FROM segment_edits
+             WHERE {filter}
+             ORDER BY start_ms, id"
+        );
+        let mut statement = self.connection().prepare(&sql)?;
+        let rows = statement.query_map(params![meeting_id], row_to_edit)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }
@@ -273,9 +275,9 @@ mod tests {
     }
 
     /// Повторный `upsert_segment_edit` с тем же `id` проходит ветку
-    /// `ON CONFLICT ... DO UPDATE`: обновляются только `edited_text` и
-    /// `applied_version`, остальные поля (включая `original_text`) должны
-    /// остаться от первой записи, а строка — по-прежнему одна.
+    /// `ON CONFLICT ... DO UPDATE`: обновляются текст правки, границы и
+    /// версия; `original_text`, канал и время создания остаются от первой
+    /// записи, а строка — по-прежнему одна.
     #[test]
     fn upsert_same_id_overwrites_only_edited_fields() {
         let mut store = AudioManifestStore::open(tmp_root()).expect("store");
@@ -300,11 +302,52 @@ mod tests {
         // Обновились: то, что и должно.
         assert_eq!(stored.edited_text, "other edit");
         assert_eq!(stored.applied_version, Some(2));
-        // Не тронуты: значения остались от первой записи.
+        assert_eq!(stored.start_ms, 9000);
+        assert_eq!(stored.end_ms, 9500);
+        // Не тронуты: значения остались от первой записи. На них стоит
+        // отмена правки и разрешение коллизий.
         assert_eq!(stored.original_text, "интра ру");
-        assert_eq!(stored.start_ms, 1000);
-        assert_eq!(stored.end_ms, 2000);
         assert_eq!(stored.channel, AudioChannel::Mic);
         assert_eq!(stored.created_at_ms, 5);
+    }
+
+    /// Перенос правки на новую версию двигает её границы на границы
+    /// нового сегмента. Если запись их не сохранит, правка получит новую
+    /// версию со старыми координатами — и наложение при чтении, которое
+    /// ищет по ключу «канал, начало, конец», её не найдёт никогда.
+    #[test]
+    fn moved_edit_lands_on_the_segment_of_the_new_version() {
+        use domain::FinalSegment;
+
+        let mut store = AudioManifestStore::open(tmp_root()).expect("store");
+        store
+            .replace_final_segments(
+                "m1",
+                2,
+                &[FinalSegment {
+                    index: 0,
+                    start_ms: 900,
+                    end_ms: 2100,
+                    channel: AudioChannel::Mic,
+                    speaker_id: String::new(),
+                    speaker_pinned: false,
+                    text: "интра ру".into(),
+                    text_edited: false,
+                }],
+            )
+            .expect("segments");
+        store
+            .upsert_segment_edit(&edit("e1", Some(1)))
+            .expect("upsert");
+
+        // Так журнал переезжает после пересбора: тот же id, новые границы.
+        let mut moved = edit("e1", Some(2));
+        moved.start_ms = 900;
+        moved.end_ms = 2100;
+        store.upsert_segment_edit(&moved).expect("upsert");
+
+        let segments = store.list_final_segments("m1", 2).expect("list");
+        assert_eq!(segments[0].text, "intra.ru");
+        assert!(segments[0].text_edited);
     }
 }

@@ -14,7 +14,8 @@ use domain::{
 use glossary::{GlossaryEngine, active_terms};
 use postcall::{
     DEFAULT_BATCH_SIZE, JobHandle, LlmClient, NullLlmClient, OllamaNativeClient,
-    OpenAiCompatLlmClient, PolishReport, merge_channels, polish_segments, render_segments,
+    OpenAiCompatLlmClient, PolishReport, merge_channels, polish_segments, reattach_edits,
+    render_segments,
 };
 use storage::AudioManifestStore;
 #[cfg(not(feature = "whisper"))]
@@ -91,6 +92,14 @@ pub fn run_rebuild(params: RebuildParams, handle: &JobHandle) -> Result<(), Stri
         .replace_final_segments(&params.meeting_id, version, &segments)
         .map_err(|e| e.to_string())?;
 
+    // Журнал правок переезжает на новую нарезку здесь и только здесь:
+    // сегменты пересбор создаёт заново, а ручная работа живёт отдельно и
+    // сама на них не переберётся. Без этого шага правки остались бы с
+    // `applied_version` старой версии — в новой их не видно, и в списке
+    // неприменившихся тоже, потому что `NULL` никто не выставляет.
+    // «Ничего не пропадает молча» — главное требование механики.
+    reattach_meeting_edits(&mut store, &params.meeting_id, version, &segments)?;
+
     // Спикеры назначаются до рендера: markdown производен от сегментов,
     // и собранный раньше он остался бы без имён (Phase 11, T6).
     let speakers = assign_default_speakers(&mut store, &params, version, &segments)?;
@@ -108,6 +117,28 @@ pub fn run_rebuild(params: RebuildParams, handle: &JobHandle) -> Result<(), Stri
 
     handle.set_note(provenance(&engine_note, &polish));
     report(handle, 1.0);
+    Ok(())
+}
+
+/// Пересадить ручные правки встречи на сегменты новой версии.
+///
+/// Берётся весь журнал, а не только правки предыдущей версии: правка,
+/// не нашедшая места в прошлый раз, получает новый шанс — модель могла
+/// распознать это место так же, как в тот раз, когда её вводили.
+fn reattach_meeting_edits(
+    store: &mut AudioManifestStore,
+    meeting_id: &str,
+    version: u32,
+    segments: &[FinalSegment],
+) -> Result<(), String> {
+    let edits = store
+        .list_segment_edits(meeting_id)
+        .map_err(|e| e.to_string())?;
+    for edit in reattach_edits(&edits, segments, version) {
+        store
+            .upsert_segment_edit(&edit)
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 

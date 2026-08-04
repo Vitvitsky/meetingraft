@@ -1,7 +1,5 @@
 //! SQLite audio_manifest + файлы чанков на диске.
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -9,7 +7,7 @@ use domain::FinalSegment;
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionEvent, CaptionPhase, FinalTranscript,
     GlossaryKind, GlossaryScope, GlossaryTerm, MeetingSummary, SearchHit, SearchHitKind, Speaker,
-    SpeechLanguage,
+    SpeechLanguage, edits_by_position,
 };
 use rusqlite::{Connection, params};
 use thiserror::Error;
@@ -598,32 +596,12 @@ impl AudioManifestStore {
         // хэш-карте, а не перебором: иначе на каждое открытие экрана
         // транскрипта уходило бы O(N · M_всего) вместо O(N + M_версии).
         let edits = self.list_segment_edits_for_version(meeting_id, version)?;
-        // Две правки могут лечь на одну позицию одной версии: пересбор
-        // пересаживает правки на новую нарезку по перекрытию времени, и
-        // если новые границы слили два ранее правленых сегмента в один,
-        // обе правки получат один ключ. Побеждает более поздняя по
-        // `created_at_ms` — это последнее решение человека по этому месту,
-        // а порядок выборки из базы (и тем более `id`) к давности правки
-        // отношения не имеет и опираться на него было бы случайностью.
-        // При равных `created_at_ms` для детерминизма берём большего `id`.
-        let mut edits_by_position: HashMap<(AudioChannel, u64, u64), _> = HashMap::new();
-        for edit in edits {
-            let key = (edit.channel, edit.start_ms, edit.end_ms);
-            match edits_by_position.entry(key) {
-                Entry::Vacant(slot) => {
-                    slot.insert(edit);
-                }
-                Entry::Occupied(mut slot) => {
-                    let current = slot.get();
-                    if (edit.created_at_ms, &edit.id) > (current.created_at_ms, &current.id) {
-                        slot.insert(edit);
-                    }
-                }
-            }
-        }
+        // Правило «какая правка отвечает за это место» одно на весь проект
+        // и живёт в домене: тремя разными правилами в трёх слоях правка
+        // одной версии перехватывала правку другой.
+        let by_position = edits_by_position(&edits, version);
         for segment in &mut segments {
-            let key = (segment.channel, segment.start_ms, segment.end_ms);
-            if let Some(edit) = edits_by_position.get(&key) {
+            if let Some(edit) = by_position.get(&segment.position()) {
                 segment.text = edit.edited_text.clone();
                 segment.text_edited = true;
             }
@@ -839,6 +817,10 @@ impl AudioManifestStore {
             "DELETE FROM caption_events WHERE session_id = ?1",
             "DELETE FROM final_transcripts WHERE meeting_id = ?1",
             "DELETE FROM final_segments WHERE meeting_id = ?1",
+            // Журнал правок хранит дословные реплики в `original_text` и
+            // `edited_text`: оставить его после удаления встречи — значит
+            // оставить в базе сам разговор, который человек удалил.
+            "DELETE FROM segment_edits WHERE meeting_id = ?1",
             "DELETE FROM artifacts WHERE meeting_id = ?1",
             "DELETE FROM speakers WHERE meeting_id = ?1",
             "DELETE FROM meeting_fts WHERE meeting_id = ?1",
@@ -1487,7 +1469,9 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// Удаление встречи уносит и сегменты — обещание architecture.md.
+    /// Удаление встречи уносит и сегменты, и журнал правок — обещание
+    /// architecture.md: удаление удаляет всё. Журнал хранит дословные
+    /// реплики, поэтому его остаток — не мусор, а неудалённый разговор.
     #[test]
     fn delete_meeting_removes_final_segments() {
         let root = tmp_root();
@@ -1497,11 +1481,28 @@ pub(crate) mod tests {
             store
                 .replace_final_segments("m1", 1, &[segment(0, 0, AudioChannel::Mic, "текст")])
                 .unwrap();
+            store
+                .upsert_segment_edit(&domain::SegmentEdit {
+                    id: "e1".into(),
+                    meeting_id: "m1".into(),
+                    channel: AudioChannel::Mic,
+                    start_ms: 0,
+                    end_ms: 1000,
+                    original_text: "текст".into(),
+                    edited_text: "правленый текст".into(),
+                    created_at_ms: 5,
+                    applied_version: Some(1),
+                })
+                .unwrap();
             store.end_session(10).unwrap();
 
             store.delete_meeting("m1").unwrap();
 
             assert!(store.list_final_segments("m1", 1).unwrap().is_empty());
+            assert!(
+                store.list_segment_edits("m1").unwrap().is_empty(),
+                "дословные реплики не должны пережить удаление встречи"
+            );
         }
         let _ = fs::remove_dir_all(&root);
     }
