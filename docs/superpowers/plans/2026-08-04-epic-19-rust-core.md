@@ -15,7 +15,8 @@
 - Миграции только добавлением шага в `STEPS` (`rust/crates/storage/src/migrations.rs`); существующие шаги не редактируются — база у пользователя уже на них стоит.
 - Существующие термины глоссария после миграции ведут себя как раньше: `kind` по умолчанию `Replacement`.
 - Бизнес-логика в Rust, слой FFI только отдаёт данные (`AGENTS.md`, done criteria).
-- Комментарии и документация по-русски, как в остальном коде.
+- Комментарии и документация в коде — по-русски, как в остальном проекте.
+- Сообщения коммитов — по-английски.
 - Проверка после каждой задачи: `cd rust && cargo test -p <крейт>`; перед коммитом `cargo fmt --check && cargo clippy --all-targets -- -D warnings`.
 - Полный `cargo test` по всему workspace на этой машине не влезает в память — гонять по крейтам.
 
@@ -216,7 +217,7 @@ fn glossary_kind_round_trips() {
 cd rust && cargo test -p meetingraft-domain -p meetingraft-storage -p meetingraft-glossary -p meetingraft-ffi \
   && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 git add rust/
-git commit -m "feat: вид записи глоссария — подсказка или замена"
+git commit -m "feat: glossary term kind — hint or replacement"
 ```
 
 ---
@@ -301,7 +302,7 @@ Expected: PASS
 
 ```bash
 git add rust/crates/glossary
-git commit -m "feat: подсказки глоссария не переписывают текст"
+git commit -m "feat: glossary hints no longer rewrite text"
 ```
 
 ---
@@ -546,7 +547,7 @@ Expected: PASS
 ```bash
 cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 git add rust/
-git commit -m "feat: журнал ручных правок сегментов"
+git commit -m "feat: journal of manual segment edits"
 ```
 
 ---
@@ -674,7 +675,7 @@ Expected: PASS
 ```bash
 cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 git add rust/
-git commit -m "feat: правки накладываются на сегменты при чтении"
+git commit -m "feat: apply edits to segments on read"
 ```
 
 ---
@@ -849,7 +850,7 @@ Expected: PASS, все четыре
 ```bash
 cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 git add rust/crates/postcall
-git commit -m "feat: перенос ручных правок на новую версию Final"
+git commit -m "feat: reattach manual edits to a new Final version"
 ```
 
 ---
@@ -991,7 +992,7 @@ Expected: PASS
 ```bash
 cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 git add rust/crates/postcall
-git commit -m "feat: термин глоссария из ручной правки"
+git commit -m "feat: derive glossary term from a manual edit"
 ```
 
 ---
@@ -1233,7 +1234,7 @@ Expected: PASS, все четыре
 ```bash
 cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 git add rust/crates/postcall
-git commit -m "feat: правка сегмента рождает подсказку глоссария"
+git commit -m "feat: segment edit spawns a glossary hint"
 ```
 
 ---
@@ -1387,7 +1388,7 @@ Expected: PASS
 ```bash
 cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 git add rust/crates/postcall
-git commit -m "feat: замена применяется ко всем вхождениям через журнал"
+git commit -m "feat: apply replacement to all occurrences via the journal"
 ```
 
 ---
@@ -1589,7 +1590,7 @@ Expected: PASS
 ```bash
 cd rust && cargo fmt --check
 git add rust/crates/ffi
-git commit -m "feat: FFI для правки сегмента и вида термина"
+git commit -m "feat: FFI for segment edits and term kind"
 ```
 
 ---
