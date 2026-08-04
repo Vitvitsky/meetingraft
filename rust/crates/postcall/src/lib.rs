@@ -2,6 +2,7 @@
 
 mod assemble;
 mod diff;
+mod edit_service;
 mod edits;
 mod jobs;
 mod llm;
@@ -15,6 +16,7 @@ mod term_from_edit;
 
 pub use assemble::assemble_final;
 pub use diff::{DiffOp, DiffSpan, diff_words};
+pub use edit_service::{EditOutcome, plan_edit};
 pub use edits::reattach_edits;
 pub use jobs::{
     InlineSpawner, JobHandle, RebuildJobs, RebuildProgress, RebuildState, Spawner, ThreadSpawner,
