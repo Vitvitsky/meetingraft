@@ -202,9 +202,9 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
     }
 
     func testDurationAndTimecodeFormats() {
-        XCTAssertEqual(SpeakerFormat.durationText(ms: 65_000), "1:05")
+        XCTAssertEqual(SpeakerFormat.durationText(ms: 65000), "1:05")
         XCTAssertEqual(SpeakerFormat.durationText(ms: 3_725_000), "1:02:05")
-        XCTAssertEqual(SpeakerFormat.timecode(ms: 65_000), "01:05")
+        XCTAssertEqual(SpeakerFormat.timecode(ms: 65000), "01:05")
         XCTAssertEqual(SpeakerFormat.timecode(ms: 3_725_000), "1:02:05")
     }
 
