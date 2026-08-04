@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use domain::FinalSegment;
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionEvent, CaptionPhase, FinalTranscript,
-    GlossaryScope, GlossaryTerm, MeetingSummary, SearchHit, SearchHitKind, Speaker, SpeechLanguage,
+    GlossaryKind, GlossaryScope, GlossaryTerm, MeetingSummary, SearchHit, SearchHitKind, Speaker,
+    SpeechLanguage,
 };
 use rusqlite::{Connection, params};
 use thiserror::Error;
@@ -873,7 +874,7 @@ impl AudioManifestStore {
     /// Вернуть сохранённые термины в стабильном порядке.
     pub fn list_glossary_terms(&self) -> Result<Vec<GlossaryTerm>, AudioManifestError> {
         let mut statement = self.conn.prepare(
-            "SELECT id, surface, canonical, language, scope, meeting_id
+            "SELECT id, surface, canonical, language, scope, meeting_id, kind
              FROM glossary_terms
              ORDER BY surface, language, scope, ifnull(meeting_id, ''), id",
         )?;
@@ -887,6 +888,7 @@ impl AudioManifestStore {
                 canonical: row.get(2)?,
                 language: Self::parse_speech_language(&language)?,
                 scope: Self::parse_glossary_scope(&scope, meeting_id)?,
+                kind: GlossaryKind::from_code(row.get::<_, i64>(6)?),
             })
         })?;
 
@@ -1009,8 +1011,8 @@ impl AudioManifestStore {
         )?;
         connection.execute(
             "INSERT INTO glossary_terms
-             (id, surface, canonical, language, scope, meeting_id, updated_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (id, surface, canonical, language, scope, meeting_id, updated_at_ms, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 term.id,
                 term.surface,
@@ -1018,7 +1020,8 @@ impl AudioManifestStore {
                 term.language.code(),
                 scope,
                 meeting_id,
-                updated_at_ms as i64
+                updated_at_ms as i64,
+                term.kind.code()
             ],
         )?;
         Ok(())
@@ -1099,8 +1102,8 @@ impl AudioManifestStore {
 mod tests {
     use super::*;
     use domain::{
-        Artifact, ArtifactKind, CaptionEvent, CaptionPhase, FinalTranscript, GlossaryScope,
-        GlossaryTerm, SpeechLanguage,
+        Artifact, ArtifactKind, CaptionEvent, CaptionPhase, FinalTranscript, GlossaryKind,
+        GlossaryScope, GlossaryTerm, SpeechLanguage,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2030,6 +2033,7 @@ mod tests {
                 canonical: "UniFFI".into(),
                 language: SpeechLanguage::Ru,
                 scope: GlossaryScope::Global,
+                kind: GlossaryKind::Replacement,
             };
 
             store.upsert_glossary_term(&term, 1).unwrap();
@@ -2041,6 +2045,28 @@ mod tests {
 
             store.delete_glossary_term("term-1").unwrap();
             assert!(store.list_glossary_terms().unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn glossary_kind_round_trips() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let term = GlossaryTerm {
+                id: "t1".into(),
+                surface: "интра ру".into(),
+                canonical: "intra.ru".into(),
+                language: SpeechLanguage::Ru,
+                scope: GlossaryScope::Global,
+                kind: GlossaryKind::Hint,
+            };
+            store.upsert_glossary_term(&term, 0).unwrap();
+
+            let read = store.list_glossary_terms().unwrap();
+            assert_eq!(read.len(), 1);
+            assert_eq!(read[0].kind, GlossaryKind::Hint);
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -2130,6 +2156,7 @@ mod tests {
                 canonical: "Raft".into(),
                 language: SpeechLanguage::Ru,
                 scope: GlossaryScope::Global,
+                kind: GlossaryKind::Replacement,
             };
             let imported = GlossaryTerm {
                 id: "term-2".into(),
@@ -2139,6 +2166,7 @@ mod tests {
                 scope: GlossaryScope::Meeting {
                     meeting_id: "meeting-1".into(),
                 },
+                kind: GlossaryKind::Replacement,
             };
             store.upsert_glossary_term(&unrelated, 1).unwrap();
 

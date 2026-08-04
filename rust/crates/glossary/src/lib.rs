@@ -9,7 +9,7 @@ pub use engine::{GlossaryEngine, active_terms};
 
 #[cfg(test)]
 mod tests {
-    use domain::{GlossaryScope, GlossaryTerm, SpeechLanguage};
+    use domain::{GlossaryKind, GlossaryScope, GlossaryTerm, SpeechLanguage};
 
     use crate::{GlossaryEngine, active_terms, parse_csv};
 
@@ -34,6 +34,7 @@ mod tests {
             canonical: canonical.into(),
             language,
             scope,
+            kind: GlossaryKind::Replacement,
         }
     }
 

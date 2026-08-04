@@ -9,8 +9,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use domain::{
-    Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryScope,
-    GlossaryTerm, LanguagePolicy, MeetingSummary, SearchHit, SessionState, Speaker, SpeechLanguage,
+    Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryKind,
+    GlossaryScope, GlossaryTerm, LanguagePolicy, MeetingSummary, SearchHit, SessionState, Speaker,
+    SpeechLanguage,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
@@ -532,6 +533,9 @@ fn glossary_term_from_ffi(term: FfiGlossaryTerm) -> Result<GlossaryTerm, String>
         canonical: canonical.to_owned(),
         language,
         scope,
+        // Swift-граница вида записи ещё не знает; до её появления термин
+        // с той стороны — замена, как было раньше.
+        kind: GlossaryKind::Replacement,
     })
 }
 

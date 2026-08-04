@@ -1,6 +1,6 @@
 //! Импорт терминов из CSV-контракта Glossary MVP.
 
-use domain::{GlossaryScope, GlossaryTerm, SpeechLanguage};
+use domain::{GlossaryKind, GlossaryScope, GlossaryTerm, SpeechLanguage};
 use uuid::Uuid;
 
 const REQUIRED_COLUMNS: [&str; 4] = ["surface", "canonical", "language", "scope"];
@@ -112,6 +112,9 @@ fn parse_row(values: &[String], meeting_id_index: Option<usize>) -> Option<Gloss
         canonical: canonical.to_owned(),
         language,
         scope,
+        // Импортированные термины остаются заменами: человек привёз
+        // готовый словарь замен, менять его смысл импортом нельзя.
+        kind: GlossaryKind::Replacement,
     })
 }
 
