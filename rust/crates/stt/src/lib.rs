@@ -15,7 +15,7 @@ mod whisper_batch;
 
 pub use batch::{BatchTranscribeError, BatchTranscriber, MockBatchTranscriber, normalize_segments};
 pub use engine::SttEngine;
-pub use hallucination::is_whisper_hallucination;
+pub use hallucination::{is_hallucination_prefix, is_whisper_hallucination};
 pub use local_agreement::{
     HypothesisWord, LocalAgreement, Stabilized, backfill_end_ms, words_from_tokens,
 };
