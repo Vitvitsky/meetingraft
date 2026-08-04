@@ -1,6 +1,7 @@
 //! SQLite audio_manifest + файлы чанков на диске.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -597,10 +598,29 @@ impl AudioManifestStore {
         // хэш-карте, а не перебором: иначе на каждое открытие экрана
         // транскрипта уходило бы O(N · M_всего) вместо O(N + M_версии).
         let edits = self.list_segment_edits_for_version(meeting_id, version)?;
-        let edits_by_position: HashMap<(AudioChannel, u64, u64), _> = edits
-            .into_iter()
-            .map(|edit| ((edit.channel, edit.start_ms, edit.end_ms), edit))
-            .collect();
+        // Две правки могут лечь на одну позицию одной версии: пересбор
+        // пересаживает правки на новую нарезку по перекрытию времени, и
+        // если новые границы слили два ранее правленых сегмента в один,
+        // обе правки получат один ключ. Побеждает более поздняя по
+        // `created_at_ms` — это последнее решение человека по этому месту,
+        // а порядок выборки из базы (и тем более `id`) к давности правки
+        // отношения не имеет и опираться на него было бы случайностью.
+        // При равных `created_at_ms` для детерминизма берём большего `id`.
+        let mut edits_by_position: HashMap<(AudioChannel, u64, u64), _> = HashMap::new();
+        for edit in edits {
+            let key = (edit.channel, edit.start_ms, edit.end_ms);
+            match edits_by_position.entry(key) {
+                Entry::Vacant(slot) => {
+                    slot.insert(edit);
+                }
+                Entry::Occupied(mut slot) => {
+                    let current = slot.get();
+                    if (edit.created_at_ms, &edit.id) > (current.created_at_ms, &current.id) {
+                        slot.insert(edit);
+                    }
+                }
+            }
+        }
         for segment in &mut segments {
             let key = (segment.channel, segment.start_ms, segment.end_ms);
             if let Some(edit) = edits_by_position.get(&key) {

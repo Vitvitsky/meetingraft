@@ -228,6 +228,50 @@ mod tests {
         assert!(!v2[0].text_edited);
     }
 
+    /// Пересбор может пересадить на одну позицию сразу две правки (новая
+    /// нарезка слила два ранее правленых сегмента в один — Epic 19): у
+    /// обеих один и тот же ключ «канал, начало, конец». Побеждать должна
+    /// более поздняя по `created_at_ms` — это последнее решение человека.
+    /// `e1` создана позже `e2`, но выборка из базы идёт по `id` (`ORDER BY
+    /// start_ms, id`), так что в порядке обработки старая правка (`e2`)
+    /// идёт последней. Тест ловит наивную реализацию, которая доверяет
+    /// порядку выборки, а не времени правки.
+    #[test]
+    fn edit_collision_on_same_position_prefers_the_latest_by_created_at() {
+        use domain::FinalSegment;
+
+        let mut store = AudioManifestStore::open(tmp_root()).expect("store");
+        store
+            .replace_final_segments(
+                "m1",
+                1,
+                &[FinalSegment {
+                    index: 0,
+                    start_ms: 1000,
+                    end_ms: 2000,
+                    channel: AudioChannel::Mic,
+                    speaker_id: String::new(),
+                    speaker_pinned: false,
+                    text: "интра ру".into(),
+                    text_edited: false,
+                }],
+            )
+            .expect("segments");
+
+        let mut newer = edit("e1", Some(1));
+        newer.created_at_ms = 200;
+        newer.edited_text = "новая правка".into();
+        store.upsert_segment_edit(&newer).expect("upsert");
+
+        let mut older = edit("e2", Some(1));
+        older.created_at_ms = 100;
+        older.edited_text = "старая правка".into();
+        store.upsert_segment_edit(&older).expect("upsert");
+
+        let segments = store.list_final_segments("m1", 1).expect("list");
+        assert_eq!(segments[0].text, "новая правка");
+    }
+
     /// Повторный `upsert_segment_edit` с тем же `id` проходит ветку
     /// `ON CONFLICT ... DO UPDATE`: обновляются только `edited_text` и
     /// `applied_version`, остальные поля (включая `original_text`) должны
