@@ -30,7 +30,7 @@
 - Modify (компиляция): `rust/crates/glossary/src/lib.rs`, `rust/crates/glossary/src/csv_import.rs`, `rust/crates/ffi/src/lib.rs` — всего 17 мест конструирования `GlossaryTerm`
 
 **Interfaces:**
-- Produces: `domain::GlossaryKind { Hint, Replacement }`, поле `GlossaryTerm.kind: GlossaryKind`, методы `GlossaryKind::code(self) -> &'static str` и `GlossaryKind::from_code(&str) -> GlossaryKind`
+- Produces: `domain::GlossaryKind { Hint, Replacement }`, поле `GlossaryTerm.kind: GlossaryKind`, методы `GlossaryKind::code(self) -> i64` и `GlossaryKind::from_code(i64) -> GlossaryKind`
 
 - [ ] **Step 1: Написать падающий тест на умолчание миграции**
 
@@ -60,7 +60,7 @@ fn existing_glossary_terms_become_replacements() {
 
 - [ ] **Step 2: Убедиться, что тест падает**
 
-Run: `cd rust && cargo test -p storage existing_glossary_terms_become_replacements`
+Run: `cd rust && cargo test -p meetingraft-storage existing_glossary_terms_become_replacements`
 Expected: FAIL — `no such column: kind`
 
 - [ ] **Step 3: Добавить шаг миграции**
@@ -80,7 +80,7 @@ Expected: FAIL — `no such column: kind`
 
 - [ ] **Step 4: Убедиться, что тест проходит**
 
-Run: `cd rust && cargo test -p storage existing_glossary_terms_become_replacements`
+Run: `cd rust && cargo test -p meetingraft-storage existing_glossary_terms_become_replacements`
 Expected: PASS
 
 - [ ] **Step 5: Добавить тип в domain**
@@ -182,7 +182,7 @@ pub struct GlossaryTerm {
 
 - [ ] **Step 7: Починить оставшиеся места конструирования**
 
-Run: `cd rust && cargo build -p glossary -p ffi -p storage 2>&1 | grep "missing field"`
+Run: `cd rust && cargo build -p meetingraft-glossary -p meetingraft-ffi -p meetingraft-storage 2>&1 | grep "missing field"`
 
 В каждое место добавить `kind: GlossaryKind::Replacement` — кроме `csv_import.rs`, где импорт тоже даёт замены (человек привёз готовый словарь замен).
 
@@ -193,8 +193,7 @@ Run: `cd rust && cargo build -p glossary -p ffi -p storage 2>&1 | grep "missing 
 ```rust
 #[test]
 fn glossary_kind_round_trips() {
-    let dir = tempdir().expect("tempdir");
-    let mut store = AudioManifestStore::open(dir.path()).expect("store");
+    let mut store = AudioManifestStore::open(tmp_root()).expect("store");
     let term = GlossaryTerm {
         id: "t1".into(),
         surface: "интра ру".into(),
@@ -214,7 +213,7 @@ fn glossary_kind_round_trips() {
 - [ ] **Step 9: Прогон и коммит**
 
 ```bash
-cd rust && cargo test -p domain -p storage -p glossary -p ffi \
+cd rust && cargo test -p meetingraft-domain -p meetingraft-storage -p meetingraft-glossary -p meetingraft-ffi \
   && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 git add rust/
 git commit -m "feat: вид записи глоссария — подсказка или замена"
@@ -268,7 +267,7 @@ fn hint_still_reaches_whisper_prompt() {
 
 - [ ] **Step 2: Убедиться, что первый падает, второй проходит**
 
-Run: `cd rust && cargo test -p glossary hint_`
+Run: `cd rust && cargo test -p meetingraft-glossary hint_`
 Expected: `hint_does_not_rewrite_text` FAIL (вернулось «пошёл дальше»), `hint_still_reaches_whisper_prompt` PASS
 
 - [ ] **Step 3: Отфильтровать вид в normalize_caption**
@@ -295,7 +294,7 @@ Expected: `hint_does_not_rewrite_text` FAIL (вернулось «пошёл д�
 
 - [ ] **Step 4: Прогон**
 
-Run: `cd rust && cargo test -p glossary`
+Run: `cd rust && cargo test -p meetingraft-glossary`
 Expected: PASS
 
 - [ ] **Step 5: Коммит**
@@ -357,9 +356,9 @@ pub struct SegmentEdit {
 #[cfg(test)]
 mod tests {
     use domain::{AudioChannel, SegmentEdit};
-    use tempfile::tempdir;
 
     use crate::AudioManifestStore;
+    use crate::audio_manifest::tests::tmp_root;
 
     fn edit(id: &str, applied: Option<u32>) -> SegmentEdit {
         SegmentEdit {
@@ -377,8 +376,7 @@ mod tests {
 
     #[test]
     fn upsert_list_and_delete_edits() {
-        let dir = tempdir().expect("tempdir");
-        let mut store = AudioManifestStore::open(dir.path()).expect("store");
+        let mut store = AudioManifestStore::open(tmp_root()).expect("store");
 
         store.upsert_segment_edit(&edit("e1", Some(1))).expect("upsert");
         store.upsert_segment_edit(&edit("e2", None)).expect("upsert");
@@ -400,7 +398,7 @@ mod tests {
 
 - [ ] **Step 3: Убедиться, что не компилируется**
 
-Run: `cd rust && cargo test -p storage upsert_list_and_delete_edits`
+Run: `cd rust && cargo test -p meetingraft-storage upsert_list_and_delete_edits`
 Expected: FAIL — `no method named upsert_segment_edit`
 
 - [ ] **Step 4: Добавить таблицу**
@@ -540,7 +538,7 @@ impl AudioManifestStore {
 
 - [ ] **Step 6: Прогон**
 
-Run: `cd rust && cargo test -p storage upsert_list_and_delete_edits`
+Run: `cd rust && cargo test -p meetingraft-storage upsert_list_and_delete_edits`
 Expected: PASS
 
 - [ ] **Step 7: Коммит**
@@ -574,8 +572,7 @@ git commit -m "feat: журнал ручных правок сегментов"
 fn edit_overrides_segment_text_of_its_version() {
     use domain::FinalSegment;
 
-    let dir = tempdir().expect("tempdir");
-    let mut store = AudioManifestStore::open(dir.path()).expect("store");
+    let mut store = AudioManifestStore::open(tmp_root()).expect("store");
     store
         .replace_final_segments(
             "m1",
@@ -623,7 +620,7 @@ fn edit_overrides_segment_text_of_its_version() {
 
 - [ ] **Step 2: Убедиться, что не компилируется**
 
-Run: `cd rust && cargo test -p storage edit_overrides_segment_text_of_its_version`
+Run: `cd rust && cargo test -p meetingraft-storage edit_overrides_segment_text_of_its_version`
 Expected: FAIL — `struct FinalSegment has no field named text_edited`
 
 - [ ] **Step 3: Добавить поле**
@@ -669,7 +666,7 @@ Expected: FAIL — `struct FinalSegment has no field named text_edited`
 
 - [ ] **Step 5: Прогон**
 
-Run: `cd rust && cargo test -p storage -p postcall`
+Run: `cd rust && cargo test -p meetingraft-storage -p postcall`
 Expected: PASS
 
 - [ ] **Step 6: Коммит**
@@ -782,7 +779,7 @@ mod tests {
 
 - [ ] **Step 2: Убедиться, что не компилируется**
 
-Run: `cd rust && cargo test -p postcall reattach`
+Run: `cd rust && cargo test -p meetingraft-postcall reattach`
 Expected: FAIL — `cannot find function reattach_edits`
 
 - [ ] **Step 3: Реализовать**
@@ -844,7 +841,7 @@ fn overlap_ms(edit: &SegmentEdit, segment: &FinalSegment) -> Option<u64> {
 
 - [ ] **Step 4: Прогон**
 
-Run: `cd rust && cargo test -p postcall reattach`
+Run: `cd rust && cargo test -p meetingraft-postcall reattach`
 Expected: PASS, все четыре
 
 - [ ] **Step 5: Коммит**
@@ -915,7 +912,7 @@ mod tests {
 
 - [ ] **Step 2: Убедиться, что не компилируется**
 
-Run: `cd rust && cargo test -p postcall term_from_edit`
+Run: `cd rust && cargo test -p meetingraft-postcall term_from_edit`
 Expected: FAIL — `cannot find function term_from_edit`
 
 - [ ] **Step 3: Реализовать**
@@ -986,7 +983,7 @@ fn word_count(text: &str) -> usize {
 
 - [ ] **Step 4: Прогон**
 
-Run: `cd rust && cargo test -p postcall term_from_edit`
+Run: `cd rust && cargo test -p meetingraft-postcall term_from_edit`
 Expected: PASS
 
 - [ ] **Step 5: Коммит**
@@ -1137,7 +1134,7 @@ mod tests {
 
 - [ ] **Step 2: Убедиться, что не компилируется**
 
-Run: `cd rust && cargo test -p postcall plan_edit`
+Run: `cd rust && cargo test -p meetingraft-postcall plan_edit`
 Expected: FAIL — `cannot find function plan_edit`
 
 - [ ] **Step 3: Реализовать**
@@ -1228,7 +1225,7 @@ pub fn plan_edit(
 
 - [ ] **Step 4: Прогон**
 
-Run: `cd rust && cargo test -p postcall plan_edit`
+Run: `cd rust && cargo test -p meetingraft-postcall plan_edit`
 Expected: PASS, все четыре
 
 - [ ] **Step 5: Коммит**
@@ -1325,7 +1322,7 @@ fn replacement_skips_already_edited_places() {
 
 - [ ] **Step 2: Убедиться, что не компилируется**
 
-Run: `cd rust && cargo test -p postcall occurrences_to_edit`
+Run: `cd rust && cargo test -p meetingraft-postcall occurrences_to_edit`
 Expected: FAIL — `cannot find function occurrences_to_edit`
 
 - [ ] **Step 3: Реализовать**
@@ -1382,7 +1379,7 @@ pub fn occurrences_to_edit(
 
 - [ ] **Step 4: Прогон**
 
-Run: `cd rust && cargo test -p postcall`
+Run: `cd rust && cargo test -p meetingraft-postcall`
 Expected: PASS
 
 - [ ] **Step 5: Коммит**
@@ -1584,7 +1581,7 @@ pub struct FfiSegmentEdit {
 
 - [ ] **Step 4: Сборка и тесты**
 
-Run: `cd rust && cargo test -p ffi && cargo clippy --all-targets -- -D warnings`
+Run: `cd rust && cargo test -p meetingraft-ffi && cargo clippy --all-targets -- -D warnings`
 Expected: PASS
 
 - [ ] **Step 5: Коммит**
