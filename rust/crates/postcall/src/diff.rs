@@ -41,6 +41,11 @@ pub struct DiffSpan {
 const MAX_LCS_WORDS: usize = 1200;
 
 /// Сравнить два текста по словам.
+///
+/// Инвариант для потребителей: результат никогда не содержит три и более
+/// чередующихся несовпадающих участков подряд (т.е. Removed, Added, Removed, Added
+/// и т.д.). На этот инвариант опирается code `term_from_edit`, которая пропускает
+/// сразу на индекс+2 при нахождении пары (Removed, Added) или (Added, Removed).
 pub fn diff_words(live: &str, final_text: &str) -> Vec<DiffSpan> {
     let left: Vec<&str> = live.split_whitespace().collect();
     let right: Vec<&str> = final_text.split_whitespace().collect();

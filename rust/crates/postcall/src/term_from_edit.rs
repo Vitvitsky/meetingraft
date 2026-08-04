@@ -24,6 +24,11 @@ pub fn term_from_edit(original: &str, edited: &str) -> Option<(String, String)> 
     // берётся из Removed — это то, что распознала модель.
     let mut pair: Option<(String, String)> = None;
     let mut index = 0;
+    // Цикл опирается на инвариант diff_words: никогда не выдаёт три и более
+    // чередующихся несовпадающих участка подряд (т.е. Removed, Added, Removed,
+    // Added и т.д.). Это позволяет пропускать сразу на индекс+2 при нахождении
+    // пары (Removed, Added) или (Added, Removed). Если diff_words будет изменена,
+    // это правило может сломаться тихо (см. зависимость в diff.rs).
     while index + 1 < spans.len() {
         let (left, right) = (&spans[index], &spans[index + 1]);
         let found = match (left.op, right.op) {
@@ -77,10 +82,7 @@ mod tests {
 
     #[test]
     fn long_side_gives_nothing() {
-        let result = term_from_edit(
-            "это интра ру",
-            "это внутренний портал компании интра точка ру",
-        );
+        let result = term_from_edit("открой интра ру", "открой внутренний портал нашей компании");
         assert_eq!(result, None, "больше трёх слов с одной стороны — не термин");
     }
 
