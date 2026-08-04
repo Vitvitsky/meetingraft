@@ -1,35 +1,32 @@
 @preconcurrency import AVFoundation
-import CoreAudio
 import Foundation
 
 /// Захват микрофона через AVAudioEngine → 16 kHz Float mono callbacks.
 ///
-/// Включена голосовая обработка macOS (VPIO): подавление шума,
-/// автоусиление и эхоподавление на выделенном железе. Причины все три
-/// измеренные:
+/// Голосовая обработка macOS (VPIO) по умолчанию **выключена**: она
+/// несовместима с захватом системного звука. VPIO забирает устройство
+/// вывода себе под опорный сигнал для эхоподавления, а `SystemAudioCapture`
+/// строит на том же устройстве своё aggregate — и оно перестаёт
+/// собираться (`AggregateDevice.mm`: не сходятся счётчики каналов).
+/// Канал собеседника при этом пропадает молча, запись остаётся
+/// одноканальной.
 ///
-/// - городской шум за окном пробивал гейт речи и заставлял Whisper
-///   работать непрерывно (Epic 18, замер 2026-08-04);
-/// - тихий собеседник из системного канала не дотягивал до порога;
-/// - без наушников голос из динамиков попадает в микрофонный канал и
-///   ломает атрибуцию по каналам (ADR-012) — оба канала оказываются с
-///   собеседником.
+/// Замер 2026-08-04: с VPIO вход открывается девятиканальным, downlink DSP
+/// падает около сотни раз в секунду, системный tap не стартует ни разу.
+/// Без VPIO — один канал, tap поднимается, отказов нет.
 ///
-/// Системного звука это не касается: он идёт отдельным tap'ом и приходит
-/// уже чистым цифровым потоком, обрабатывать его нечем и незачем.
-///
-/// Отключается `MEETINGRAFT_VOICE_PROCESSING=0` — обработка меняет
-/// сигнал, и её влияние на точность распознавания надо мерить, а не
-/// предполагать. Переменная, а не настройка: сравнивать надо в замерах,
-/// а не в интерфейсе.
+/// Включается `MEETINGRAFT_VOICE_PROCESSING=1` — для замеров шумоподавления
+/// на микрофоне, но тогда системного звука в записи не будет. Переменная,
+/// а не настройка: это инструмент сравнения в прогонах, а не выбор
+/// пользователя.
 final class MicrophoneCapture: AudioTapping {
     private let engine = AVAudioEngine()
     private var downmixer: PCMDownmixer?
     private var onSamples: (([Float]) -> Void)?
 
-    /// Голосовая обработка включена, если её не выключили явно.
+    /// Голосовая обработка включается только явным запросом.
     static var voiceProcessingEnabled: Bool {
-        ProcessInfo.processInfo.environment["MEETINGRAFT_VOICE_PROCESSING"] != "0"
+        ProcessInfo.processInfo.environment["MEETINGRAFT_VOICE_PROCESSING"] == "1"
     }
 
     var isRunning: Bool {
@@ -53,7 +50,6 @@ final class MicrophoneCapture: AudioTapping {
                 NSLog("MeetingRaft: голосовая обработка недоступна (\(error))")
             }
         }
-        NSLog("MeetingRaft/diag: VPIO=\(input.isVoiceProcessingEnabled)")
         // nil format = hardware format; иначе -10877 / пустой stream.
         let hwFormat = input.inputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
@@ -70,70 +66,6 @@ final class MicrophoneCapture: AudioTapping {
             self?.emit(buffer: buffer)
         }
         try engine.start()
-        NSLog("MeetingRaft/diag: движок микрофона запущен, формат входа \(hwFormat)")
-        NSLog("MeetingRaft/diag: устройство входа \(Self.currentInputDeviceDescription(of: input))")
-    }
-
-    /// Какое устройство реально открыл движок: имя, UID, число входных
-    /// каналов. Число каналов у `inputFormat` не сходится ни с одним
-    /// устройством в системе, и гадать по нему бесполезно.
-    private static func currentInputDeviceDescription(of input: AVAudioInputNode) -> String {
-        guard let unit = input.audioUnit else { return "audioUnit недоступен" }
-        var deviceId = AudioDeviceID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = AudioUnitGetProperty(
-            unit,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &deviceId,
-            &size
-        )
-        guard status == noErr, deviceId != kAudioObjectUnknown else {
-            return "не прочиталось (status \(status))"
-        }
-        let name = stringProperty(kAudioObjectPropertyName, of: deviceId) ?? "без имени"
-        let uid = stringProperty(kAudioDevicePropertyDeviceUID, of: deviceId) ?? "без UID"
-        return "id \(deviceId), «\(name)», UID \(uid), входных каналов \(inputChannelCount(of: deviceId))"
-    }
-
-    private static func stringProperty(
-        _ selector: AudioObjectPropertySelector,
-        of deviceId: AudioObjectID
-    ) -> String? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var value: CFString = "" as CFString
-        var size = UInt32(MemoryLayout<CFString>.size)
-        let result = withUnsafeMutablePointer(to: &value) { pointer in
-            AudioObjectGetPropertyData(deviceId, &address, 0, nil, &size, pointer)
-        }
-        return result == noErr ? value as String : nil
-    }
-
-    /// Сумма каналов по всем входным потокам устройства.
-    private static func inputChannelCount(of deviceId: AudioObjectID) -> Int {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: kAudioObjectPropertyScopeInput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var size = UInt32(0)
-        guard AudioObjectGetPropertyDataSize(deviceId, &address, 0, nil, &size) == noErr, size > 0 else {
-            return -1
-        }
-        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: 16)
-        defer { raw.deallocate() }
-        guard AudioObjectGetPropertyData(deviceId, &address, 0, nil, &size, raw) == noErr else {
-            return -1
-        }
-        let list = UnsafeMutableAudioBufferListPointer(
-            raw.assumingMemoryBound(to: AudioBufferList.self)
-        )
-        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
     func stop() {
