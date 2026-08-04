@@ -52,6 +52,7 @@ final class MicrophoneCapture: AudioTapping {
                 NSLog("MeetingRaft: голосовая обработка недоступна (\(error))")
             }
         }
+        NSLog("MeetingRaft/diag: VPIO=\(input.isVoiceProcessingEnabled)")
         // nil format = hardware format; иначе -10877 / пустой stream.
         let hwFormat = input.inputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
@@ -68,6 +69,7 @@ final class MicrophoneCapture: AudioTapping {
             self?.emit(buffer: buffer)
         }
         try engine.start()
+        NSLog("MeetingRaft/diag: движок микрофона запущен, формат входа \(hwFormat)")
     }
 
     func stop() {

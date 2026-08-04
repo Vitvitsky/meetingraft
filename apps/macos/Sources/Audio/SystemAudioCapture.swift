@@ -92,6 +92,7 @@ final class SystemAudioCapture: AudioTapping {
         }
         ioProcId = procId
 
+        NSLog("MeetingRaft/diag: aggregate поднят (id \(aggregate)), запускаю IOProc")
         let startStatus = AudioDeviceStart(aggregate, procId)
         guard startStatus == noErr else {
             stop()
