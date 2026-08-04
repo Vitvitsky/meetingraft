@@ -38,6 +38,34 @@ pub enum AudioManifestError {
     },
 }
 
+/// Максимальная длительность выдаваемого фрагмента.
+///
+/// Фрагмент едет через границу UniFFI целиком; час записи это больше
+/// сотни мегабайт, а слушают всегда одну реплику.
+const MAX_FRAGMENT_MS: u64 = 30_000;
+
+/// Кусок записи с частотой дискретизации, на которой он записан.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PcmFragment {
+    pub pcm: Vec<i16>,
+    /// 0 — в диапазоне ничего не нашлось.
+    pub sample_rate: u32,
+}
+
+impl PcmFragment {
+    pub fn duration_ms(&self) -> u64 {
+        if self.sample_rate == 0 {
+            return 0;
+        }
+        self.pcm.len() as u64 * 1000 / u64::from(self.sample_rate)
+    }
+}
+
+/// Номер отсчёта по смещению внутри чанка.
+fn frame_index(offset_ms: u64, sample_rate: u32) -> usize {
+    (offset_ms * u64::from(sample_rate) / 1000) as usize
+}
+
 /// Строка manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestChunk {
@@ -660,6 +688,86 @@ impl AudioManifestStore {
             );
         }
         Ok(pcm)
+    }
+
+    /// Кусок записи по диапазону времени сегмента.
+    ///
+    /// Нужен, чтобы услышать спорную реплику перед правкой (Epic 19):
+    /// исправлять распознанное на слух, не имея слуха, нельзя.
+    ///
+    /// Читаются только перекрывающие диапазон чанки. Читать всю дорожку
+    /// ради трёх секунд означало бы поднимать с диска сотню мегабайт на
+    /// каждое нажатие.
+    pub fn read_pcm_range(
+        &self,
+        session_id: &str,
+        channel: AudioChannel,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<PcmFragment, AudioManifestError> {
+        if end_ms <= start_ms {
+            return Ok(PcmFragment::default());
+        }
+        // Потолок против запроса «дай всю встречу»: фрагмент едет через
+        // границу UniFFI целиком, и час записи это сотня мегабайт.
+        let end_ms = end_ms.min(start_ms + MAX_FRAGMENT_MS);
+
+        let mut statement = self.conn.prepare(
+            "SELECT path, sample_rate, frame_count, timestamp_ms
+             FROM audio_manifest
+             WHERE session_id = ?1 AND channel = ?2
+               AND timestamp_ms < ?3
+               AND timestamp_ms + (frame_count * 1000 / sample_rate) > ?4
+             ORDER BY seq",
+        )?;
+        let rows = statement.query_map(
+            params![
+                session_id,
+                channel.dir_name(),
+                end_ms as i64,
+                start_ms as i64
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as u32,
+                    row.get::<_, i64>(2)? as usize,
+                    row.get::<_, i64>(3)? as u64,
+                ))
+            },
+        )?;
+
+        let mut fragment = PcmFragment::default();
+        for row in rows {
+            let (relative, sample_rate, frame_count, chunk_start_ms) = row?;
+            if sample_rate == 0 {
+                continue;
+            }
+            if fragment.sample_rate == 0 {
+                fragment.sample_rate = sample_rate;
+            }
+            // Чанки с другой частотой пропускаем: пересэмплировать здесь
+            // значило бы тихо менять звук, который человек пришёл сверить
+            // с текстом.
+            if sample_rate != fragment.sample_rate {
+                continue;
+            }
+
+            let bytes = fs::read(self.root.join(&relative))?;
+            let samples: Vec<i16> = bytes
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            let available = samples.len().min(frame_count);
+
+            let from =
+                frame_index(start_ms.saturating_sub(chunk_start_ms), sample_rate).min(available);
+            let to = frame_index(end_ms.saturating_sub(chunk_start_ms), sample_rate).min(available);
+            if from < to {
+                fragment.pcm.extend_from_slice(&samples[from..to]);
+            }
+        }
+        Ok(fragment)
     }
 
     /// Удалить встречу целиком: строки БД, поисковый индекс и PCM-чанки
@@ -1344,6 +1452,114 @@ mod tests {
     }
 
     /// Чанки склеиваются в порядке seq, каналы не смешиваются.
+    /// Секунда записи чанками по 100 мс: три чанка по 1600 отсчётов.
+    fn seed_second(store: &mut AudioManifestStore, channel: AudioChannel, chunks: u64) {
+        for index in 0..chunks {
+            // Каждый чанк заполнен своим номером — так видно, откуда срез.
+            let sample = (index as i16) + 1;
+            let bytes: Vec<u8> = (0..1_600).flat_map(|_| sample.to_le_bytes()).collect();
+            store
+                .append_chunk(channel, &bytes, 16_000, index * 100)
+                .unwrap();
+        }
+    }
+
+    /// Фрагмент вырезается по времени, а не по границам чанков: реплика
+    /// начинается там, где начинается, а не там, где удобно хранилищу.
+    #[test]
+    fn pcm_range_cuts_inside_chunks() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            seed_second(&mut store, AudioChannel::Mic, 10);
+
+            let fragment = store
+                .read_pcm_range("m1", AudioChannel::Mic, 150, 250)
+                .unwrap();
+
+            assert_eq!(fragment.sample_rate, 16_000);
+            assert_eq!(fragment.pcm.len(), 1_600, "100 мс на 16 кГц");
+            assert_eq!(fragment.duration_ms(), 100);
+            // Половина второго чанка и половина третьего.
+            assert_eq!(fragment.pcm[0], 2);
+            assert_eq!(fragment.pcm[1_599], 3);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Соседний канал в срез попадать не должен: слушают конкретного
+    /// говорящего, а не всё сразу.
+    #[test]
+    fn pcm_range_keeps_channels_apart() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            seed_second(&mut store, AudioChannel::Mic, 4);
+
+            let fragment = store
+                .read_pcm_range("m1", AudioChannel::System, 0, 400)
+                .unwrap();
+
+            assert!(fragment.pcm.is_empty());
+            assert_eq!(
+                fragment.sample_rate, 0,
+                "нечего играть — нечего и настраивать"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pcm_range_rejects_empty_and_inverted_ranges() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            seed_second(&mut store, AudioChannel::Mic, 4);
+
+            assert!(
+                store
+                    .read_pcm_range("m1", AudioChannel::Mic, 200, 200)
+                    .unwrap()
+                    .pcm
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .read_pcm_range("m1", AudioChannel::Mic, 300, 100)
+                    .unwrap()
+                    .pcm
+                    .is_empty()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Запрос «дай всю встречу» ограничивается потолком: фрагмент едет
+    /// через границу UniFFI целиком.
+    #[test]
+    fn pcm_range_is_capped() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            seed_second(&mut store, AudioChannel::Mic, 10);
+
+            let fragment = store
+                .read_pcm_range("m1", AudioChannel::Mic, 0, 60 * 60 * 1000)
+                .unwrap();
+
+            assert_eq!(
+                fragment.pcm.len(),
+                16_000,
+                "секунда записи, а не час запроса"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn read_session_pcm_concatenates_channel_in_order() {
         let root = tmp_root();

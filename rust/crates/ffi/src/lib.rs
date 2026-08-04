@@ -121,6 +121,16 @@ pub struct FfiFinalSegment {
     pub text: String,
 }
 
+/// Кусок записи для прослушивания реплики.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiAudioFragment {
+    /// PCM i16 little-endian, моно.
+    pub pcm: Vec<u8>,
+    /// 0 — в запрошенном диапазоне записи нет.
+    pub sample_rate: u32,
+    pub duration_ms: u64,
+}
+
 /// Сводка по участнику встречи.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiSpeakerStat {
@@ -1325,6 +1335,47 @@ impl MeetingCore {
             .collect()
     }
 
+    /// Звук реплики: диапазон времени на её же дорожке.
+    ///
+    /// Нужен, чтобы услышать спорное слово перед правкой (Epic 19):
+    /// исправлять распознанное на слух, не имея слуха, нельзя.
+    ///
+    /// Канал берётся из сегмента, а не угадывается: после ADR-011 он
+    /// известен точно, и играть надо именно того, кто это сказал.
+    pub fn segment_audio(
+        &self,
+        meeting_id: String,
+        channel_code: String,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> FfiAudioFragment {
+        let empty = FfiAudioFragment {
+            pcm: Vec::new(),
+            sample_rate: 0,
+            duration_ms: 0,
+        };
+        let Some(store) = open_store(self) else {
+            return empty;
+        };
+        let Ok(fragment) = store.read_pcm_range(
+            &meeting_id,
+            AudioChannel::from_code(&channel_code),
+            start_ms,
+            end_ms,
+        ) else {
+            return empty;
+        };
+        FfiAudioFragment {
+            duration_ms: fragment.duration_ms(),
+            sample_rate: fragment.sample_rate,
+            pcm: fragment
+                .pcm
+                .iter()
+                .flat_map(|sample| sample.to_le_bytes())
+                .collect(),
+        }
+    }
+
     /// Сводка по участникам версии Final.
     pub fn list_speaker_stats(&self, meeting_id: String, version: u32) -> Vec<FfiSpeakerStat> {
         let Some(store) = open_store(self) else {
@@ -2334,6 +2385,43 @@ mod tests {
         core.set_diagnostics_log_enabled(false);
         assert!(!core.is_diagnostics_log_enabled());
         assert_eq!(core.diagnostics_log_size_bytes(), 0, "прошлое тоже стёрто");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Звук реплики должен приходить с её собственной дорожки и в
+    /// границах её времени: слушают конкретное слово конкретного
+    /// человека, а не отрезок встречи.
+    #[test]
+    fn segment_audio_returns_the_range_of_its_own_channel() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-audio-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-audio".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store.begin_session(&meeting_id, 1, "").expect("session");
+            for index in 0..10u64 {
+                let sample = (index as i16) + 1;
+                let bytes: Vec<u8> = (0..1_600).flat_map(|_| sample.to_le_bytes()).collect();
+                store
+                    .append_chunk(AudioChannel::Mic, &bytes, 16_000, index * 100)
+                    .expect("chunk");
+            }
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let fragment = core.segment_audio(meeting_id.clone(), "mic".into(), 100, 300);
+        assert_eq!(fragment.sample_rate, 16_000);
+        assert_eq!(fragment.duration_ms, 200);
+        assert_eq!(fragment.pcm.len(), 200 * 16 * 2, "i16 little-endian");
+
+        // На системной дорожке этой встречи не записано ничего.
+        let other = core.segment_audio(meeting_id, "system".into(), 100, 300);
+        assert_eq!(other.duration_ms, 0);
+        assert!(other.pcm.is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
     }
