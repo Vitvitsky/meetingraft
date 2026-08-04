@@ -1482,7 +1482,10 @@ impl MeetingCore {
         // отдал правленый текст, а сравнивать введённое надо с
         // распознанным. Иначе повторный ввод того же текста читался бы
         // как возврат к исходному и правка бы удалилась.
-        let existing = store.list_segment_edits(&meeting_id).unwrap_or_default();
+        let existing = match store.list_segment_edits(&meeting_id) {
+            Ok(edits) => edits,
+            Err(error) => return error.to_string(),
+        };
         let previous = existing.into_iter().find(|edit| {
             edit.channel == segment.channel
                 && edit.start_ms == segment.start_ms
@@ -1492,6 +1495,9 @@ impl MeetingCore {
         let mut recognized = segment.clone();
         if let Some(previous) = &previous {
             recognized.text = previous.original_text.clone();
+            // На разбор в plan_edit это поле не влияет — выставляется для
+            // смысловой целостности копии: `recognized` должен отражать
+            // распознанное состояние сегмента, а не текущее правленое.
             recognized.text_edited = false;
         }
 
