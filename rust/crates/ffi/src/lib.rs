@@ -1537,7 +1537,13 @@ impl MeetingCore {
             recognized.text_edited = false;
         }
 
-        let terms = store.list_glossary_terms().unwrap_or_default();
+        // Пустой список вместо ошибки здесь недопустим: по нему plan_edit
+        // не найдёт действующий термин, выдаст новый с видом «подсказка», и
+        // подтверждённая человеком замена будет молча понижена.
+        let terms = match store.list_glossary_terms() {
+            Ok(terms) => terms,
+            Err(error) => return error.to_string(),
+        };
         let language = {
             let guard = self.inner.lock().expect("meeting core poisoned");
             guard.language_policy.primary
