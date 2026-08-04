@@ -2,6 +2,7 @@
 
 mod assemble;
 mod diff;
+mod edits;
 mod jobs;
 mod llm;
 mod llm_http;
@@ -13,6 +14,7 @@ mod templates;
 
 pub use assemble::assemble_final;
 pub use diff::{DiffOp, DiffSpan, diff_words};
+pub use edits::reattach_edits;
 pub use jobs::{
     InlineSpawner, JobHandle, RebuildJobs, RebuildProgress, RebuildState, Spawner, ThreadSpawner,
 };
