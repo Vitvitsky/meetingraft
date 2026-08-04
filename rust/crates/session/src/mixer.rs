@@ -19,6 +19,36 @@ pub const DEFAULT_TOLERANCE_SLOTS: u64 = 2;
 /// Во сколько раз канал должен быть громче, чтобы перехватить доминирование.
 const HYSTERESIS_RATIO: f32 = 1.5;
 
+// Выравнивание громкости каналов.
+//
+// Уровень системного канала задан не человеком, а громкостью Zoom и тем,
+// как далеко собеседник сидит от своего микрофона. Тихий собеседник даёт
+// RMS втрое ниже порога живого распознавания и просто не доходит до
+// модели — при том, что ушами он слышен. Микрофон владельца машины такой
+// проблемы не имеет: он рядом.
+//
+// Поэтому тихий канал поднимается к целевому уровню, а громкий не
+// трогается: приглушать чужую речь ради симметрии смысла нет.
+
+/// Целевой уровень для поднятого канала.
+const TARGET_RMS: f32 = 1_200.0;
+/// Потолок усиления: выше начинается шум, а не речь.
+const MAX_GAIN: f32 = 5.0;
+/// Выше этого уровня канал считается нормально слышимым и не трогается.
+///
+/// Без потолка микшер переставал быть прозрачным для обычной речи: он
+/// подтягивал к цели и её тоже. Задача узкая — вытащить тихого
+/// собеседника, а не переписать громкость всего живого пути.
+const QUIET_CEILING_RMS: f32 = 700.0;
+/// Ниже этого уровня канал не поднимается вовсе.
+///
+/// Иначе усиливалась бы тишина линии, а Whisper на тишине выдаёт титры
+/// (Epic 16) — лечили бы одно, ломая другое.
+const GAIN_NOISE_FLOOR_RMS: f32 = 150.0;
+/// Доля нового значения при сглаживании: резкий скачок усиления слышен
+/// как «накачка» и сбивает распознавание на границе кадров.
+const GAIN_SMOOTHING: f32 = 0.25;
+
 /// Выровненный кадр: микс каналов и канал говорящего.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MixedFrame {
@@ -46,6 +76,8 @@ pub struct ChannelMixer {
     next_slot: u64,
     dominant: AudioChannel,
     late_chunks: u64,
+    mic_gain: f32,
+    system_gain: f32,
 }
 
 impl Default for ChannelMixer {
@@ -69,6 +101,8 @@ impl ChannelMixer {
             next_slot: 0,
             dominant: AudioChannel::Mic,
             late_chunks: 0,
+            mic_gain: 1.0,
+            system_gain: 1.0,
         }
     }
 
@@ -152,16 +186,24 @@ impl ChannelMixer {
     fn mix(&mut self, index: u64, slot: Slot) -> MixedFrame {
         let mic = slot.mic.unwrap_or_default();
         let system = slot.system.unwrap_or_default();
+        let mic_rms = rms(&mic);
+        let system_rms = rms(&system);
+        self.mic_gain = smooth_gain(self.mic_gain, target_gain(mic_rms));
+        self.system_gain = smooth_gain(self.system_gain, target_gain(system_rms));
+
         let len = mic.len().max(system.len());
         let mut pcm = Vec::with_capacity(len);
         for position in 0..len {
-            let left = i32::from(mic.get(position).copied().unwrap_or(0));
-            let right = i32::from(system.get(position).copied().unwrap_or(0));
+            let left = f32::from(mic.get(position).copied().unwrap_or(0)) * self.mic_gain;
+            let right = f32::from(system.get(position).copied().unwrap_or(0)) * self.system_gain;
             // Клампим, а не делим пополам: деление глушило бы монолог вдвое.
-            pcm.push((left + right).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16);
+            pcm.push((left + right).clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16);
         }
 
-        self.dominant = next_dominant(self.dominant, rms(&mic), rms(&system));
+        // Доминирование считается по **исходным** уровням: после
+        // выравнивания каналы сравнялись бы по определению, и атрибуция
+        // говорящего превратилась бы в подбрасывание монеты.
+        self.dominant = next_dominant(self.dominant, mic_rms, system_rms);
         self.next_slot = index + 1;
 
         MixedFrame {
@@ -184,6 +226,21 @@ fn next_dominant(current: AudioChannel, mic: f32, system: f32) -> AudioChannel {
     }
 }
 
+/// Во сколько раз поднять канал, чтобы он дошёл до модели.
+///
+/// Только вверх: громкий канал не трогается, иначе выравнивание глушило
+/// бы нормальную речь ради тихой.
+fn target_gain(level: f32) -> f32 {
+    if !(GAIN_NOISE_FLOOR_RMS..QUIET_CEILING_RMS).contains(&level) {
+        return 1.0;
+    }
+    (TARGET_RMS / level).clamp(1.0, MAX_GAIN)
+}
+
+fn smooth_gain(current: f32, target: f32) -> f32 {
+    current + (target - current) * GAIN_SMOOTHING
+}
+
 fn rms(samples: &[i16]) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -194,6 +251,77 @@ fn rms(samples: &[i16]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// Тихий собеседник обязан дойти до модели: ушами он слышен, а до
+    /// выравнивания его RMS был втрое ниже порога живого распознавания.
+    #[test]
+    fn quiet_system_channel_is_lifted_toward_the_target() {
+        let mut mixer = ChannelMixer::with_params(100, 2);
+        mixer.set_system_expected(true);
+        // Микрофон молчит, собеседник говорит тихо.
+        for index in 0..40 {
+            mixer.push(AudioChannel::Mic, &tone(50, 1_600), index * 100);
+            mixer.push(AudioChannel::System, &tone(240, 1_600), index * 100);
+        }
+
+        let frames = mixer.drain();
+        let last = frames.last().expect("кадр");
+
+        assert!(
+            rms(&last.pcm) > 700.0,
+            "тихий канал не поднят: {}",
+            rms(&last.pcm)
+        );
+    }
+
+    /// Громкую речь выравнивание трогать не должно: приглушать её ради
+    /// симметрии с тихим каналом значит портить то, что уже работает.
+    #[test]
+    fn loud_channel_is_left_alone() {
+        let mut mixer = ChannelMixer::with_params(100, 2);
+        for index in 0..20 {
+            mixer.push(AudioChannel::Mic, &tone(4_000, 1_600), index * 100);
+        }
+
+        let frames = mixer.drain();
+        let last = frames.last().expect("кадр");
+
+        let level = rms(&last.pcm);
+        assert!((3_500.0..=4_500.0).contains(&level), "уровень: {level}");
+    }
+
+    /// Тишина линии не усиливается: Whisper на тишине выдаёт титры
+    /// (Epic 16), и лечение одного сломало бы другое.
+    #[test]
+    fn silence_is_not_amplified() {
+        let mut mixer = ChannelMixer::with_params(100, 2);
+        mixer.set_system_expected(true);
+        for index in 0..20 {
+            mixer.push(AudioChannel::Mic, &tone(0, 1_600), index * 100);
+            mixer.push(AudioChannel::System, &tone(60, 1_600), index * 100);
+        }
+
+        let frames = mixer.drain();
+        let last = frames.last().expect("кадр");
+
+        assert!(rms(&last.pcm) < 120.0, "шум усилен: {}", rms(&last.pcm));
+    }
+
+    /// Выравнивание не должно перекраивать атрибуцию: после него каналы
+    /// сравнялись бы по определению, и доминирование стало бы монеткой.
+    #[test]
+    fn gain_does_not_change_attribution() {
+        let mut mixer = ChannelMixer::with_params(100, 2);
+        mixer.set_system_expected(true);
+        for index in 0..20 {
+            mixer.push(AudioChannel::Mic, &tone(3_000, 1_600), index * 100);
+            mixer.push(AudioChannel::System, &tone(200, 1_600), index * 100);
+        }
+
+        let frames = mixer.drain();
+
+        assert_eq!(frames.last().expect("кадр").dominant, AudioChannel::Mic);
+    }
+
     use super::*;
 
     fn tone(level: i16, len: usize) -> Vec<i16> {
