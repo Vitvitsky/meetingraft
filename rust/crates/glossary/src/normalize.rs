@@ -1,8 +1,21 @@
 //! Замена surface-форм с сохранением canonical-регистра.
 
-use domain::GlossaryTerm;
+use domain::{GlossaryKind, GlossaryTerm};
 
+#[allow(dead_code)]
 pub(crate) fn normalize(text: &str, terms: &[GlossaryTerm]) -> String {
+    normalize_with_kind(text, terms, None)
+}
+
+/// Заменяет surface-фразы только для термина указанного вида.
+///
+/// Если `kind_filter` это `Some(kind)`, применяются только термины этого вида.
+/// Если `None`, применяются все термины.
+pub(crate) fn normalize_with_kind(
+    text: &str,
+    terms: &[GlossaryTerm],
+    kind_filter: Option<GlossaryKind>,
+) -> String {
     if terms.is_empty() {
         return text.to_owned();
     }
@@ -12,6 +25,11 @@ pub(crate) fn normalize(text: &str, terms: &[GlossaryTerm]) -> String {
 
     while cursor < text.len() {
         if let Some((end, canonical)) = terms.iter().find_map(|term| {
+            if let Some(kind) = kind_filter
+                && term.kind != kind
+            {
+                return None;
+            }
             match_end(text, cursor, &term.surface).map(|end| (end, &term.canonical))
         }) {
             output.push_str(canonical);

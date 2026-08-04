@@ -23,13 +23,7 @@ impl GlossaryEngine {
     /// Подсказки не участвуют: они существуют ради `initial_prompt` и
     /// готовый текст не трогают (Epic 19).
     pub fn normalize_caption(&self, text: &str) -> String {
-        let replacements: Vec<GlossaryTerm> = self
-            .terms
-            .iter()
-            .filter(|term| term.kind == GlossaryKind::Replacement)
-            .cloned()
-            .collect();
-        normalize::normalize(text, &replacements)
+        normalize::normalize_with_kind(text, &self.terms, Some(GlossaryKind::Replacement))
     }
 
     /// Собирает уникальные canonical-формы с приоритетом русского языка.
