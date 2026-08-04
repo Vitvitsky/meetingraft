@@ -8,6 +8,12 @@ CLAUDE.md
 *~
 
 # Xcode / Swift
+# Биндинги UniFFI генерируются apps/macos/Scripts/generate-ffi.sh из
+# Rust-крейта ffi — как и сам .xcodeproj из project.yml. Держать их в
+# истории значит ловить конфликт после каждого прогона verify-mac.sh.
+apps/macos/Generated/*.swift
+apps/macos/Generated/*.h
+apps/macos/Generated/*.modulemap
 build/
 DerivedData/
 apps/macos/.derived-data/
