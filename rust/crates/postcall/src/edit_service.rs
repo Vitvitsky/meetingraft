@@ -176,6 +176,41 @@ mod tests {
     }
 
     #[test]
+    fn repeat_in_the_same_meeting_keeps_meeting_scope() {
+        let existing = GlossaryTerm {
+            id: "old".into(),
+            surface: "Интра Ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Meeting {
+                meeting_id: "m1".into(),
+            },
+            kind: GlossaryKind::Hint,
+        };
+
+        let outcome = plan_edit(
+            "m1",
+            1,
+            &segment(),
+            "зашли на intra.ru",
+            SpeechLanguage::Ru,
+            &[existing],
+            "edit-1",
+            "term-1",
+            42,
+        );
+
+        let term = outcome.term.expect("термин");
+        assert_eq!(
+            term.scope,
+            GlossaryScope::Meeting {
+                meeting_id: "m1".into()
+            },
+            "повтор внутри одной встречи область не поднимает"
+        );
+    }
+
+    #[test]
     fn returning_original_text_removes_edit() {
         let outcome = plan_edit(
             "m1",
