@@ -68,7 +68,8 @@ final class GlossaryViewModelTests: XCTestCase {
             canonical: "Raft",
             language: "ru",
             scope: .meeting,
-            meetingId: "meeting-2"
+            meetingId: "meeting-2",
+            kind: .replacement
         )
 
         XCTAssertFalse(viewModel.canEdit(foreignTerm, liveSessionId: "meeting-1"))
@@ -83,7 +84,8 @@ final class GlossaryViewModelTests: XCTestCase {
             canonical: "UniFFI",
             language: "ru",
             scope: .global,
-            meetingId: ""
+            meetingId: "",
+            kind: .replacement
         )
     }
 }

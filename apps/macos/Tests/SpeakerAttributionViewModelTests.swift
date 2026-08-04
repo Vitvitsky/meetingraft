@@ -254,7 +254,8 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
             speakerId: speakerId,
             speakerName: "",
             speakerPinned: pinned,
-            text: "текст"
+            text: "текст",
+            textEdited: false
         )
     }
 }

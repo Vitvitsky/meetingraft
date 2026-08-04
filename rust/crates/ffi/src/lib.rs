@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryKind,
     GlossaryScope, GlossaryTerm, LanguagePolicy, MeetingSummary, SearchHit, SessionState, Speaker,
-    SpeechLanguage,
+    SpeechLanguage, edits_by_position,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
@@ -65,6 +65,15 @@ pub enum FfiGlossaryScope {
     Meeting,
 }
 
+/// Что термин делает с текстом (Epic 19).
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum FfiGlossaryKind {
+    /// Только подсказка распознавателю; готовый текст не трогает.
+    Hint,
+    /// Замена surface → canonical в готовом тексте.
+    Replacement,
+}
+
 /// Термин глоссария для Swift.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiGlossaryTerm {
@@ -74,6 +83,11 @@ pub struct FfiGlossaryTerm {
     pub language: String,
     pub scope: FfiGlossaryScope,
     pub meeting_id: String,
+    /// Вид записи. Обязателен на границе: без него экран словаря
+    /// возвращал бы подсказку как замену и первым же сохранением
+    /// превращал автоматически рождённую подсказку в глобальную замену,
+    /// переписывающую все будущие тексты.
+    pub kind: FfiGlossaryKind,
 }
 
 /// Ручная метка спикера встречи для Swift.
@@ -504,6 +518,14 @@ fn maybe_enqueue_translation(inner: &mut MeetingCoreInner, event: &domain::Capti
     }
 }
 
+/// Действует ли термин в этой встрече.
+fn term_applies_to_meeting(term: &GlossaryTerm, meeting_id: &str) -> bool {
+    match &term.scope {
+        GlossaryScope::Global => true,
+        GlossaryScope::Meeting { meeting_id: id } => id == meeting_id,
+    }
+}
+
 fn glossary_term_to_ffi(term: GlossaryTerm) -> FfiGlossaryTerm {
     let (scope, meeting_id) = match term.scope {
         GlossaryScope::Global => (FfiGlossaryScope::Global, String::new()),
@@ -516,6 +538,10 @@ fn glossary_term_to_ffi(term: GlossaryTerm) -> FfiGlossaryTerm {
         language: term.language.code().to_owned(),
         scope,
         meeting_id,
+        kind: match term.kind {
+            GlossaryKind::Hint => FfiGlossaryKind::Hint,
+            GlossaryKind::Replacement => FfiGlossaryKind::Replacement,
+        },
     }
 }
 
@@ -547,9 +573,10 @@ fn glossary_term_from_ffi(term: FfiGlossaryTerm) -> Result<GlossaryTerm, String>
         canonical: canonical.to_owned(),
         language,
         scope,
-        // Swift-граница вида записи ещё не знает; до её появления термин
-        // с той стороны — замена, как было раньше.
-        kind: GlossaryKind::Replacement,
+        kind: match term.kind {
+            FfiGlossaryKind::Hint => GlossaryKind::Hint,
+            FfiGlossaryKind::Replacement => GlossaryKind::Replacement,
+        },
     })
 }
 
@@ -1471,9 +1498,12 @@ impl MeetingCore {
             return "storage unavailable".to_string();
         };
 
-        let segments = store
-            .list_final_segments(&meeting_id, version)
-            .unwrap_or_default();
+        // Сбой чтения — не «сегмента нет»: проглотить его значит сказать
+        // человеку неправду о его данных.
+        let segments = match store.list_final_segments(&meeting_id, version) {
+            Ok(segments) => segments,
+            Err(error) => return error.to_string(),
+        };
         let Some(segment) = segments.into_iter().find(|s| s.index == index) else {
             return format!("сегмент {index} не найден");
         };
@@ -1482,15 +1512,21 @@ impl MeetingCore {
         // отдал правленый текст, а сравнивать введённое надо с
         // распознанным. Иначе повторный ввод того же текста читался бы
         // как возврат к исходному и правка бы удалилась.
+        //
+        // Правка ищется тем же правилом, что и при чтении сегментов, — и
+        // только среди правок этой версии. Без фильтра по версии правка
+        // первой версии перехватывалась бы правкой того же места во
+        // второй: версия переезжала, в первой правка молча исчезала, а
+        // исходный текст оставался от первой — «вернуть исходное» во
+        // второй требовало бы ввести текст, которого человеку никто не
+        // показывал.
         let existing = match store.list_segment_edits(&meeting_id) {
             Ok(edits) => edits,
             Err(error) => return error.to_string(),
         };
-        let previous = existing.into_iter().find(|edit| {
-            edit.channel == segment.channel
-                && edit.start_ms == segment.start_ms
-                && edit.end_ms == segment.end_ms
-        });
+        let previous = edits_by_position(&existing, version)
+            .get(&segment.position())
+            .map(|edit| (*edit).clone());
 
         let mut recognized = segment.clone();
         if let Some(previous) = &previous {
@@ -1571,6 +1607,11 @@ impl MeetingCore {
     ///
     /// Единственный способ получить замену из правки — явный жест
     /// человека. Автоматически рождаются только подсказки.
+    ///
+    /// Термин должен действовать в этой встрече: глобальный или её
+    /// собственный. Термином чужой встречи замена наплодила бы правки
+    /// там, где он не применяется, — а значит, следующий пересбор их не
+    /// подтвердит и человек получит расхождение без объяснения.
     pub fn promote_term_to_replacement(
         &self,
         term_id: String,
@@ -1580,19 +1621,33 @@ impl MeetingCore {
         let Some(mut store) = open_store(self) else {
             return "storage unavailable".to_string();
         };
-        let terms = store.list_glossary_terms().unwrap_or_default();
+        let terms = match store.list_glossary_terms() {
+            Ok(terms) => terms,
+            Err(error) => return error.to_string(),
+        };
         let Some(mut term) = terms.into_iter().find(|term| term.id == term_id) else {
             return format!("термин {term_id} не найден");
         };
+        if !term_applies_to_meeting(&term, &meeting_id) {
+            return format!("термин {term_id} не действует во встрече {meeting_id}");
+        }
+        // Массовая замена идёт через `normalize_caption`, а тот берёт
+        // только замены: вид выставляется здесь и до вызова.
         term.kind = GlossaryKind::Replacement;
         if let Err(error) = store.upsert_glossary_term(&term, now_ms()) {
             return error.to_string();
         }
 
-        let segments = store
-            .list_final_segments(&meeting_id, version)
-            .unwrap_or_default();
-        let existing = store.list_segment_edits(&meeting_id).unwrap_or_default();
+        // Сбой чтения не должен выглядеть успешной заменой, которая
+        // ничего не заменила.
+        let segments = match store.list_final_segments(&meeting_id, version) {
+            Ok(segments) => segments,
+            Err(error) => return error.to_string(),
+        };
+        let existing = match store.list_segment_edits(&meeting_id) {
+            Ok(edits) => edits,
+            Err(error) => return error.to_string(),
+        };
         let mut ids = std::iter::repeat_with(|| Uuid::new_v4().to_string());
         let created = occurrences_to_edit(
             &term,
@@ -2384,6 +2439,384 @@ mod tests {
         "timeout".to_string()
     }
 
+    fn edits_root(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "mr-ffi-{name}-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ))
+    }
+
+    fn seed_segment_version(
+        root: &std::path::Path,
+        meeting_id: &str,
+        version: u32,
+        segments: &[(u32, u64, u64, &str)],
+    ) {
+        let mut store = AudioManifestStore::open(root).expect("store");
+        store
+            .upsert_final_transcript(&FinalTranscript {
+                meeting_id: meeting_id.to_owned(),
+                version,
+                body_markdown: String::new(),
+                created_at_ms: 1,
+            })
+            .expect("transcript");
+        let rows: Vec<domain::FinalSegment> = segments
+            .iter()
+            .map(|(index, start_ms, end_ms, text)| domain::FinalSegment {
+                index: *index,
+                start_ms: *start_ms,
+                end_ms: *end_ms,
+                channel: AudioChannel::Mic,
+                speaker_id: String::new(),
+                speaker_pinned: false,
+                text: (*text).to_owned(),
+                text_edited: false,
+            })
+            .collect();
+        store
+            .replace_final_segments(meeting_id, version, &rows)
+            .expect("segments");
+    }
+
+    /// Сквозной сценарий переноса: правка на версии 1 переезжает на
+    /// сегмент версии 2 вместе с его координатами.
+    ///
+    /// Пересбор создаёт новую нарезку, а журнал живёт отдельно и сам на
+    /// неё не переберётся. Без вызова переноса правка осталась бы с
+    /// версией 1: в новой версии её не видно, и в списке неприменившихся
+    /// тоже — `applied_version IS NULL` никто не выставляет. Без записи
+    /// новых координат перенос был бы тихой пустышкой: версия новая,
+    /// координаты старые, наложение при чтении ищет по координатам.
+    #[test]
+    fn rebuild_moves_manual_edits_onto_the_new_version() {
+        let root = edits_root("edit-rebuild");
+        let meeting_id = "m-edit-rebuild".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store
+                .begin_session(&meeting_id, 1, "Тест")
+                .expect("session");
+            let loud: Vec<u8> = (0..16_000)
+                .flat_map(|i| if i % 2 == 0 { 3000_i16 } else { -3000 }.to_le_bytes())
+                .collect();
+            store
+                .append_chunk(AudioChannel::Mic, &loud, 16_000, 0)
+                .expect("chunk");
+            store.end_session(2_000).expect("end");
+        }
+        // Версия 1 нарезана иначе, чем нарежет пересбор: так видно, что
+        // правка переезжает на новые границы, а не совпадает с ними
+        // случайно. Текст тот же, что выдаст mock-распознавание, — по нему
+        // правка и опознаёт своё место.
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 200, 800, "[mock 0-1000]")]);
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let saved = core.edit_segment_text(
+            meeting_id.clone(),
+            1,
+            0,
+            "человек поправил эту реплику руками".into(),
+        );
+        assert!(saved.is_empty(), "{saved}");
+
+        assert_eq!(run_rebuild_to_completion(&core, &meeting_id), "succeeded");
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        let version = store.next_final_version(&meeting_id).expect("version") - 1;
+        assert_eq!(version, 2, "пересбор создаёт новую версию");
+
+        let edits = store.list_segment_edits(&meeting_id).expect("журнал");
+        assert_eq!(edits.len(), 1, "перенос не плодит строк журнала");
+        assert_eq!(edits[0].applied_version, Some(2), "правка на новой версии");
+        assert_eq!(
+            (edits[0].start_ms, edits[0].end_ms),
+            (0, 1_000),
+            "координаты переехали на сегмент новой нарезки"
+        );
+        assert_eq!(
+            edits[0].original_text, "[mock 0-1000]",
+            "распознанное первой версии сохраняется: на нём стоит отмена"
+        );
+
+        let segments = core.list_final_segments(meeting_id.clone(), version);
+        assert_eq!(segments[0].text, "человек поправил эту реплику руками");
+        assert!(segments[0].text_edited);
+        assert!(
+            core.list_unapplied_edits(meeting_id.clone()).is_empty(),
+            "правка применилась — в разделе неприменившихся ей не место"
+        );
+
+        let body = store
+            .get_final_transcript_version(&meeting_id, version)
+            .expect("транскрипт")
+            .expect("версия есть")
+            .body_markdown;
+        assert!(
+            body.contains("человек поправил эту реплику руками"),
+            "тело собирается после переноса: {body}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Правка не переезжает на другую версию сама.
+    ///
+    /// Пересбор при неизменной модели даёт ту же нарезку, поэтому одно и
+    /// то же место в двух версиях — норма. Раньше правка искалась по
+    /// координатам без учёта версии: правка второй версии забирала себе
+    /// строку журнала первой, и в первой правка молча исчезала — а
+    /// исходный текст оставался от первой, так что «вернуть исходное» во
+    /// второй требовало ввести текст, которого человеку не показывали.
+    #[test]
+    fn edit_of_one_version_does_not_steal_the_edit_of_another() {
+        let root = edits_root("edit-versions");
+        let meeting_id = "m-edit-versions".to_string();
+        let recognized = "зашли на интра ру";
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 1_000, 2_000, recognized)]);
+        seed_segment_version(&root, &meeting_id, 2, &[(0, 1_000, 2_000, recognized)]);
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.edit_segment_text(meeting_id.clone(), 1, 0, "зашли на intra.ru".into())
+                .is_empty()
+        );
+        assert!(
+            core.edit_segment_text(meeting_id.clone(), 2, 0, "зашли на портал".into())
+                .is_empty()
+        );
+
+        assert_eq!(
+            core.list_final_segments(meeting_id.clone(), 1)[0].text,
+            "зашли на intra.ru",
+            "правка первой версии осталась на месте"
+        );
+        assert_eq!(
+            core.list_final_segments(meeting_id.clone(), 2)[0].text,
+            "зашли на портал"
+        );
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        assert_eq!(
+            store.list_segment_edits(&meeting_id).expect("журнал").len(),
+            2,
+            "у каждой версии своя строка журнала"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Правка → чтение → повторная правка того же места → возврат к
+    /// распознанному, и всё это без потери замены, подтверждённой
+    /// человеком.
+    ///
+    /// Запись термина — это «удалить по (форма, язык, область) и
+    /// вставить». Пока `plan_edit` выдавал термин с новым id и видом
+    /// «подсказка», следующая правка той же фразы стирала строку
+    /// «замена», созданную явным жестом: замена переставала работать без
+    /// единого сигнала, а сохранённая ссылка на термин протухала.
+    #[test]
+    fn repeated_edit_keeps_the_confirmed_replacement() {
+        let root = edits_root("edit-term");
+        let meeting_id = "m-edit-term".to_string();
+        let recognized = "зашли на интра ру";
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 1_000, 2_000, recognized)]);
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.edit_segment_text(meeting_id.clone(), 1, 0, "зашли на intra.ru".into())
+                .is_empty()
+        );
+
+        let terms = core.list_glossary_terms();
+        assert_eq!(terms.len(), 1, "правка рождает ровно один термин");
+        assert!(
+            matches!(terms[0].kind, FfiGlossaryKind::Hint),
+            "автоматически рождается только подсказка"
+        );
+        let term_id = terms[0].id.clone();
+
+        // Явный жест человека: «заменять всюду».
+        let promoted = core.promote_term_to_replacement(term_id.clone(), meeting_id.clone(), 1);
+        assert!(promoted.is_empty(), "{promoted}");
+
+        // Человек правит то же место ещё раз — подтверждает ту же замену.
+        assert!(
+            core.edit_segment_text(meeting_id.clone(), 1, 0, "зашли на intra.ru".into())
+                .is_empty()
+        );
+
+        let terms = core.list_glossary_terms();
+        assert_eq!(terms.len(), 1, "повторная правка не плодит терминов");
+        assert_eq!(terms[0].id, term_id, "идентификатор термина не протухает");
+        assert!(
+            matches!(terms[0].kind, FfiGlossaryKind::Replacement),
+            "замену понижает только человек"
+        );
+
+        // Возврат к распознанному — это отмена, а не ещё одна правка.
+        assert!(
+            core.edit_segment_text(meeting_id.clone(), 1, 0, recognized.into())
+                .is_empty()
+        );
+        let segments = core.list_final_segments(meeting_id.clone(), 1);
+        assert_eq!(segments[0].text, recognized);
+        assert!(!segments[0].text_edited);
+        let store = AudioManifestStore::open(&root).expect("store");
+        assert!(
+            store
+                .list_segment_edits(&meeting_id)
+                .expect("журнал")
+                .is_empty(),
+            "отменённая правка уходит из журнала"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Вид записи ходит через границу в обе стороны.
+    ///
+    /// Экран словаря отправляет обратно то, что получил из списка. Пока
+    /// вида в DTO не было, первое же сохранение автоматически рождённой
+    /// подсказки делало её глобальной заменой, переписывающей все будущие
+    /// тексты, — ровно тот сценарий, ради которого виды и разделили.
+    #[test]
+    fn glossary_kind_survives_the_ffi_round_trip() {
+        let root = edits_root("term-kind");
+        let meeting_id = "m-term-kind".to_string();
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 0, 1_000, "зашли на интра ру")]);
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.edit_segment_text(meeting_id.clone(), 1, 0, "зашли на intra.ru".into())
+                .is_empty()
+        );
+
+        let from_list = core.list_glossary_terms();
+        assert_eq!(from_list.len(), 1);
+        assert!(matches!(from_list[0].kind, FfiGlossaryKind::Hint));
+
+        // Экран словаря сохраняет то же, что показал.
+        let error = core.upsert_glossary_term(from_list[0].clone());
+        assert!(error.is_empty(), "{error}");
+
+        let after = core.list_glossary_terms();
+        assert!(
+            matches!(after[0].kind, FfiGlossaryKind::Hint),
+            "подсказка не должна становиться заменой сама по себе"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Термин чужой встречи в этой не действует: массовая замена по нему
+    /// наплодила бы правки там, где он не применяется.
+    #[test]
+    fn promote_rejects_a_term_of_another_meeting() {
+        let root = edits_root("promote-scope");
+        let meeting_id = "m-promote-here".to_string();
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 0, 1_000, "открой интра ру")]);
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let error = core.upsert_glossary_term(FfiGlossaryTerm {
+            id: "foreign".into(),
+            surface: "интра ру".into(),
+            canonical: "intra.ru".into(),
+            language: "ru".into(),
+            scope: FfiGlossaryScope::Meeting,
+            meeting_id: "m-promote-there".into(),
+            kind: FfiGlossaryKind::Hint,
+        });
+        assert!(error.is_empty(), "{error}");
+
+        let refused = core.promote_term_to_replacement("foreign".into(), meeting_id.clone(), 1);
+        assert!(
+            refused.contains("не действует"),
+            "чужой термин должен быть отвергнут: {refused}"
+        );
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        assert!(
+            store
+                .list_segment_edits(&meeting_id)
+                .expect("журнал")
+                .is_empty(),
+            "отказ не должен оставлять правок"
+        );
+        let terms = core.list_glossary_terms();
+        assert!(
+            matches!(terms[0].kind, FfiGlossaryKind::Hint),
+            "отказ не должен менять вид термина"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Сбой чтения сегментов — это ошибка, а не «сегмента нет».
+    #[test]
+    fn storage_failure_is_not_reported_as_a_missing_segment() {
+        let root = edits_root("storage-error-read");
+        let meeting_id = "m-storage-error-read".to_string();
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 0, 1_000, "открой интра ру")]);
+
+        // Портим колонку так, что разбор строки обязан упасть.
+        {
+            let connection = rusqlite::Connection::open(root.join("meetingraft.sqlite3"))
+                .expect("прямое соединение");
+            connection
+                .execute("UPDATE final_segments SET start_ms = 'сломано'", [])
+                .expect("порча");
+        }
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let error = core.edit_segment_text(meeting_id.clone(), 1, 0, "что-то".into());
+
+        assert!(
+            !error.is_empty() && !error.contains("не найден"),
+            "сбой базы выдан за отсутствующий сегмент: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Сбой чтения журнала не может выглядеть успешной заменой.
+    ///
+    /// Пустой журнал вместо ошибки — это не только молчание: массовая
+    /// замена решает по журналу, какие места человек уже поправил руками,
+    /// и, не увидев их, переписала бы ручную работу поверх.
+    #[test]
+    fn storage_failure_does_not_look_like_a_successful_replacement() {
+        let root = edits_root("storage-error-journal");
+        let meeting_id = "m-storage-error-journal".to_string();
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 0, 1_000, "открой интра ру")]);
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.edit_segment_text(meeting_id.clone(), 1, 0, "открой intra.ru".into())
+                .is_empty()
+        );
+        let term_id = core.list_glossary_terms()[0].id.clone();
+
+        // Битая строка чужой версии: чтение сегментов версии 1 её не
+        // касается, а чтение всего журнала обязано на ней упасть.
+        {
+            let connection = rusqlite::Connection::open(root.join("meetingraft.sqlite3"))
+                .expect("прямое соединение");
+            connection
+                .execute(
+                    "INSERT INTO segment_edits
+                     (id, meeting_id, channel, start_ms, end_ms, original_text,
+                      edited_text, created_at_ms, applied_version)
+                     VALUES ('broken', ?1, 'mic', 'сломано', 1, '', '', 0, 2)",
+                    rusqlite::params![meeting_id],
+                )
+                .expect("порча");
+        }
+
+        let error = core.promote_term_to_replacement(term_id, meeting_id.clone(), 1);
+
+        assert!(
+            !error.is_empty(),
+            "замена не может завершиться успехом, не прочитав журнал"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Назначение через фасад видно в списке сегментов и в сводке.
     #[test]
     fn speaker_assignment_is_visible_through_the_facade() {
@@ -2999,6 +3432,7 @@ mod tests {
             language: "ru".into(),
             scope: FfiGlossaryScope::Global,
             meeting_id: String::new(),
+            kind: FfiGlossaryKind::Replacement,
         };
 
         assert!(
@@ -3106,6 +3540,7 @@ mod tests {
                 language: "ru".into(),
                 scope: FfiGlossaryScope::Global,
                 meeting_id: String::new(),
+                kind: FfiGlossaryKind::Replacement,
             })
             .is_empty()
         );
@@ -3160,6 +3595,7 @@ mod tests {
                 language: "ru".into(),
                 scope: FfiGlossaryScope::Global,
                 meeting_id: String::new(),
+                kind: FfiGlossaryKind::Replacement,
             })
             .is_empty()
         );
