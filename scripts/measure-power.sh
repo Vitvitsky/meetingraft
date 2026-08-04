@@ -130,6 +130,7 @@ echo
 powermetrics \
     --samplers cpu_power,gpu_power,thermal,tasks \
     --show-process-energy \
+    --show-process-gpu \
     -i "$INTERVAL_MS" \
     -n "$SAMPLES" \
     >"$RAW" 2>/dev/null
@@ -152,16 +153,41 @@ average_field() {
     ' "$RAW"
 }
 
-# Строка процесса в таблице энергии: имя, затем числовые колонки.
+# Таблица процессов: «CPU ms/s» — одна колонка из двух слов, поэтому
+# индексы шапки не совпадают с индексами данных. Берём позицию, но
+# сверяем раскладку: молча взять не то число — худший вид ошибки в
+# замере, потому что он выглядит как результат.
+EXPECTED_HEADER="Name ID CPU ms/s"
+if ! grep -q "^Name  *ID  *CPU ms/s" "$RAW"; then
+    echo "ВНИМАНИЕ: раскладка таблицы процессов не та, что ожидалась." >&2
+    echo "Ожидалось начало «$EXPECTED_HEADER». Значения по процессу" >&2
+    echo "пропущены; сырой файл сохранён и разбирается вручную." >&2
+    HEADER_OK=0
+else
+    HEADER_OK=1
+fi
+
+# Среднее по колонке данных с номером $1 в строках нашего процесса.
 average_process_field() {
     local column="$1"
+    [ "$HEADER_OK" -eq 1 ] || return 0
     awk -v name="$PROCESS_NAME" -v column="$column" '
-        $1 == name {
-            value = $column
-            if (value ~ /^[0-9]+(\.[0-9]+)?$/) {
-                total += value
-                count++
-            }
+        $1 == name && $column ~ /^[0-9]+(\.[0-9]+)?$/ {
+            total += $column
+            count++
+        }
+        END { if (count > 0) printf "%.2f", total / count }
+    ' "$RAW"
+}
+
+# Energy Impact — последняя колонка; сравнивать процессы между собой
+# удобнее по ней, чем по процессорному времени.
+average_process_energy() {
+    [ "$HEADER_OK" -eq 1 ] || return 0
+    awk -v name="$PROCESS_NAME" '
+        $1 == name && $NF ~ /^[0-9]+(\.[0-9]+)?$/ {
+            total += $NF
+            count++
         }
         END { if (count > 0) printf "%.2f", total / count }
     ' "$RAW"
@@ -171,18 +197,17 @@ CPU_MW="$(average_field '^CPU Power')"
 GPU_MW="$(average_field '^GPU Power')"
 ANE_MW="$(average_field '^ANE Power')"
 COMBINED_MW="$(average_field '^Combined Power')"
-# Колонки 3 и 4 — CPU ms/s и user%; порядок менялся между версиями macOS,
-# поэтому сверяйтесь с шапкой таблицы в сыром файле.
 APP_CPU="$(average_process_field 3)"
+APP_ENERGY="$(average_process_energy)"
 THERMAL="$(grep -m1 -o 'pressure level: [A-Za-z]*' "$RAW" | awk '{print $3}' || true)"
 
 if [ ! -f "$CSV" ]; then
-    echo "timestamp,scenario,duration_s,samples,cpu_mW,gpu_mW,ane_mW,combined_mW,app_cpu_ms_per_s,thermal,raw_file" >"$CSV"
+    echo "timestamp,scenario,duration_s,samples,cpu_mW,gpu_mW,ane_mW,combined_mW,app_cpu_ms_per_s,app_energy_impact,thermal,raw_file" >"$CSV"
 fi
-printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$STAMP" "$SCENARIO" "$DURATION" "$SAMPLES" \
     "$CPU_MW" "$GPU_MW" "$ANE_MW" "$COMBINED_MW" \
-    "$APP_CPU" "${THERMAL:-}" "$(basename "$RAW")" >>"$CSV"
+    "$APP_CPU" "$APP_ENERGY" "${THERMAL:-}" "$(basename "$RAW")" >>"$CSV"
 
 # Файлы созданы из-под root — иначе они останутся недоступными на запись.
 if [ -n "${SUDO_USER:-}" ]; then
@@ -194,7 +219,8 @@ printf '  CPU:      %s mW\n' "${CPU_MW:-нет данных}"
 printf '  GPU:      %s mW\n' "${GPU_MW:-нет данных}"
 printf '  ANE:      %s mW\n' "${ANE_MW:-нет данных}"
 printf '  Всего:    %s mW\n' "${COMBINED_MW:-нет данных}"
-printf '  %s: %s ms/s CPU\n' "$PROCESS_NAME" "${APP_CPU:-нет данных}"
+printf '  %s: %s ms/s CPU, energy impact %s\n' \
+    "$PROCESS_NAME" "${APP_CPU:-нет данных}" "${APP_ENERGY:-нет данных}"
 printf '  Тепло:    %s\n' "${THERMAL:-нет данных}"
 echo
 echo "Сводка: $CSV"

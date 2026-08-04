@@ -8,12 +8,14 @@ use whisper_rs::{
 };
 
 use crate::local_agreement::{HypothesisWord, LocalAgreement, backfill_end_ms, words_from_tokens};
+use crate::noise_gate::NoiseGate;
 use crate::pacing::InferencePacer;
 use crate::{Stabilized, SttEngine};
 use crate::{is_hallucination_prefix, is_whisper_hallucination};
 
-/// Порог RMS для «есть речь» (выше → меньше галлюцинаций на тишине).
-const ENERGY_THRESHOLD: f32 = 450.0;
+// Порога-константы больше нет: он не может обслужить и городской шум за
+// окном, и тихого собеседника из системного канала (Epic 18, замер
+// 2026-08-04). Решает превышение речи над фоном комнаты — см. NoiseGate.
 const SILENCE_FRAMES: usize = 16_000 * 3 / 10;
 const MIN_SPEECH_FRAMES: usize = 16_000 / 5;
 /// Не гоняем Whisper чаще чем раз в ~1 с на partial.
@@ -64,6 +66,8 @@ pub struct WhisperSttEngine {
     diagnostics: Vec<SttDiagnostic>,
     /// Темп прогонов: разжимается, когда согласия нет.
     pacer: InferencePacer,
+    /// Речь против фона комнаты, а не против константы.
+    gate: NoiseGate,
 }
 
 impl WhisperSttEngine {
@@ -89,6 +93,7 @@ impl WhisperSttEngine {
             held_final: String::new(),
             diagnostics: Vec::new(),
             pacer: InferencePacer::new(PARTIAL_MIN_FRAMES),
+            gate: NoiseGate::new(),
         })
     }
 
@@ -350,7 +355,7 @@ impl SttEngine for WhisperSttEngine {
     fn push_pcm(&mut self, pcm: &[i16], _sample_rate: u32) -> Vec<CaptionEvent> {
         let mut out = Vec::new();
         let energy = Self::rms(pcm);
-        if energy >= ENERGY_THRESHOLD {
+        if self.gate.accepts(energy) {
             self.in_speech = true;
             self.silence_frames = 0;
             self.speech_frames += pcm.len();
