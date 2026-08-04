@@ -8,6 +8,7 @@ use whisper_rs::{
 };
 
 use crate::local_agreement::{HypothesisWord, LocalAgreement, backfill_end_ms, words_from_tokens};
+use crate::pacing::InferencePacer;
 use crate::{Stabilized, SttEngine};
 use crate::{is_hallucination_prefix, is_whisper_hallucination};
 
@@ -61,6 +62,8 @@ pub struct WhisperSttEngine {
     held_final: String,
     /// Что движок выбросил или придержал — для журнала слоем выше.
     diagnostics: Vec<SttDiagnostic>,
+    /// Темп прогонов: разжимается, когда согласия нет.
+    pacer: InferencePacer,
 }
 
 impl WhisperSttEngine {
@@ -85,6 +88,7 @@ impl WhisperSttEngine {
             agreement: LocalAgreement::new(MAX_PENDING_WORDS),
             held_final: String::new(),
             diagnostics: Vec::new(),
+            pacer: InferencePacer::new(PARTIAL_MIN_FRAMES),
         })
     }
 
@@ -329,6 +333,7 @@ impl WhisperSttEngine {
         self.silence_frames = 0;
         self.frames_since_partial = 0;
         self.held_final.clear();
+        self.pacer.reset();
         self.agreement.reset();
     }
 }
@@ -360,12 +365,16 @@ impl SttEngine for WhisperSttEngine {
             }
 
             if self.speech_frames >= MIN_SPEECH_FRAMES
-                && self.frames_since_partial >= PARTIAL_MIN_FRAMES
+                && self.frames_since_partial >= self.pacer.frames_until_next()
             {
                 let started = std::time::Instant::now();
                 let hypothesis = self.current_hypothesis();
                 let inference_ms = started.elapsed().as_millis();
                 let stabilized = self.agreement.push(hypothesis);
+                // Темп зависит от того, движется ли фиксация: прогоны без
+                // согласия не приближают результат, а только греют машину.
+                self.pacer
+                    .record(stabilized.committed_text.split_whitespace().count());
                 Self::log_timing(inference_ms, self.buffer.len(), &stabilized);
                 out.extend(self.events(&stabilized));
                 if let Some(until_ms) = stabilized.committed_until_ms {

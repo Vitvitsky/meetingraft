@@ -6,6 +6,7 @@ mod hallucination;
 mod local_agreement;
 mod mock;
 mod model_path;
+mod pacing;
 mod window;
 
 #[cfg(feature = "whisper")]
@@ -21,6 +22,7 @@ pub use local_agreement::{
 };
 pub use mock::MockSttEngine;
 pub use model_path::{models_dir, resolve_whisper_model, whisper_filename_for_id};
+pub use pacing::InferencePacer;
 pub use window::{LiveCaptionPipeline, SttBackendKind, pcm_bytes_to_i16};
 
 #[cfg(feature = "whisper")]
