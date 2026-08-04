@@ -5,6 +5,7 @@
 
 use domain::{
     FinalSegment, GlossaryKind, GlossaryScope, GlossaryTerm, SegmentEdit, SpeechLanguage,
+    edits_by_position,
 };
 use glossary::GlossaryEngine;
 
@@ -56,24 +57,57 @@ pub fn plan_edit(
     };
 
     let term = term_from_edit(&segment.text, edited).map(|(surface, canonical)| {
-        let seen_elsewhere = existing_terms.iter().any(|term| {
-            term.kind == GlossaryKind::Hint
+        let same_pair = |term: &&GlossaryTerm| {
+            term.language == language
                 && term.surface.to_lowercase() == surface.to_lowercase()
                 && term.canonical.to_lowercase() == canonical.to_lowercase()
+        };
+
+        let seen_elsewhere = existing_terms.iter().filter(same_pair).any(|term| {
+            term.kind == GlossaryKind::Hint
                 && !matches!(&term.scope, GlossaryScope::Meeting { meeting_id: id } if id == meeting_id)
         });
 
+        // Термин, уже действующий в этой встрече, переиспользуется целиком:
+        // запись в хранилище это «удалить по (форма, язык, область) и
+        // вставить», поэтому новый id на каждую правку молча стирал бы
+        // прежнюю строку — вместе с видом «замена», который человек
+        // поставил явным жестом. Глобальный сильнее: он уже покрывает эту
+        // встречу.
+        let current = existing_terms
+            .iter()
+            .filter(same_pair)
+            .find(|term| term.scope == GlossaryScope::Global)
+            .or_else(|| {
+                existing_terms.iter().filter(same_pair).find(|term| {
+                    matches!(&term.scope, GlossaryScope::Meeting { meeting_id: id } if id == meeting_id)
+                })
+            });
+
+        // Замена никогда не понижается до подсказки: понизить её может
+        // только человек, и правка текста таким жестом не является.
+        let kind = match current {
+            Some(term) if term.kind == GlossaryKind::Replacement => GlossaryKind::Replacement,
+            _ => GlossaryKind::Hint,
+        };
+
+        // Сама поднимается только подсказка: она готовый текст не трогает.
+        // Замену повышать до глобальной без спроса нельзя — она перепишет
+        // все будущие тексты (спека, «Повышение до глобального»).
+        let promoted = seen_elsewhere && kind == GlossaryKind::Hint;
+        let scope = match current {
+            Some(term) if !promoted => term.scope.clone(),
+            _ if promoted => GlossaryScope::Global,
+            _ => GlossaryScope::Meeting { meeting_id: meeting_id.to_owned() },
+        };
+
         GlossaryTerm {
-            id: term_id.to_owned(),
+            id: current.map_or_else(|| term_id.to_owned(), |term| term.id.clone()),
             surface,
             canonical,
             language,
-            scope: if seen_elsewhere {
-                GlossaryScope::Global
-            } else {
-                GlossaryScope::Meeting { meeting_id: meeting_id.to_owned() }
-            },
-            kind: GlossaryKind::Hint,
+            scope,
+            kind,
         }
     });
 
@@ -89,13 +123,22 @@ pub fn plan_edit(
 /// Идём через журнал, а не переписыванием таблицы сегментов: распознанное
 /// должно остаться распознанным, иначе сравнить версии будет не с чем.
 ///
-/// Места, уже правленные вручную, не трогаются — точечное решение
-/// человека сильнее массовой замены, ровно как у `speaker_pinned`.
+/// Места, уже правленные вручную **в этой версии**, не трогаются —
+/// точечное решение человека сильнее массовой замены, ровно как у
+/// `speaker_pinned`. Правка другой версии не в счёт: пересбор при
+/// неизменной модели даёт ту же нарезку, и без фильтра по версии старая
+/// правка беспричинно блокировала бы замену в текущей.
 ///
 /// Поиск и замена идут через `GlossaryEngine::normalize_caption` — тот же
 /// сопоставитель, что применяется к тексту при распознавании. Он не
 /// зависит от регистра и проверяет границы слова, поэтому массовая замена
 /// не расходится с тем, что увидит человек после следующей записи.
+///
+/// Термин обязан быть `GlossaryKind::Replacement`: `normalize_caption`
+/// подсказки намеренно не применяет, поэтому с подсказкой функция вернёт
+/// пустой список. Вид проверяет вызывающий — здесь молча подменять его
+/// нельзя, это ровно то повышение подсказки до замены, которое требует
+/// явного жеста человека.
 pub fn occurrences_to_edit(
     term: &GlossaryTerm,
     meeting_id: &str,
@@ -106,6 +149,7 @@ pub fn occurrences_to_edit(
     ids: &mut dyn Iterator<Item = String>,
 ) -> Vec<SegmentEdit> {
     let engine = GlossaryEngine::from_terms(vec![term.clone()]);
+    let edited_places = edits_by_position(existing, version);
 
     segments
         .iter()
@@ -113,13 +157,7 @@ pub fn occurrences_to_edit(
             let replaced = engine.normalize_caption(&segment.text);
             (replaced != segment.text).then_some((segment, replaced))
         })
-        .filter(|(segment, _)| {
-            !existing.iter().any(|edit| {
-                edit.channel == segment.channel
-                    && edit.start_ms == segment.start_ms
-                    && edit.end_ms == segment.end_ms
-            })
-        })
+        .filter(|(segment, _)| !edited_places.contains_key(&segment.position()))
         .filter_map(|(segment, replaced)| {
             let id = ids.next()?;
             Some(SegmentEdit {
@@ -265,6 +303,97 @@ mod tests {
         );
     }
 
+    /// Правка той же фразы не должна разжаловать замену обратно в
+    /// подсказку. Запись термина — это «удалить по (форма, язык, область)
+    /// и вставить», поэтому новый термин с новым id молча стёр бы строку
+    /// «замена», созданную явным жестом человека, и замена перестала бы
+    /// работать без единого сигнала.
+    #[test]
+    fn repeated_edit_keeps_the_replacement_and_its_id() {
+        let existing = GlossaryTerm {
+            id: "term-old".into(),
+            surface: "Интра Ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Meeting {
+                meeting_id: "m1".into(),
+            },
+            kind: GlossaryKind::Replacement,
+        };
+
+        let outcome = plan_edit(
+            "m1",
+            1,
+            &segment(),
+            "зашли на intra.ru",
+            SpeechLanguage::Ru,
+            &[existing],
+            "edit-1",
+            "term-new",
+            42,
+        );
+
+        let term = outcome.term.expect("термин");
+        assert_eq!(
+            term.id, "term-old",
+            "идентификатор термина переиспользуется"
+        );
+        assert_eq!(
+            term.kind,
+            GlossaryKind::Replacement,
+            "замену понижает только человек"
+        );
+    }
+
+    /// Подсказка при повторе в другой встрече поднимается сама, замена —
+    /// нет: она переписывает готовый текст, и цена ошибки другая (спека,
+    /// «Повышение до глобального»).
+    #[test]
+    fn replacement_is_not_promoted_to_global_on_its_own() {
+        let here = GlossaryTerm {
+            id: "term-here".into(),
+            surface: "интра ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Meeting {
+                meeting_id: "m1".into(),
+            },
+            kind: GlossaryKind::Replacement,
+        };
+        let elsewhere = GlossaryTerm {
+            id: "term-there".into(),
+            surface: "интра ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Meeting {
+                meeting_id: "m0".into(),
+            },
+            kind: GlossaryKind::Hint,
+        };
+
+        let outcome = plan_edit(
+            "m1",
+            1,
+            &segment(),
+            "зашли на intra.ru",
+            SpeechLanguage::Ru,
+            &[here, elsewhere],
+            "edit-1",
+            "term-new",
+            42,
+        );
+
+        let term = outcome.term.expect("термин");
+        assert_eq!(
+            term.scope,
+            GlossaryScope::Meeting {
+                meeting_id: "m1".into()
+            },
+            "замена не расползается по всем встречам сама"
+        );
+        assert_eq!(term.kind, GlossaryKind::Replacement);
+    }
+
     #[test]
     fn returning_original_text_removes_edit() {
         let outcome = plan_edit(
@@ -391,6 +520,96 @@ mod tests {
         assert!(
             created.is_empty(),
             "ручная правка человека сильнее массовой замены"
+        );
+    }
+
+    /// Ручная правка другой версии массовую замену в текущей не блокирует:
+    /// пересбор при неизменной модели даёт ту же нарезку, и совпадение
+    /// координат между версиями — норма, а не редкость.
+    #[test]
+    fn replacement_ignores_manual_edits_of_other_versions() {
+        use super::occurrences_to_edit;
+        use domain::SegmentEdit;
+
+        let term = GlossaryTerm {
+            id: "t1".into(),
+            surface: "интра ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Meeting {
+                meeting_id: "m1".into(),
+            },
+            kind: GlossaryKind::Replacement,
+        };
+        let segments = vec![FinalSegment {
+            index: 0,
+            start_ms: 0,
+            end_ms: 100,
+            channel: AudioChannel::Mic,
+            speaker_id: String::new(),
+            speaker_pinned: false,
+            text: "открой интра ру".into(),
+            text_edited: false,
+        }];
+        let existing = vec![SegmentEdit {
+            id: "e0".into(),
+            meeting_id: "m1".into(),
+            channel: AudioChannel::Mic,
+            start_ms: 0,
+            end_ms: 100,
+            original_text: "открой интра ру".into(),
+            edited_text: "открой портал".into(),
+            created_at_ms: 0,
+            applied_version: Some(1),
+        }];
+        let mut ids = ["n1".to_string()].into_iter();
+
+        let created = occurrences_to_edit(&term, "m1", 2, &segments, &existing, 7, &mut ids);
+
+        assert_eq!(
+            created.len(),
+            1,
+            "правка первой версии вторую версию не защищает"
+        );
+    }
+
+    /// Массовая замена опирается на `normalize_caption`, а тот подсказки
+    /// намеренно не применяет. Требование к виду документировано в
+    /// `occurrences_to_edit`; тест закрепляет, что подсказка проходит
+    /// молча и вхождений не создаёт.
+    #[test]
+    fn hint_term_produces_no_occurrences() {
+        use super::occurrences_to_edit;
+        use domain::SegmentEdit;
+
+        let term = GlossaryTerm {
+            id: "t1".into(),
+            surface: "интра ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Meeting {
+                meeting_id: "m1".into(),
+            },
+            kind: GlossaryKind::Hint,
+        };
+        let segments = vec![FinalSegment {
+            index: 0,
+            start_ms: 0,
+            end_ms: 100,
+            channel: AudioChannel::Mic,
+            speaker_id: String::new(),
+            speaker_pinned: false,
+            text: "открой интра ру".into(),
+            text_edited: false,
+        }];
+        let existing: Vec<SegmentEdit> = Vec::new();
+        let mut ids = ["n1".to_string()].into_iter();
+
+        let created = occurrences_to_edit(&term, "m1", 1, &segments, &existing, 7, &mut ids);
+
+        assert!(
+            created.is_empty(),
+            "подсказка готовый текст не переписывает"
         );
     }
 

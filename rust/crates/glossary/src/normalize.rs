@@ -2,19 +2,15 @@
 
 use domain::{GlossaryKind, GlossaryTerm};
 
-#[allow(dead_code)]
-pub(crate) fn normalize(text: &str, terms: &[GlossaryTerm]) -> String {
-    normalize_with_kind(text, terms, None)
-}
-
-/// Заменяет surface-фразы только для термина указанного вида.
+/// Заменяет surface-фразы терминов указанного вида.
 ///
-/// Если `kind_filter` это `Some(kind)`, применяются только термины этого вида.
-/// Если `None`, применяются все термины.
+/// Вид обязателен: замена без разбора вида — это ровно тот дефект, ради
+/// которого виды и заведены (Epic 19). Подсказка, применённая к готовому
+/// тексту, переписала бы его так же безусловно, как замена.
 pub(crate) fn normalize_with_kind(
     text: &str,
     terms: &[GlossaryTerm],
-    kind_filter: Option<GlossaryKind>,
+    kind: GlossaryKind,
 ) -> String {
     if terms.is_empty() {
         return text.to_owned();
@@ -25,9 +21,7 @@ pub(crate) fn normalize_with_kind(
 
     while cursor < text.len() {
         if let Some((end, canonical)) = terms.iter().find_map(|term| {
-            if let Some(kind) = kind_filter
-                && term.kind != kind
-            {
+            if term.kind != kind {
                 return None;
             }
             match_end(text, cursor, &term.surface).map(|end| (end, &term.canonical))

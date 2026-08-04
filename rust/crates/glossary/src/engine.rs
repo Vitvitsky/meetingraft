@@ -23,7 +23,7 @@ impl GlossaryEngine {
     /// Подсказки не участвуют: они существуют ради `initial_prompt` и
     /// готовый текст не трогают (Epic 19).
     pub fn normalize_caption(&self, text: &str) -> String {
-        normalize::normalize_with_kind(text, &self.terms, Some(GlossaryKind::Replacement))
+        normalize::normalize_with_kind(text, &self.terms, GlossaryKind::Replacement)
     }
 
     /// Собирает уникальные canonical-формы с приоритетом русского языка.
