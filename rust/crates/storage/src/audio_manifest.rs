@@ -88,6 +88,11 @@ pub struct AudioManifestStore {
 }
 
 impl AudioManifestStore {
+    /// Соединение для модулей крейта, живущих в соседних файлах.
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Открыть/создать БД в `root/meetingraft.sqlite3`.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, AudioManifestError> {
         let root = root.as_ref().to_path_buf();
@@ -1099,7 +1104,7 @@ impl AudioManifestStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use domain::{
         Artifact, ArtifactKind, CaptionEvent, CaptionPhase, FinalTranscript, GlossaryKind,
@@ -1110,7 +1115,7 @@ mod tests {
 
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-    fn tmp_root() -> PathBuf {
+    pub(crate) fn tmp_root() -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

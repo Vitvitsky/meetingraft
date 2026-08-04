@@ -134,6 +134,24 @@ const STEPS: &[&str] = &[
     ALTER TABLE glossary_terms
         ADD COLUMN kind INTEGER NOT NULL DEFAULT 1;
     ",
+    // 8 — журнал ручных правок текста (Epic 19). Отдельно от сегментов:
+    // пересбор создаёт новую версию с другой нарезкой, и правка,
+    // лежащая в таблице сегментов, потерялась бы вместе со старой.
+    "
+    CREATE TABLE IF NOT EXISTS segment_edits (
+        id TEXT PRIMARY KEY NOT NULL,
+        meeting_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        original_text TEXT NOT NULL,
+        edited_text TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        applied_version INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_segment_edits_meeting
+        ON segment_edits(meeting_id, applied_version);
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.

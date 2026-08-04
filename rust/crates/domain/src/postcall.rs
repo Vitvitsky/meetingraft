@@ -100,6 +100,27 @@ impl FinalSegment {
     }
 }
 
+/// Ручная правка текста сегмента.
+///
+/// Живёт отдельно от сегментов: сегменты производны от распознавания, а
+/// пересбор создаёт новую версию с другой нарезкой. Журнал переживает
+/// пересбор, таблица сегментов — нет (Epic 19).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentEdit {
+    pub id: String,
+    pub meeting_id: String,
+    pub channel: AudioChannel,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    /// Что распознала модель.
+    pub original_text: String,
+    /// Что ввёл человек.
+    pub edited_text: String,
+    pub created_at_ms: u64,
+    /// Версия, в которой правка сейчас применена. `None` — не применилась.
+    pub applied_version: Option<u32>,
+}
+
 /// Где нашлось совпадение полнотекстового поиска.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SearchHitKind {
