@@ -274,6 +274,16 @@ final class SpeakerAttributionViewModel {
         )
     }
 
+    /// Звук неприменившейся правки: сегмента у неё нет, а место есть.
+    func audioFragment(channelCode: String, startMs: UInt64, endMs: UInt64) -> FfiAudioFragment {
+        core.segmentAudio(
+            meetingId: meetingId,
+            channelCode: channelCode,
+            startMs: startMs,
+            endMs: endMs
+        )
+    }
+
     private func reload() {
         speakers = core.listSpeakers(meetingId: meetingId)
         // Именно здесь, а не под `guard let version`: правка без версии —

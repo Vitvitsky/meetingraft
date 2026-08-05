@@ -8,6 +8,7 @@ import SwiftUI
 /// отвалилась», и оно должно попадаться на глаза само.
 struct UnappliedEditsBanner: View {
     let edits: [FfiSegmentEdit]
+    let onPlay: (FfiSegmentEdit) -> Void
     let onCopy: (FfiSegmentEdit) -> Void
     let onDismiss: (FfiSegmentEdit) -> Void
 
@@ -72,6 +73,8 @@ struct UnappliedEditsBanner: View {
                 .foregroundStyle(Theme.textPrimary)
 
             HStack(spacing: Theme.Space.xs) {
+                Button("▶ Прослушать") { onPlay(edit) }
+                    .buttonStyle(.themedSecondary)
                 // Перенести правку на место нельзя: `originalText` служит
                 // и поиском при пересборе, и признаком возврата к
                 // исходному. Поэтому копируем текст, а правится нужный
