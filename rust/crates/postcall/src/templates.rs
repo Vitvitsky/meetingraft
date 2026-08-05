@@ -70,6 +70,8 @@ pub fn make_artifact(meeting_id: &str, kind: ArtifactKind, body: &str, now_ms: u
         template_id: template_id.to_owned(),
         body_markdown: body.to_owned(),
         created_at_ms: now_ms,
+        source_version: None,
+        source_fingerprint: None,
     }
 }
 

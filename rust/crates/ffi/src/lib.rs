@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryKind,
     GlossaryScope, GlossaryTerm, LanguagePolicy, MeetingSummary, SearchHit, SessionState, Speaker,
-    SpeechLanguage, edits_by_position,
+    SpeechLanguage, body_fingerprint, edits_by_position,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
@@ -239,6 +239,16 @@ pub struct FfiArtifact {
     pub template_id: String,
     pub body_markdown: String,
     pub created_at_ms: u64,
+    /// Текст Final изменился после сборки артефакта (Epic 8).
+    ///
+    /// Считается в ядре: разбор в Swift не уезжает.
+    pub is_stale: bool,
+    /// Версия Final, из которой собран; 0 — неизвестно.
+    ///
+    /// Ноль означает артефакт из базы, заведённой до отслеживания
+    /// источника, и `is_stale` у такого всегда `false`: неизвестное не то
+    /// же самое, что устаревшее.
+    pub source_version: u32,
 }
 
 /// Результат генерации без исключения через границу UniFFI.
@@ -636,7 +646,30 @@ fn empty_final_transcript() -> FfiFinalTranscript {
     }
 }
 
-fn artifact_to_ffi(artifact: Artifact) -> FfiArtifact {
+/// Разошёлся ли артефакт с текущим состоянием транскрипта.
+///
+/// Версии мало: правка сегмента и назначение спикеров переписывают тело
+/// Final на месте, номера версии не меняя. Отпечаток ловит и это, и
+/// пересбор в новую версию.
+///
+/// Артефакт без записанного источника отставшим не считается: про него
+/// ничего не известно, и выдать это за «устарел» — соврать в другую
+/// сторону.
+fn artifact_is_stale(artifact: &Artifact, latest: Option<&FinalTranscript>) -> bool {
+    let (Some(version), Some(fingerprint)) = (
+        artifact.source_version,
+        artifact.source_fingerprint.as_deref(),
+    ) else {
+        return false;
+    };
+    let Some(latest) = latest else {
+        return false;
+    };
+    version != latest.version || fingerprint != body_fingerprint(&latest.body_markdown)
+}
+
+fn artifact_to_ffi(artifact: Artifact, latest: Option<&FinalTranscript>) -> FfiArtifact {
+    let is_stale = artifact_is_stale(&artifact, latest);
     FfiArtifact {
         id: artifact.id,
         meeting_id: artifact.meeting_id,
@@ -647,6 +680,8 @@ fn artifact_to_ffi(artifact: Artifact) -> FfiArtifact {
         template_id: artifact.template_id,
         body_markdown: artifact.body_markdown,
         created_at_ms: artifact.created_at_ms,
+        is_stale,
+        source_version: artifact.source_version.unwrap_or(0),
     }
 }
 
@@ -658,6 +693,8 @@ fn empty_artifact() -> FfiArtifact {
         template_id: String::new(),
         body_markdown: String::new(),
         created_at_ms: 0,
+        is_stale: false,
+        source_version: 0,
     }
 }
 
@@ -709,15 +746,20 @@ fn store_generated_artifact(
     body: &str,
     generated_at_ms: u64,
     template_id: Option<&str>,
+    source: &FinalTranscript,
 ) -> FfiGenerateArtifactResult {
     let mut artifact = make_artifact(meeting_id, kind, body, generated_at_ms);
     artifact.id = Uuid::new_v4().to_string();
     if let Some(template_id) = template_id {
         artifact.template_id = template_id.to_owned();
     }
+    // Из чего собрано — чтобы позднейшая правка транскрипта не разошлась
+    // с артефактом молча (Epic 8).
+    artifact.source_version = Some(source.version);
+    artifact.source_fingerprint = Some(body_fingerprint(&source.body_markdown));
     match write_store(inner, |store| store.insert_artifact(&artifact)) {
         Ok(()) => FfiGenerateArtifactResult {
-            artifact: artifact_to_ffi(artifact),
+            artifact: artifact_to_ffi(artifact, Some(source)),
             error: String::new(),
         },
         Err(error) => FfiGenerateArtifactResult {
@@ -1926,10 +1968,15 @@ impl MeetingCore {
     /// Сохранённые post-call артефакты выбранной встречи.
     pub fn list_artifacts(&self, meeting_id: String) -> Vec<FfiArtifact> {
         let guard = self.inner.lock().expect("meeting core poisoned");
+        // Последний Final — то, с чем артефакт обязан совпадать: Brief,
+        // экспорт и пересборка опираются именно на него.
+        let latest = read_store(&guard, |store| store.get_final_transcript(&meeting_id))
+            .ok()
+            .flatten();
         read_store(&guard, |store| store.list_artifacts(&meeting_id))
             .unwrap_or_default()
             .into_iter()
-            .map(artifact_to_ffi)
+            .map(|artifact| artifact_to_ffi(artifact, latest.as_ref()))
             .collect()
     }
 
@@ -2029,6 +2076,7 @@ impl MeetingCore {
                 &backend_artifact.body_markdown,
                 generated_at_ms,
                 Some(template_id),
+                &final_transcript,
             );
         }
         if matches!(engine.as_str(), "ollama" | "openai_compat") {
@@ -2073,6 +2121,7 @@ impl MeetingCore {
                 &body,
                 generated_at_ms,
                 Some(template_id),
+                &final_transcript,
             );
         }
 
@@ -2103,6 +2152,7 @@ impl MeetingCore {
             &body,
             generated_at_ms,
             None,
+            &final_transcript,
         )
     }
 
@@ -2507,6 +2557,129 @@ mod tests {
             now_ms(),
             std::thread::current().id()
         ))
+    }
+
+    /// Артефакт, только что собранный из версии 1 засеянной встречи.
+    fn seed_and_generate(name: &str) -> (std::path::PathBuf, String, std::sync::Arc<MeetingCore>) {
+        let root = edits_root(name);
+        let meeting_id = format!("m-{name}");
+        seed_segment_version(
+            &root,
+            &meeting_id,
+            1,
+            &[(0, 0, 1_000, "упирается в юни-эф-эф-ай")],
+        );
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        (root, meeting_id, core)
+    }
+
+    /// Правка текста после сборки расходится с артефактом.
+    #[test]
+    fn editing_a_segment_marks_the_artifact_stale() {
+        let (root, meeting_id, core) = seed_and_generate("artifact-stale-edit");
+
+        let generated = core.generate_artifact(meeting_id.clone(), FfiArtifactKind::Brief);
+        assert!(generated.error.is_empty(), "{}", generated.error);
+        assert!(!generated.artifact.is_stale, "только что собран");
+        assert_eq!(generated.artifact.source_version, 1);
+
+        let error = core.edit_segment_text(meeting_id.clone(), 1, 0, "упирается в UniFFI".into());
+        assert!(error.is_empty(), "правка: {error}");
+
+        let artifacts = core.list_artifacts(meeting_id);
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0].is_stale, "текст правился после сборки");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Переименование спикера тоже переписывает тело Final — случай,
+    /// который время последней правки не ловит вовсе: журнал правок про
+    /// спикеров ничего не знает.
+    #[test]
+    fn renaming_a_speaker_marks_the_artifact_stale() {
+        let (root, meeting_id, core) = seed_and_generate("artifact-stale-speaker");
+
+        let error = core.upsert_speaker(meeting_id.clone(), "s1".into(), "Пётр".into(), 0);
+        assert!(error.is_empty(), "спикер: {error}");
+        let error = core.assign_channel_speaker(meeting_id.clone(), 1, "mic".into(), "s1".into());
+        assert!(error.is_empty(), "назначение: {error}");
+
+        let generated = core.generate_artifact(meeting_id.clone(), FfiArtifactKind::Brief);
+        assert!(generated.error.is_empty(), "{}", generated.error);
+        assert!(!generated.artifact.is_stale);
+
+        let error = core.upsert_speaker(meeting_id.clone(), "s1".into(), "Пётр Иванов".into(), 0);
+        assert!(error.is_empty(), "переименование: {error}");
+
+        let artifacts = core.list_artifacts(meeting_id);
+        assert!(artifacts[0].is_stale, "подпись реплики изменилась");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Пересбор в новую версию: текст версии 1 не менялся, но Brief
+    /// собран не из того Final, который теперь считается последним.
+    #[test]
+    fn a_newer_final_version_marks_the_artifact_stale() {
+        let (root, meeting_id, core) = seed_and_generate("artifact-stale-version");
+
+        let generated = core.generate_artifact(meeting_id.clone(), FfiArtifactKind::Brief);
+        assert!(generated.error.is_empty(), "{}", generated.error);
+
+        seed_segment_version(
+            &root,
+            &meeting_id,
+            2,
+            &[(0, 0, 1_000, "упирается в UniFFI")],
+        );
+
+        let artifacts = core.list_artifacts(meeting_id);
+        assert!(artifacts[0].is_stale, "собран по версии 1, сейчас 2");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ничего не трогали — плашки быть не должно, иначе она обесценится.
+    #[test]
+    fn an_untouched_artifact_is_not_stale() {
+        let (root, meeting_id, core) = seed_and_generate("artifact-fresh");
+
+        let generated = core.generate_artifact(meeting_id.clone(), FfiArtifactKind::Brief);
+        assert!(generated.error.is_empty(), "{}", generated.error);
+
+        let artifacts = core.list_artifacts(meeting_id);
+        assert!(!artifacts[0].is_stale);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Артефакт из базы, заведённой до отслеживания источника: полей нет,
+    /// и «неизвестно» не выдаётся за «устарел» даже при разошедшемся
+    /// тексте.
+    #[test]
+    fn an_artifact_without_recorded_source_is_never_stale() {
+        let (root, meeting_id, core) = seed_and_generate("artifact-legacy");
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store
+                .insert_artifact(&Artifact {
+                    id: "a-legacy".into(),
+                    meeting_id: meeting_id.clone(),
+                    kind: ArtifactKind::Brief,
+                    template_id: "builtin.brief".into(),
+                    body_markdown: "# Старый бриф".into(),
+                    created_at_ms: 10,
+                    source_version: None,
+                    source_fingerprint: None,
+                })
+                .expect("артефакт");
+        }
+
+        let error = core.edit_segment_text(meeting_id.clone(), 1, 0, "упирается в UniFFI".into());
+        assert!(error.is_empty(), "правка: {error}");
+
+        let artifacts = core.list_artifacts(meeting_id);
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].source_version, 0, "источник неизвестен");
+        assert!(!artifacts[0].is_stale);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Сервер, который принимает соединение и молчит: так «медленный
