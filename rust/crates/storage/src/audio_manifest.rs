@@ -439,15 +439,18 @@ impl AudioManifestStore {
         };
         self.conn.execute(
             "INSERT INTO artifacts
-             (id, meeting_id, kind, template_id, body_markdown, created_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (id, meeting_id, kind, template_id, body_markdown, created_at_ms,
+              source_version, source_fingerprint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 artifact.id,
                 artifact.meeting_id,
                 kind,
                 artifact.template_id,
                 artifact.body_markdown,
-                artifact.created_at_ms as i64
+                artifact.created_at_ms as i64,
+                artifact.source_version,
+                artifact.source_fingerprint
             ],
         )?;
         Self::index_text(
@@ -463,7 +466,8 @@ impl AudioManifestStore {
     /// Вернуть артефакты встречи в хронологическом порядке.
     pub fn list_artifacts(&self, meeting_id: &str) -> Result<Vec<Artifact>, AudioManifestError> {
         let mut statement = self.conn.prepare(
-            "SELECT id, meeting_id, kind, template_id, body_markdown, created_at_ms
+            "SELECT id, meeting_id, kind, template_id, body_markdown, created_at_ms,
+                    source_version, source_fingerprint
              FROM artifacts
              WHERE meeting_id = ?1
              ORDER BY created_at_ms, id",
@@ -477,6 +481,8 @@ impl AudioManifestStore {
                 template_id: row.get(3)?,
                 body_markdown: row.get(4)?,
                 created_at_ms: row.get::<_, i64>(5)? as u64,
+                source_version: row.get(6)?,
+                source_fingerprint: row.get(7)?,
             })
         })?;
 
@@ -2085,6 +2091,8 @@ pub(crate) mod tests {
                 template_id: "builtin.brief".into(),
                 body_markdown: "# Brief".into(),
                 created_at_ms: 100,
+                source_version: Some(1),
+                source_fingerprint: Some("abc".into()),
             };
             let follow_up = Artifact {
                 id: "artifact-2".into(),
@@ -2093,6 +2101,8 @@ pub(crate) mod tests {
                 template_id: "builtin.follow_up".into(),
                 body_markdown: "Итоги встречи".into(),
                 created_at_ms: 200,
+                source_version: None,
+                source_fingerprint: None,
             };
             store.insert_artifact(&follow_up).unwrap();
             store.insert_artifact(&brief).unwrap();
@@ -2103,6 +2113,35 @@ pub(crate) mod tests {
             );
             assert!(store.list_artifacts("missing").unwrap().is_empty());
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// База, заведённая до отслеживания источника, читается без потерь, а
+    /// её артефакты приходят с `None` — это «неизвестно», а не «устарел».
+    #[test]
+    fn artifacts_from_a_pre_source_database_report_unknown_origin() {
+        let root = tmp_root();
+        {
+            fs::create_dir_all(&root).unwrap();
+            let conn = Connection::open(root.join("meetingraft.sqlite3")).unwrap();
+            conn.execute_batch(crate::migrations::baseline_schema())
+                .unwrap();
+            conn.execute(
+                "INSERT INTO artifacts
+                 (id, meeting_id, kind, template_id, body_markdown, created_at_ms)
+                 VALUES ('a-old', 'meeting-1', 'brief', 'builtin.brief', '# Old', 10)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = AudioManifestStore::open(&root).unwrap();
+        let artifacts = store.list_artifacts("meeting-1").unwrap();
+
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].id, "a-old");
+        assert_eq!(artifacts[0].source_version, None);
+        assert_eq!(artifacts[0].source_fingerprint, None);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2132,6 +2171,8 @@ pub(crate) mod tests {
                         kind,
                         template_id: "builtin".into(),
                         body_markdown: "Текст".into(),
+                        source_version: None,
+                        source_fingerprint: None,
                         created_at_ms: 400,
                     })
                     .unwrap();

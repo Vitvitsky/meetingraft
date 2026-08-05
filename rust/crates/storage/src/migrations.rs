@@ -152,6 +152,16 @@ const STEPS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_segment_edits_meeting
         ON segment_edits(meeting_id, applied_version);
     ",
+    // 9 — из чего собран артефакт (Epic 8). Тело Final переписывается на
+    // месте семью операциями — правкой текста и назначением спикеров, —
+    // и собранный раньше Brief расходился с транскриптом молча. NULL
+    // означает «собран до того, как приложение начало это отслеживать»:
+    // выдать неизвестное за устаревшее значило бы соврать в другую
+    // сторону.
+    "
+    ALTER TABLE artifacts ADD COLUMN source_version INTEGER;
+    ALTER TABLE artifacts ADD COLUMN source_fingerprint TEXT;
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.
