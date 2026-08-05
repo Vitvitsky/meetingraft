@@ -584,6 +584,7 @@ impl AudioManifestStore {
                 speaker_pinned: row.get(5)?,
                 text: row.get(6)?,
                 text_edited: false,
+                original_text: String::new(),
             })
         })?;
         let mut segments = rows.collect::<Result<Vec<_>, _>>()?;
@@ -604,6 +605,7 @@ impl AudioManifestStore {
             if let Some(edit) = by_position.get(&segment.position()) {
                 segment.text = edit.edited_text.clone();
                 segment.text_edited = true;
+                segment.original_text = edit.original_text.clone();
             }
         }
         Ok(segments)
@@ -1254,6 +1256,7 @@ pub(crate) mod tests {
             speaker_pinned: false,
             text: text.to_string(),
             text_edited: false,
+            original_text: String::new(),
         }
     }
 
@@ -1465,6 +1468,85 @@ pub(crate) mod tests {
         {
             let store = AudioManifestStore::open(&root).unwrap();
             assert!(store.list_final_segments("m1", 7).unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Правленый сегмент отдаёт и правку, и то, что распознала модель.
+    ///
+    /// Тексты заведомо разные: совпади они, тест прошёл бы, ничего не
+    /// проверив.
+    #[test]
+    fn edited_segment_carries_recognized_text() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store
+                .replace_final_segments(
+                    "m1",
+                    1,
+                    &[FinalSegment {
+                        index: 0,
+                        start_ms: 0,
+                        end_ms: 1_000,
+                        channel: AudioChannel::Mic,
+                        speaker_id: String::new(),
+                        speaker_pinned: false,
+                        text: "упирается в юни-эф-эф-ай".to_string(),
+                        text_edited: false,
+                        original_text: String::new(),
+                    }],
+                )
+                .unwrap();
+            store
+                .upsert_segment_edit(&domain::SegmentEdit {
+                    id: "e1".to_string(),
+                    meeting_id: "m1".to_string(),
+                    channel: AudioChannel::Mic,
+                    start_ms: 0,
+                    end_ms: 1_000,
+                    original_text: "упирается в юни-эф-эф-ай".to_string(),
+                    edited_text: "упирается в UniFFI".to_string(),
+                    created_at_ms: 10,
+                    applied_version: Some(1),
+                })
+                .unwrap();
+
+            let segments = store.list_final_segments("m1", 1).unwrap();
+            assert_eq!(segments[0].text, "упирается в UniFFI");
+            assert_eq!(segments[0].original_text, "упирается в юни-эф-эф-ай");
+            assert!(segments[0].text_edited);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Неправленый сегмент не выдумывает исходный текст.
+    #[test]
+    fn unedited_segment_has_empty_original_text() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store
+                .replace_final_segments(
+                    "m1",
+                    1,
+                    &[FinalSegment {
+                        index: 0,
+                        start_ms: 0,
+                        end_ms: 1_000,
+                        channel: AudioChannel::Mic,
+                        speaker_id: String::new(),
+                        speaker_pinned: false,
+                        text: "обычная реплика".to_string(),
+                        text_edited: false,
+                        original_text: String::new(),
+                    }],
+                )
+                .unwrap();
+
+            let segments = store.list_final_segments("m1", 1).unwrap();
+            assert!(segments[0].original_text.is_empty());
+            assert!(!segments[0].text_edited);
         }
         let _ = fs::remove_dir_all(&root);
     }
