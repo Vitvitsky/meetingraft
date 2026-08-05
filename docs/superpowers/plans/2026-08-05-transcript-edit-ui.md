@@ -10,6 +10,36 @@
 
 Спека: `docs/superpowers/specs/2026-08-05-transcript-edit-ui-design.md`.
 
+## Состояние на 2026-08-05
+
+Все семь задач выполнены на ветке `feat/epic-19-transcript-edit-ui`.
+
+- **Задачи 1–3 (Rust) проверены здесь**: `meetingraft-storage` 57 тестов,
+  `meetingraft-postcall` 100, `meetingraft-ffi` 50; `cargo fmt --check` и
+  `cargo clippy --all-targets -- -D warnings` чисто. Ключевой тест
+  `edited_segment_carries_recognized_text` отдельно проверен на падение
+  без исправления.
+- **Задачи 4–7 (Swift) не собирались**: на VPS нет ни `swift`, ни
+  `xcodebuild`, ни `swiftformat`. Шаги «прогнать на Mac» остались
+  неотмеченными намеренно — этот код не проверен.
+
+Отступления от плана, сделанные по ходу:
+
+1. **Task 2**, тестовый конструктор термина: у `domain::GlossaryTerm` нет
+   поля `updated_at_ms`, в плане оно было. Убрано.
+2. **Task 3**, вспомогательные в `mod tests`: `tmp_root_string`,
+   `seed_two_edits`, `seed_final_segment` из плана в коде отсутствуют.
+   Взяты фактические — `edits_root(name)`, `seed_segment_version`, — и
+   дописан `seed_two_unapplied_edits`.
+3. **Task 4**, подделка ядра: вместо нового `segmentsOverride`
+   используется существующее свойство `segments` спая — оно и так
+   питает `listFinalSegments`.
+4. **Task 7**, чтение звука: план брал `audioFragment(for:)` на каждую
+   строку в `body`, то есть чтение с диска на каждую перерисовку списка,
+   а перерисовка идёт на каждое нажатие клавиши в поле. Кнопка живёт
+   только в раскрытой строке, поэтому фрагмент читается один раз при
+   входе в правку и хранится в `@State playableFragment`.
+
 ## Global Constraints
 
 - Комментарии и документация в коде — по-русски; сообщения коммитов — по-английски.
@@ -55,7 +85,7 @@
 **Interfaces:**
 - Produces: поле `FinalSegment.original_text: String` — распознанный текст из журнала правок; пусто, когда правки нет.
 
-- [ ] **Step 1: Написать падающий тест**
+- [x] **Step 1: Написать падающий тест**
 
 В `rust/crates/storage/src/audio_manifest.rs`, в `mod tests`. Тесты в этом модуле работают через `tmp_root()` и `AudioManifestStore::open` — смотри соседний `list_final_segments_of_unknown_version_is_empty`.
 
@@ -142,12 +172,12 @@ fn unedited_segment_has_empty_original_text() {
 
 Если имя `replace_final_segments` в коде другое — взять фактическое из соседних тестов этого модуля, остальное не менять.
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run: `cd rust && cargo test -p meetingraft-storage edited_segment_carries_recognized_text`
 Expected: FAIL — компиляция, `FinalSegment` не имеет поля `original_text`.
 
-- [ ] **Step 3: Добавить поле в домен**
+- [x] **Step 3: Добавить поле в домен**
 
 В `rust/crates/domain/src/postcall.rs`, в `FinalSegment` после `text_edited`:
 
@@ -164,7 +194,7 @@ Expected: FAIL — компиляция, `FinalSegment` не имеет поля
     pub original_text: String,
 ```
 
-- [ ] **Step 4: Заполнить при чтении**
+- [x] **Step 4: Заполнить при чтении**
 
 В `rust/crates/storage/src/audio_manifest.rs`, в `list_final_segments`: в конструкторе `FinalSegment` внутри `query_map` добавить `original_text: String::new(),`, а в цикле наложения правок:
 
@@ -178,18 +208,18 @@ Expected: FAIL — компиляция, `FinalSegment` не имеет поля
         }
 ```
 
-- [ ] **Step 5: Починить остальные места конструирования**
+- [x] **Step 5: Починить остальные места конструирования**
 
 Run: `cd rust && cargo build -p meetingraft-storage -p meetingraft-postcall -p meetingraft-ffi`
 
 Везде, где компилятор укажет на отсутствующее поле, добавить `original_text: String::new()`. В `ffi` это в том числе `recognized` внутри `edit_segment_text` — там поле тоже пустое, на разбор оно не влияет.
 
-- [ ] **Step 6: Прогнать тесты**
+- [x] **Step 6: Прогнать тесты**
 
 Run: `cd rust && cargo test -p meetingraft-storage -p meetingraft-postcall`
 Expected: PASS
 
-- [ ] **Step 7: Коммит**
+- [x] **Step 7: Коммит**
 
 ```bash
 cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
@@ -222,7 +252,7 @@ pub fn promotable_term<'a>(
 
 Отдаёт подсказку, родившуюся из этой правки и действующую в этой встрече. `None`, если термина нет, он уже замена или принадлежит чужой встрече.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 В `rust/crates/postcall/src/term_from_edit.rs`, в `mod tests`:
 
@@ -324,12 +354,12 @@ fn long_edit_yields_no_promotable_term() {
 }
 ```
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run: `cd rust && cargo test -p meetingraft-postcall promotable`
 Expected: FAIL — `promotable_term` не найдена.
 
-- [ ] **Step 3: Реализовать**
+- [x] **Step 3: Реализовать**
 
 В конец `rust/crates/postcall/src/term_from_edit.rs`, перед `mod tests`:
 
@@ -365,16 +395,16 @@ pub fn promotable_term<'a>(
 }
 ```
 
-- [ ] **Step 4: Реэкспортировать**
+- [x] **Step 4: Реэкспортировать**
 
 В `rust/crates/postcall/src/lib.rs` добавить `promotable_term` в тот же `pub use`, где уже стоит `term_from_edit`.
 
-- [ ] **Step 5: Прогнать тесты**
+- [x] **Step 5: Прогнать тесты**
 
 Run: `cd rust && cargo test -p meetingraft-postcall`
 Expected: PASS
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
@@ -396,7 +426,7 @@ git commit -m "feat: find the hint term a segment edit produced"
 - Consumes: `FinalSegment.original_text` (Task 1), `postcall::promotable_term` (Task 2).
 - Produces: `FfiFinalSegment.original_text: String`, `FfiFinalSegment.promotable_term_id: String`, метод `delete_segment_edit(edit_id: String) -> String`.
 
-- [ ] **Step 1: Написать падающий тест на удаление правки**
+- [x] **Step 1: Написать падающий тест на удаление правки**
 
 В `mod tests` файла `rust/crates/ffi/src/lib.rs`, рядом с существующими тестами правок:
 
@@ -426,12 +456,12 @@ fn delete_segment_edit_removes_only_named_one() {
 
 `tmp_root_string` и `seed_two_edits` — вспомогательные из этого же `mod tests`; если их нет, написать по образцу соседнего теста журнала правок, заведя две правки с `applied_version: None` и разными `id`.
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run: `cd rust && cargo test -p meetingraft-ffi delete_segment_edit_removes_only_named_one`
 Expected: FAIL — метода `delete_segment_edit` нет.
 
-- [ ] **Step 3: Добавить метод**
+- [x] **Step 3: Добавить метод**
 
 В `rust/crates/ffi/src/lib.rs`, внутри `#[uniffi::export] impl MeetingCore`, сразу после `list_unapplied_edits`:
 
@@ -451,12 +481,12 @@ Expected: FAIL — метода `delete_segment_edit` нет.
     }
 ```
 
-- [ ] **Step 4: Прогнать тест удаления**
+- [x] **Step 4: Прогнать тест удаления**
 
 Run: `cd rust && cargo test -p meetingraft-ffi delete_segment_edit_removes_only_named_one`
 Expected: PASS
 
-- [ ] **Step 5: Написать падающий тест на два поля**
+- [x] **Step 5: Написать падающий тест на два поля**
 
 ```rust
 /// Правленый сегмент отдаёт распознанное и id подсказки для повышения.
@@ -500,12 +530,12 @@ fn untouched_segment_exposes_neither_field() {
 
 `seed_final_segment` — вспомогательная из `mod tests`; если её нет, написать по образцу соседних тестов, кладущих сегменты версии через хранилище.
 
-- [ ] **Step 6: Прогнать и убедиться, что падает**
+- [x] **Step 6: Прогнать и убедиться, что падает**
 
 Run: `cd rust && cargo test -p meetingraft-ffi edited_segment_exposes`
 Expected: FAIL — компиляция, полей нет.
 
-- [ ] **Step 7: Добавить поля в запись**
+- [x] **Step 7: Добавить поля в запись**
 
 В `FfiFinalSegment` после `text_edited`:
 
@@ -521,7 +551,7 @@ Expected: FAIL — компиляция, полей нет.
     pub promotable_term_id: String,
 ```
 
-- [ ] **Step 8: Заполнить в `list_final_segments`**
+- [x] **Step 8: Заполнить в `list_final_segments`**
 
 Заменить тело `list_final_segments` на:
 
@@ -583,12 +613,12 @@ Expected: FAIL — компиляция, полей нет.
 
 Добавить `promotable_term` в `use` из `postcall` в шапке файла.
 
-- [ ] **Step 9: Прогнать тесты крейта**
+- [x] **Step 9: Прогнать тесты крейта**
 
 Run: `cd rust && cargo test -p meetingraft-ffi`
 Expected: PASS. Соседние тесты, конструирующие `FfiFinalSegment`, придётся дополнить двумя полями.
 
-- [ ] **Step 10: Коммит**
+- [x] **Step 10: Коммит**
 
 ```bash
 cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
@@ -608,7 +638,7 @@ git commit -m "feat: expose recognized text, promotable term and edit deletion"
 - Consumes: сгенерированные биндинги из Task 3 — `editSegmentText`, `listUnappliedEdits`, `deleteSegmentEdit`, `promoteTermToReplacement`, `segmentAudio`, поля `originalText` и `promotableTermId` у `FfiFinalSegment`.
 - Produces: `editingIndex: UInt32?`, `draftText: String`, `unappliedEdits: [FfiSegmentEdit]`, `canPromote(index:) -> Bool`, `audioFragment(for:) -> FfiAudioFragment`, методы `beginEdit(index:)`, `cancelEdit()`, `commitEdit()`, `revertToOriginal(index:)`, `promoteTerm(index:)`, `dismissUnapplied(id:)`.
 
-- [ ] **Step 1: Расширить протокол**
+- [x] **Step 1: Расширить протокол**
 
 В `SpeakerAttributionCoreProviding` (`SpeakerAttributionViewModel.swift:5`) после `unpinSegmentSpeaker`:
 
@@ -627,7 +657,7 @@ git commit -m "feat: expose recognized text, promotable term and edit deletion"
 
 `extension MeetingCore: SpeakerAttributionCoreProviding {}` (строка 26) подхватит их без изменений.
 
-- [ ] **Step 2: Дополнить подделку в тестах**
+- [x] **Step 2: Дополнить подделку в тестах**
 
 В `apps/macos/Tests/SpeakerAttributionViewModelTests.swift`, в `AttributionCoreSpy` — свойства записи вызовов и заглушки:
 
@@ -706,7 +736,7 @@ private func edit(_ id: String) -> FfiSegmentEdit {
 }
 ```
 
-- [ ] **Step 3: Написать падающие тесты**
+- [x] **Step 3: Написать падающие тесты**
 
 В тот же файл, новой секцией `// MARK: - Правка текста`:
 
@@ -820,7 +850,7 @@ func testPromoteTermSendsCoreProvidedId() {
 Run на Mac: `cd apps/macos && xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -only-testing:MeetingRaftTests/SpeakerAttributionViewModelTests test CODE_SIGNING_ALLOWED=NO`
 Expected: FAIL — компиляция, у модели нет `beginEdit` и остальных.
 
-- [ ] **Step 5: Реализовать состояние в модели**
+- [x] **Step 5: Реализовать состояние в модели**
 
 В `SpeakerAttributionViewModel` после `private(set) var errorMessage: String?`:
 
@@ -923,7 +953,7 @@ Expected: FAIL — компиляция, у модели нет `beginEdit` и �
     }
 ```
 
-- [ ] **Step 6: Тянуть неприменившиеся правки при перечитывании**
+- [x] **Step 6: Тянуть неприменившиеся правки при перечитывании**
 
 В `reload()`, сразу после `speakers = core.listSpeakers(meetingId: meetingId)`:
 
@@ -938,7 +968,7 @@ Expected: FAIL — компиляция, у модели нет `beginEdit` и �
 Run на Mac: `cd apps/macos && xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -only-testing:MeetingRaftTests/SpeakerAttributionViewModelTests test CODE_SIGNING_ALLOWED=NO`
 Expected: PASS
 
-- [ ] **Step 8: Коммит**
+- [x] **Step 8: Коммит**
 
 ```bash
 cd apps/macos && swiftformat Sources Tests --lint
@@ -956,7 +986,7 @@ git commit -m "feat: add segment edit state to the attribution model"
 **Interfaces:**
 - Consumes: `editingIndex`, `draftText`, `canPromote(index:)`, `beginEdit`, `cancelEdit`, `commitEdit`, `revertToOriginal`, `promoteTerm` (Task 4); поля `originalText`, `promotableTermId`, `textEdited` (Task 3).
 
-- [ ] **Step 1: Передать состояние правки в строку**
+- [x] **Step 1: Передать состояние правки в строку**
 
 В `FinalSegmentsView` заменить содержимое `List` на:
 
@@ -997,7 +1027,7 @@ git commit -m "feat: add segment edit state to the attribution model"
     @State private var isConfirmingPromote = false
 ```
 
-- [ ] **Step 2: Раскрыть строку в поле**
+- [x] **Step 2: Раскрыть строку в поле**
 
 В `FinalSegmentRow.body` заменить `Text(segment.text)` на:
 
@@ -1041,7 +1071,7 @@ git commit -m "feat: add segment edit state to the attribution model"
                 }
 ```
 
-- [ ] **Step 3: Полоска действий под полем**
+- [x] **Step 3: Полоска действий под полем**
 
 Новое свойство в `FinalSegmentRow`. Кнопка воспроизведения появится в Task 7 — пока полоска несёт две кнопки:
 
@@ -1080,7 +1110,7 @@ git commit -m "feat: add segment edit state to the attribution model"
 
 Числа затронутых реплик не показываем: сухого прогона на границе нет, а формулировка не даёт нажать вслепую.
 
-- [ ] **Step 4: Пометить правленый текст отдельно от правленого спикера**
+- [x] **Step 4: Пометить правленый текст отдельно от правленого спикера**
 
 В `speakerMenu` рядом с существующим `Chip(text: "правка")` для `segment.speakerPinned`:
 
@@ -1098,7 +1128,7 @@ git commit -m "feat: add segment edit state to the attribution model"
 Run на Mac: `scripts/verify-mac.sh`
 Expected: сборка и тесты зелёные.
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add apps/macos/Sources/Meetings/FinalSegmentsView.swift
@@ -1117,7 +1147,7 @@ git commit -m "feat: edit segment text in place"
 **Interfaces:**
 - Consumes: `unappliedEdits`, `dismissUnapplied(id:)` (Task 4).
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 ```swift
 // MARK: - Неприменившиеся правки
@@ -1163,7 +1193,7 @@ func testDismissUnappliedCallsCoreWithThatId() {
 Run на Mac: `xcodebuild … -only-testing:MeetingRaftTests/SpeakerAttributionViewModelTests test CODE_SIGNING_ALLOWED=NO`
 Expected: FAIL — `unappliedEdits` пуст либо метода нет.
 
-- [ ] **Step 3: Написать вью баннера**
+- [x] **Step 3: Написать вью баннера**
 
 Создать `apps/macos/Sources/Meetings/UnappliedEditsBanner.swift`:
 
@@ -1257,7 +1287,7 @@ struct UnappliedEditsBanner: View {
 }
 ```
 
-- [ ] **Step 4: Вставить над списком**
+- [x] **Step 4: Вставить над списком**
 
 В `FinalSegmentsView` обернуть `List`:
 
@@ -1287,7 +1317,7 @@ struct UnappliedEditsBanner: View {
 Run на Mac: `scripts/verify-mac.sh`
 Expected: PASS
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add apps/macos/Sources/Meetings/UnappliedEditsBanner.swift apps/macos/Sources/Meetings/FinalSegmentsView.swift apps/macos/Tests/SpeakerAttributionViewModelTests.swift
@@ -1307,7 +1337,7 @@ git commit -m "feat: show edits that no longer land on a version"
 - Consumes: `audioFragment(for:)` (Task 4).
 - Produces: `SegmentAudioPlayer.buffer(from:) -> AVAudioPCMBuffer?`, `play(fragment:)`, `stop()`, `isPlaying`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Разбор байтов — чистая функция и проверяется без звуковой карты. Создать `apps/macos/Tests/SegmentAudioPlayerTests.swift`:
 
@@ -1356,7 +1386,7 @@ final class SegmentAudioPlayerTests: XCTestCase {
 Run на Mac: `xcodebuild … -only-testing:MeetingRaftTests/SegmentAudioPlayerTests test CODE_SIGNING_ALLOWED=NO`
 Expected: FAIL — типа `SegmentAudioPlayer` нет.
 
-- [ ] **Step 3: Написать проигрыватель**
+- [x] **Step 3: Написать проигрыватель**
 
 Создать `apps/macos/Sources/Meetings/SegmentAudioPlayer.swift`:
 
@@ -1442,7 +1472,7 @@ final class SegmentAudioPlayer {
 Run на Mac: `xcodebuild … -only-testing:MeetingRaftTests/SegmentAudioPlayerTests test CODE_SIGNING_ALLOWED=NO`
 Expected: PASS
 
-- [ ] **Step 5: Подключить к строке**
+- [x] **Step 5: Подключить к строке**
 
 В `FinalSegmentsView` завести проигрыватель и передать фрагмент в строку:
 
@@ -1473,7 +1503,7 @@ Expected: PASS
             }
 ```
 
-- [ ] **Step 6: Подключить к баннеру**
+- [x] **Step 6: Подключить к баннеру**
 
 У неприменившейся правки сегмента нет, но место (канал и границы) есть — значит звук ей доступен тем же путём. В `SpeakerAttributionViewModel` рядом с `audioFragment(for:)`:
 
@@ -1508,7 +1538,7 @@ Expected: PASS
                     },
 ```
 
-- [ ] **Step 7: Полная проверка и коммит**
+- [x] **Step 7: Полная проверка и коммит**
 
 ```bash
 scripts/verify-mac.sh
@@ -1520,6 +1550,6 @@ git commit -m "feat: play the audio behind a segment"
 
 ## После всех задач
 
-- [ ] Обновить `docs/backlog.md`, Epic 19: закрыть пункт «Проигрывание фрагмента и **весь интерфейс** — плана нет», оставив открытыми сжатие словаря и перечисленные в спеке исключения.
+- [x] Обновить `docs/backlog.md`, Epic 19: закрыть пункт «Проигрывание фрагмента и **весь интерфейс** — плана нет», оставив открытыми сжатие словаря и перечисленные в спеке исключения.
 - [ ] `scripts/verify-mac.sh` целиком на Mac.
 - [ ] Pull request.
