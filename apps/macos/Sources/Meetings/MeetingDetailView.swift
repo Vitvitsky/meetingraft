@@ -284,16 +284,16 @@ struct MeetingDetailView: View {
             HStack {
                 Button("Generate Brief", systemImage: "doc.text") {
                     applyProviderConfig()
-                    viewModel.generate(meetingId: meeting.id, kind: .brief)
+                    Task { await viewModel.generate(meetingId: meeting.id, kind: .brief) }
                 }
                 .help(generateHelp)
-                .disabled(!canGenerateArtifacts)
+                .disabled(!canGenerateArtifacts || viewModel.isGeneratingArtifact)
                 Button("Generate Follow-up", systemImage: "envelope") {
                     applyProviderConfig()
-                    viewModel.generate(meetingId: meeting.id, kind: .followUp)
+                    Task { await viewModel.generate(meetingId: meeting.id, kind: .followUp) }
                 }
                 .help(generateHelp)
-                .disabled(!canGenerateArtifacts)
+                .disabled(!canGenerateArtifacts || viewModel.isGeneratingArtifact)
                 Button("Submit refine (stub)", systemImage: "cloud") {
                     viewModel.submitBackendRefine(meetingId: meeting.id)
                 }
@@ -313,6 +313,15 @@ struct MeetingDetailView: View {
                 }
                 .help("Выбрать папку и экспортировать")
                 .disabled(viewModel.finalTranscript == nil)
+                // Генерация больше не морозит окно, поэтому ожидание надо
+                // показать: иначе нажатие выглядит как ничего не сделавшее.
+                if viewModel.isGeneratingArtifact {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Generating…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             }
             .padding()

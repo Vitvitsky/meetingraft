@@ -212,10 +212,15 @@ struct LlmSettingsSection: View {
                 .frame(width: 240)
             }
         }
-        Button(String(localized: "Refresh catalog")) {
-            model.refreshBackendLlmModels(providerStore)
+        Button(
+            model.isRefreshingBackendModels
+                ? String(localized: "Refreshing…")
+                : String(localized: "Refresh catalog")
+        ) {
+            Task { await model.refreshBackendLlmModels(providerStore) }
         }
         .buttonStyle(.themedSecondary)
+        .disabled(model.isRefreshingBackendModels)
     }
 }
 
@@ -243,10 +248,15 @@ struct BackendSettingsSection: View {
             }
 
             HStack(spacing: Theme.Space.sm) {
-                Button(String(localized: "Test connection")) {
-                    model.testApiConnection(providerStore)
+                Button(
+                    model.isTestingConnection
+                        ? String(localized: "Testing…")
+                        : String(localized: "Test connection")
+                ) {
+                    Task { await model.testApiConnection(providerStore) }
                 }
                 .buttonStyle(.themedSecondary)
+                .disabled(model.isTestingConnection)
 
                 if let ok = providerStore.apiConnectionOk {
                     StatusBadge(

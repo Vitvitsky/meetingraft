@@ -17,6 +17,8 @@ final class SettingsModel {
     private(set) var downloadProgress: Double?
     private(set) var downloadError = ""
     private(set) var isDownloading = false
+    private(set) var isTestingConnection = false
+    private(set) var isRefreshingBackendModels = false
 
     private var core: MeetingCore?
     private let downloader: WhisperDownloading
@@ -106,22 +108,29 @@ final class SettingsModel {
         }
     }
 
-    func testApiConnection(_ providerStore: ProviderSettingsStore) {
+    /// Сеть блокирует поток на весь таймаут, поэтому запрос уходит с
+    /// главного. Пока он идёт, интерфейс больше не замирает — значит
+    /// ожидание надо показать явно, иначе кнопка выглядит мёртвой.
+    func testApiConnection(_ providerStore: ProviderSettingsStore) async {
         applyProviderConfig(providerStore)
         guard let core else { return }
-        let error = core.testApiConnection()
+        isTestingConnection = true
+        defer { isTestingConnection = false }
+        let error = await offMainThread { core.testApiConnection() }
         providerStore.apiConnectionOk = error.isEmpty
         providerStore.apiConnectionMessage = error.isEmpty ? "GET /health OK" : error
     }
 
-    func refreshBackendLlmModels(_ providerStore: ProviderSettingsStore) {
+    func refreshBackendLlmModels(_ providerStore: ProviderSettingsStore) async {
         applyProviderConfig(providerStore)
         guard let core else { return }
-        let models = core.listBackendLlmModels()
+        isRefreshingBackendModels = true
+        defer { isRefreshingBackendModels = false }
+        let models = await offMainThread { core.listBackendLlmModels() }
         // FFI отображает синхронную ошибку в пустой список, поэтому сбой
         // от честного «моделей нет» отличаем отдельной проверкой здоровья.
         if models.isEmpty {
-            let connectionError = core.testApiConnection()
+            let connectionError = await offMainThread { core.testApiConnection() }
             if !connectionError.isEmpty {
                 providerStore.applyBackendModelsCatalog([], connectionError: connectionError)
                 return

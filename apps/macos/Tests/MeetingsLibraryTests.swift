@@ -147,7 +147,7 @@ final class MeetingsLibraryTests: XCTestCase {
 }
 
 /// Минимальный спай: библиотечные методы настоящие, остальное — заглушки.
-private final class LibraryCoreSpy: MeetingsCoreProviding {
+private final class LibraryCoreSpy: MeetingsCoreProviding, @unchecked Sendable {
     var meetings: [FfiMeetingSummary] = []
     var renameError = ""
     var deleteError = ""
