@@ -343,16 +343,30 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.unappliedEdits.map(\.id), ["e1"])
     }
 
-    /// Снятие правки уходит в ядро с её же идентификатором.
-    func testDismissUnappliedSendsEditId() {
+    /// Снятие правки уходит в ядро именно тем id, по которому нажали.
+    ///
+    /// Правок в данных две: с одной тест не отличил бы «передал нужный
+    /// id» от «передал единственный».
+    func testDismissUnappliedCallsCoreWithThatId() {
         let core = AttributionCoreSpy(speakers: [])
-        core.unapplied = [edit("e1")]
+        core.unapplied = [edit("e1"), edit("e2")]
         let viewModel = SpeakerAttributionViewModel(core: core)
-        viewModel.load(meetingId: "m1", version: nil)
+        viewModel.load(meetingId: "m1", version: 1)
 
-        viewModel.dismissUnapplied(id: "e1")
+        viewModel.dismissUnapplied(id: "e2")
 
-        XCTAssertEqual(core.deletedEditIds, ["e1"])
+        XCTAssertEqual(core.deletedEditIds, ["e2"])
+    }
+
+    /// Пустой список — пустая плашка, а заглушек в интерфейсе быть не должно.
+    func testNoUnappliedEditsMeansNothingToShow() {
+        let core = AttributionCoreSpy(speakers: [])
+        core.unapplied = []
+        let viewModel = SpeakerAttributionViewModel(core: core)
+
+        viewModel.load(meetingId: "m1", version: 1)
+
+        XCTAssertTrue(viewModel.unappliedEdits.isEmpty)
     }
 
     // MARK: - Формат

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Final по сегментам: имя участника, тайм-код, текст.
@@ -9,22 +10,35 @@ struct FinalSegmentsView: View {
     @Bindable var viewModel: SpeakerAttributionViewModel
 
     var body: some View {
-        List(viewModel.segments, id: \.index) { segment in
-            FinalSegmentRow(
-                segment: segment,
-                speakers: viewModel.speakers,
-                isEditing: viewModel.editingIndex == segment.index,
-                canPromote: viewModel.canPromote(index: segment.index),
-                draft: $viewModel.draftText,
-                onAssign: { viewModel.assignSegment(index: segment.index, to: $0) },
-                onUnpin: { viewModel.unpinSegment(index: segment.index) },
-                onBeginEdit: { viewModel.beginEdit(index: segment.index) },
-                onCommitEdit: { viewModel.commitEdit() },
-                onCancelEdit: { viewModel.cancelEdit() },
-                onRevert: { viewModel.revertToOriginal(index: segment.index) },
-                onPromote: { viewModel.promoteTerm(index: segment.index) }
-            )
-            .listRowSeparator(.hidden)
+        VStack(alignment: .leading, spacing: Theme.Space.sm) {
+            if !viewModel.unappliedEdits.isEmpty {
+                UnappliedEditsBanner(
+                    edits: viewModel.unappliedEdits,
+                    onCopy: { edit in
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(edit.editedText, forType: .string)
+                    },
+                    onDismiss: { viewModel.dismissUnapplied(id: $0.id) }
+                )
+                .padding(.horizontal, Theme.Space.sm)
+            }
+            List(viewModel.segments, id: \.index) { segment in
+                FinalSegmentRow(
+                    segment: segment,
+                    speakers: viewModel.speakers,
+                    isEditing: viewModel.editingIndex == segment.index,
+                    canPromote: viewModel.canPromote(index: segment.index),
+                    draft: $viewModel.draftText,
+                    onAssign: { viewModel.assignSegment(index: segment.index, to: $0) },
+                    onUnpin: { viewModel.unpinSegment(index: segment.index) },
+                    onBeginEdit: { viewModel.beginEdit(index: segment.index) },
+                    onCommitEdit: { viewModel.commitEdit() },
+                    onCancelEdit: { viewModel.cancelEdit() },
+                    onRevert: { viewModel.revertToOriginal(index: segment.index) },
+                    onPromote: { viewModel.promoteTerm(index: segment.index) }
+                )
+                .listRowSeparator(.hidden)
+            }
         }
     }
 }
