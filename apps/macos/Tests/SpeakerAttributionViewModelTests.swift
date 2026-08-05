@@ -192,6 +192,169 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.errorMessage, "занят")
     }
 
+    // MARK: - Правка текста
+
+    /// Esc не трогает ядро: иначе отказ от правки её бы и сохранял.
+    func testCancelEditDoesNotCallCore() {
+        let core = AttributionCoreSpy(
+            speakers: [],
+            segments: [segment(
+                0,
+                text: "упирается в UniFFI",
+                originalText: "упирается в юни-эф-эф-ай"
+            )]
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.beginEdit(index: 0)
+        viewModel.draftText = "совсем другое"
+        viewModel.cancelEdit()
+
+        XCTAssertTrue(core.editedTexts.isEmpty)
+        XCTAssertNil(viewModel.editingIndex)
+    }
+
+    /// Сохранение отдаёт ядру ровно введённое.
+    func testCommitEditSendsDraftToCore() {
+        let core = AttributionCoreSpy(
+            speakers: [],
+            segments: [segment(0, text: "упирается в юни-эф-эф-ай")]
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.beginEdit(index: 0)
+        viewModel.draftText = "упирается в UniFFI"
+        viewModel.commitEdit()
+
+        XCTAssertEqual(core.editedTexts, ["упирается в UniFFI"])
+        XCTAssertNil(viewModel.editingIndex)
+    }
+
+    /// Возврат к исходному отправляет распознанное — ядро само удалит
+    /// правку из журнала. Тексты в данных заведомо разные: совпади они,
+    /// тест прошёл бы, ничего не проверив.
+    func testRevertSendsRecognizedText() {
+        let core = AttributionCoreSpy(
+            speakers: [],
+            segments: [segment(
+                0,
+                text: "упирается в UniFFI",
+                originalText: "упирается в юни-эф-эф-ай"
+            )]
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.revertToOriginal(index: 0)
+
+        XCTAssertEqual(core.editedTexts, ["упирается в юни-эф-эф-ай"])
+    }
+
+    /// Неправленый сегмент возвращать не к чему — ядро не дёргаем.
+    func testRevertOnUntouchedSegmentDoesNothing() {
+        let core = AttributionCoreSpy(
+            speakers: [],
+            segments: [segment(0, text: "обычная реплика")]
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.revertToOriginal(index: 0)
+
+        XCTAssertTrue(core.editedTexts.isEmpty)
+    }
+
+    /// Ошибка ядра видна, а не проглочена.
+    func testCommitEditSurfacesCoreError() {
+        let core = AttributionCoreSpy(
+            speakers: [],
+            segments: [segment(0, text: "реплика")]
+        )
+        core.editError = "сегмент 0 не найден"
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.beginEdit(index: 0)
+        viewModel.draftText = "другое"
+        viewModel.commitEdit()
+
+        XCTAssertEqual(viewModel.errorMessage, "сегмент 0 не найден")
+    }
+
+    /// «Заменять всюду» предлагается ровно когда ядро дало id подсказки.
+    func testCanPromoteFollowsCoreDecision() {
+        let core = AttributionCoreSpy(
+            speakers: [],
+            segments: [
+                segment(
+                    0,
+                    text: "упирается в UniFFI",
+                    originalText: "упирается в юни-эф-эф-ай",
+                    promotableTermId: "t1"
+                ),
+                segment(
+                    1,
+                    text: "правленое, но термина нет",
+                    originalText: "распознанное длиннее трёх слов совсем"
+                ),
+            ]
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        XCTAssertTrue(viewModel.canPromote(index: 0))
+        XCTAssertFalse(viewModel.canPromote(index: 1), "пустой id — кнопки быть не должно")
+    }
+
+    /// Повышение уходит в ядро с тем id, что оно само и дало.
+    func testPromoteTermSendsCoreProvidedId() {
+        let core = AttributionCoreSpy(
+            speakers: [],
+            segments: [segment(
+                0,
+                text: "упирается в UniFFI",
+                originalText: "упирается в юни-эф-эф-ай",
+                promotableTermId: "t1"
+            )]
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.promoteTerm(index: 0)
+
+        XCTAssertEqual(core.promotedTermIds, ["t1"])
+    }
+
+    /// Неприменившиеся правки читаются и без версии Final.
+    ///
+    /// Версии в данных нет намеренно: правка, не легшая ни на одну
+    /// версию, — как раз тот случай, ради которого раздел и заведён.
+    /// Читай их модель под `guard let version`, человек бы их не увидел
+    /// ровно тогда, когда они есть.
+    func testUnappliedEditsAreReadWithoutVersion() {
+        let core = AttributionCoreSpy(speakers: [])
+        core.unapplied = [edit("e1")]
+        let viewModel = SpeakerAttributionViewModel(core: core)
+
+        viewModel.load(meetingId: "m1", version: nil)
+
+        XCTAssertEqual(viewModel.unappliedEdits.map(\.id), ["e1"])
+    }
+
+    /// Снятие правки уходит в ядро с её же идентификатором.
+    func testDismissUnappliedSendsEditId() {
+        let core = AttributionCoreSpy(speakers: [])
+        core.unapplied = [edit("e1")]
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: nil)
+
+        viewModel.dismissUnapplied(id: "e1")
+
+        XCTAssertEqual(core.deletedEditIds, ["e1"])
+    }
+
     // MARK: - Формат
 
     func testShareTextNeverShowsSpeechAsZero() {
@@ -242,9 +405,12 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
 
     private func segment(
         _ index: UInt32,
-        channel: String,
-        speakerId: String,
-        pinned: Bool
+        channel: String = "mic",
+        speakerId: String = "",
+        pinned: Bool = false,
+        text: String = "текст",
+        originalText: String = "",
+        promotableTermId: String = ""
     ) -> FfiFinalSegment {
         FfiFinalSegment(
             index: index,
@@ -254,8 +420,21 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
             speakerId: speakerId,
             speakerName: "",
             speakerPinned: pinned,
-            text: "текст",
-            textEdited: false
+            text: text,
+            textEdited: !originalText.isEmpty,
+            originalText: originalText,
+            promotableTermId: promotableTermId
+        )
+    }
+
+    private func edit(_ id: String) -> FfiSegmentEdit {
+        FfiSegmentEdit(
+            id: id,
+            channel: "mic",
+            startMs: 0,
+            endMs: 900,
+            originalText: "юни-эф-эф-ай",
+            editedText: "UniFFI"
         )
     }
 }
@@ -278,6 +457,11 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
     var stats: [FfiSpeakerStat]
     var assignSegmentError = ""
     var deleteError = ""
+    var unapplied: [FfiSegmentEdit] = []
+    var editError = ""
+    private(set) var editedTexts: [String] = []
+    private(set) var deletedEditIds: [String] = []
+    private(set) var promotedTermIds: [String] = []
     private(set) var listSegmentsCallCount = 0
     private(set) var channelAssignments: [ChannelAssignment] = []
     private(set) var segmentAssignments: [SegmentAssignment] = []
@@ -361,5 +545,40 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
     func unpinSegmentSpeaker(meetingId _: String, version _: UInt32, index: UInt32) -> String {
         unpinnedIndexes.append(index)
         return ""
+    }
+
+    // MARK: - Правка (Epic 19)
+
+    func editSegmentText(
+        meetingId _: String,
+        version _: UInt32,
+        index _: UInt32,
+        text: String
+    ) -> String {
+        editedTexts.append(text)
+        return editError
+    }
+
+    func listUnappliedEdits(meetingId _: String) -> [FfiSegmentEdit] {
+        unapplied
+    }
+
+    func deleteSegmentEdit(editId: String) -> String {
+        deletedEditIds.append(editId)
+        return ""
+    }
+
+    func promoteTermToReplacement(termId: String, meetingId _: String, version _: UInt32) -> String {
+        promotedTermIds.append(termId)
+        return ""
+    }
+
+    func segmentAudio(
+        meetingId _: String,
+        channelCode _: String,
+        startMs _: UInt64,
+        endMs _: UInt64
+    ) -> FfiAudioFragment {
+        FfiAudioFragment(pcm: Data(), sampleRate: 0, durationMs: 0)
     }
 }
