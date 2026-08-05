@@ -16,8 +16,8 @@ use domain::{
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
     LlmClient, LlmError, OllamaNativeClient, OpenAiCompatLlmClient, assemble_final, brief_prompts,
-    follow_up_prompts, make_artifact, occurrences_to_edit, plan_edit, render_brief,
-    render_follow_up,
+    follow_up_prompts, make_artifact, occurrences_to_edit, plan_edit, promotable_term,
+    render_brief, render_follow_up,
 };
 mod rebuild;
 
@@ -137,6 +137,15 @@ pub struct FfiFinalSegment {
     pub text: String,
     /// Текст заменён ручной правкой из журнала (Epic 19).
     pub text_edited: bool,
+    /// Что распознала модель; пусто, когда правки нет (Epic 19).
+    pub original_text: String,
+    /// id подсказки, родившейся из этой правки: кнопка «заменять
+    /// всюду» показывается ровно когда поле непустое.
+    ///
+    /// Пусто, если термина нет, он уже замена или принадлежит чужой
+    /// встрече. Решение принимает Rust: в Swift не должно уезжать ни
+    /// знание про виды записи глоссария, ни разбор диффа.
+    pub promotable_term_id: String,
 }
 
 /// Правка, не легшая ни на одну версию после пересбора.
@@ -1358,6 +1367,14 @@ impl MeetingCore {
             .list_final_segments(&meeting_id, version)
             .unwrap_or_default();
         let speakers = store.list_speakers(&meeting_id).unwrap_or_default();
+        // Словарь читается один раз на весь список: подсказка ищется для
+        // каждого правленого сегмента, а чтение на строку превратило бы
+        // открытие транскрипта в сотни запросов.
+        let terms = store.list_glossary_terms().unwrap_or_default();
+        let language = {
+            let guard = self.inner.lock().expect("meeting core poisoned");
+            guard.language_policy.primary
+        };
         segments
             .into_iter()
             .map(|segment| {
@@ -1366,6 +1383,19 @@ impl MeetingCore {
                     .find(|speaker| speaker.id == segment.speaker_id)
                     .map(|speaker| speaker.display_name.clone())
                     .unwrap_or_default();
+                let promotable_term_id = if segment.text_edited {
+                    promotable_term(
+                        &segment.original_text,
+                        &segment.text,
+                        &terms,
+                        &meeting_id,
+                        language,
+                    )
+                    .map(|term| term.id.clone())
+                    .unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 FfiFinalSegment {
                     index: segment.index,
                     start_ms: segment.start_ms,
@@ -1376,6 +1406,8 @@ impl MeetingCore {
                     speaker_pinned: segment.speaker_pinned,
                     text: segment.text,
                     text_edited: segment.text_edited,
+                    original_text: segment.original_text,
+                    promotable_term_id,
                 }
             })
             .collect()
@@ -1607,6 +1639,20 @@ impl MeetingCore {
                 edited_text: edit.edited_text,
             })
             .collect()
+    }
+
+    /// Снять правку из журнала. Пустая строка — успех.
+    ///
+    /// Нужен неприменившимся правкам: показать их и не дать убрать —
+    /// значит оставить человеку раздел, который никогда не опустеет.
+    pub fn delete_segment_edit(&self, edit_id: String) -> String {
+        let Some(mut store) = open_store(self) else {
+            return "storage unavailable".to_string();
+        };
+        match store.delete_segment_edit(&edit_id) {
+            Ok(()) => String::new(),
+            Err(error) => error.to_string(),
+        }
     }
 
     /// Превратить подсказку в замену: применять всюду.
@@ -2485,6 +2531,89 @@ mod tests {
         store
             .replace_final_segments(meeting_id, version, &rows)
             .expect("segments");
+    }
+
+    /// Две правки, не легшие ни на одну версию.
+    fn seed_two_unapplied_edits(root: &std::path::Path, meeting_id: &str) {
+        let mut store = AudioManifestStore::open(root).expect("store");
+        for (id, start_ms, end_ms) in [("e1", 0_u64, 1_000_u64), ("e2", 2_000, 3_000)] {
+            store
+                .upsert_segment_edit(&domain::SegmentEdit {
+                    id: id.to_owned(),
+                    meeting_id: meeting_id.to_owned(),
+                    channel: AudioChannel::Mic,
+                    start_ms,
+                    end_ms,
+                    original_text: format!("распознано {id}"),
+                    edited_text: format!("поправлено {id}"),
+                    created_at_ms: 10,
+                    applied_version: None,
+                })
+                .expect("правка");
+        }
+    }
+
+    /// Удаление снимает только названную правку.
+    ///
+    /// Вторая правка в данных обязательна: без неё тест не отличит
+    /// «удалил нужную» от «вычистил журнал».
+    #[test]
+    fn delete_segment_edit_removes_only_named_one() {
+        let root = edits_root("edit-delete");
+        let meeting_id = "m-edit-delete".to_string();
+        seed_two_unapplied_edits(&root, &meeting_id);
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let before = core.list_unapplied_edits(meeting_id.clone());
+        assert_eq!(before.len(), 2, "подготовка: две неприменившиеся правки");
+
+        let error = core.delete_segment_edit(before[0].id.clone());
+        assert!(error.is_empty(), "удаление: {error}");
+
+        let after = core.list_unapplied_edits(meeting_id.clone());
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, before[1].id);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Правленый сегмент отдаёт распознанное и id подсказки для повышения.
+    #[test]
+    fn edited_segment_exposes_original_text_and_promotable_term() {
+        let root = edits_root("edit-fields");
+        let meeting_id = "m-edit-fields".to_string();
+        seed_segment_version(
+            &root,
+            &meeting_id,
+            1,
+            &[(0, 0, 1_000, "упирается в юни-эф-эф-ай")],
+        );
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let error = core.edit_segment_text(meeting_id.clone(), 1, 0, "упирается в UniFFI".into());
+        assert!(error.is_empty(), "правка: {error}");
+
+        let segments = core.list_final_segments(meeting_id.clone(), 1);
+        assert_eq!(segments[0].text, "упирается в UniFFI");
+        assert_eq!(segments[0].original_text, "упирается в юни-эф-эф-ай");
+        assert!(
+            !segments[0].promotable_term_id.is_empty(),
+            "из короткой правки родилась подсказка — её и повышаем"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Неправленый сегмент не предлагает ни исходного текста, ни повышения.
+    #[test]
+    fn untouched_segment_exposes_neither_field() {
+        let root = edits_root("edit-fields-untouched");
+        let meeting_id = "m-edit-fields-untouched".to_string();
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 0, 1_000, "обычная реплика")]);
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        let segments = core.list_final_segments(meeting_id.clone(), 1);
+        assert!(segments[0].original_text.is_empty());
+        assert!(segments[0].promotable_term_id.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Сквозной сценарий переноса: правка на версии 1 переезжает на
