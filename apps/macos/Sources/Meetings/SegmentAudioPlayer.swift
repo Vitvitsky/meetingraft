@@ -67,8 +67,12 @@ final class SegmentAudioPlayer {
     }
 
     func stop() {
-        if node.isPlaying { node.stop() }
-        if engine.isRunning { engine.stop() }
+        if node.isPlaying {
+            node.stop()
+        }
+        if engine.isRunning {
+            engine.stop()
+        }
         isPlaying = false
     }
 }

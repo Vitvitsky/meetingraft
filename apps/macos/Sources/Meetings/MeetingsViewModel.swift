@@ -221,10 +221,14 @@ final class MeetingsViewModel {
     /// LLM отвечает до минуты, поэтому вызов уходит с главного потока.
     /// Ожидание видно по `isGeneratingArtifact` — без этого кнопка молчит.
     func generate(meetingId: String, kind: FfiArtifactKind) async {
-        let core = self.core
+        // Ссылка для фонового потока: свойство изолировано `@MainActor`,
+        // а замыкание — нет, поэтому читаем его здесь.
+        let backgroundCore = core
         isGeneratingArtifact = true
         defer { isGeneratingArtifact = false }
-        let result = await offMainThread { core.generateArtifact(meetingId: meetingId, kind: kind) }
+        let result = await offMainThread {
+            backgroundCore.generateArtifact(meetingId: meetingId, kind: kind)
+        }
         guard result.error.isEmpty else {
             errorMessage = result.error
             return
@@ -354,9 +358,9 @@ final class MeetingsViewModel {
         backendArtifactMarkdown = ""
         errorMessage = nil
 
-        let core = self.core
+        let backgroundCore = core
         let job = await offMainThread {
-            core.submitBackendJob(meetingId: meetingId, kindCode: "refine")
+            backgroundCore.submitBackendJob(meetingId: meetingId, kindCode: "refine")
         }
         if !job.error.isEmpty {
             backendJobStatus = .failed
@@ -388,7 +392,7 @@ final class MeetingsViewModel {
                     return
                 }
                 let jobId = current.id
-                current = await offMainThread { core.getBackendJob(jobId: jobId) }
+                current = await offMainThread { backgroundCore.getBackendJob(jobId: jobId) }
                 if !current.error.isEmpty {
                     backendJobStatus = .failed
                     errorMessage = current.error
@@ -417,7 +421,9 @@ final class MeetingsViewModel {
             return
         }
 
-        let artifact = await offMainThread { core.getBackendArtifact(artifactId: artifactId) }
+        let artifact = await offMainThread {
+            backgroundCore.getBackendArtifact(artifactId: artifactId)
+        }
         if !artifact.error.isEmpty {
             backendJobStatus = .failed
             errorMessage = artifact.error
