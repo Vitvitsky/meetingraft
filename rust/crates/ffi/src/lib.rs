@@ -738,6 +738,16 @@ fn empty_backend_job(error: String) -> FfiBackendJob {
     }
 }
 
+/// Копия HTTP-клиента, чтобы запрос шёл вне мьютекса ядра (Epic 21).
+///
+/// Мьютекс один на всё ядро, и через него же каждые 50 мс проходит
+/// `drain_events` живых субтитров. Запрос под гвардом останавливает их на
+/// весь свой таймаут, а это молчаливый отказ посреди записи.
+fn sync_client_snapshot(core: &MeetingCore) -> SyncClient {
+    let guard = core.inner.lock().expect("meeting core poisoned");
+    guard.sync_client.clone()
+}
+
 fn read_store<T>(
     inner: &MeetingCoreInner,
     read: impl FnOnce(&AudioManifestStore) -> Result<T, AudioManifestError>,
@@ -973,8 +983,7 @@ impl MeetingCore {
 
     /// Каталог LLM с backend; при ошибке sync / не настроенном API — пустой список.
     pub fn list_backend_llm_models(&self) -> Vec<FfiLlmModelRef> {
-        let guard = self.inner.lock().expect("meeting core poisoned");
-        match guard.sync_client.list_models() {
+        match sync_client_snapshot(self).list_models() {
             Ok(models) => models
                 .into_iter()
                 .map(|model| FfiLlmModelRef {
@@ -996,31 +1005,34 @@ impl MeetingCore {
 
     /// Пустая строка = OK.
     pub fn test_api_connection(&self) -> String {
-        let guard = self.inner.lock().expect("meeting core poisoned");
-        match guard.sync_client.health() {
+        match sync_client_snapshot(self).health() {
             Ok(()) => String::new(),
             Err(error) => error.to_string(),
         }
     }
 
     pub fn submit_backend_job(&self, meeting_id: String, kind_code: String) -> FfiBackendJob {
-        let guard = self.inner.lock().expect("meeting core poisoned");
         let Some(kind) = JobKind::from_code(&kind_code) else {
             return empty_backend_job(format!("unsupported job kind: {kind_code}"));
         };
-        let request = CreateJobRequest {
-            meeting_id,
-            kind,
-            primary_language: guard.language_policy.primary.code().to_owned(),
-            allowed_languages: guard
-                .language_policy
-                .allowed
-                .iter()
-                .map(|l| l.code().to_owned())
-                .collect(),
-            payload: None,
+        // Запрос собирается под мьютексом, отправляется — уже без него.
+        let (client, request) = {
+            let guard = self.inner.lock().expect("meeting core poisoned");
+            let request = CreateJobRequest {
+                meeting_id,
+                kind,
+                primary_language: guard.language_policy.primary.code().to_owned(),
+                allowed_languages: guard
+                    .language_policy
+                    .allowed
+                    .iter()
+                    .map(|l| l.code().to_owned())
+                    .collect(),
+                payload: None,
+            };
+            (guard.sync_client.clone(), request)
         };
-        match guard.sync_client.create_job(&request) {
+        match client.create_job(&request) {
             Ok(job) => FfiBackendJob {
                 id: job.id,
                 meeting_id: job.meeting_id,
@@ -1034,8 +1046,7 @@ impl MeetingCore {
     }
 
     pub fn get_backend_job(&self, job_id: String) -> FfiBackendJob {
-        let guard = self.inner.lock().expect("meeting core poisoned");
-        match guard.sync_client.get_job(&job_id) {
+        match sync_client_snapshot(self).get_job(&job_id) {
             Ok(job) => FfiBackendJob {
                 id: job.id,
                 meeting_id: job.meeting_id,
@@ -1049,8 +1060,7 @@ impl MeetingCore {
     }
 
     pub fn get_backend_artifact(&self, artifact_id: String) -> FfiBackendArtifact {
-        let guard = self.inner.lock().expect("meeting core poisoned");
-        match guard.sync_client.get_artifact(&artifact_id) {
+        match sync_client_snapshot(self).get_artifact(&artifact_id) {
             Ok(artifact) => FfiBackendArtifact {
                 id: artifact.id,
                 kind: artifact.kind.as_str().to_owned(),
@@ -2497,6 +2507,103 @@ mod tests {
             now_ms(),
             std::thread::current().id()
         ))
+    }
+
+    /// Сервер, который принимает соединение и молчит: так «медленный
+    /// backend» воспроизводится точно, без надежд на задержки mockito.
+    /// Возвращает адрес и приёмник, сигналящий о принятом соединении.
+    fn silent_server() -> (String, std::sync::mpsc::Receiver<()>) {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("слушатель должен подняться");
+        let url = format!("http://{}", listener.local_addr().expect("адрес"));
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            // Соединение держим до конца теста: закрытый сокет вернул бы
+            // клиенту ошибку сразу, и ждать стало бы нечего.
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept() {
+                held.push(stream);
+                if accepted_tx.send(()).is_err() {
+                    return;
+                }
+            }
+        });
+        (url, accepted_rx)
+    }
+
+    /// Замер `drain_events` в отдельном потоке: главный поток не имеет
+    /// права уснуть на мьютексе, иначе тест не отличит блокировку от неё.
+    fn drain_events_completes_within(
+        core: &std::sync::Arc<MeetingCore>,
+        timeout: Duration,
+    ) -> bool {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let probe = std::sync::Arc::clone(core);
+        thread::spawn(move || {
+            probe.drain_events();
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(timeout).is_ok()
+    }
+
+    /// Живые субтитры опрашивают `drain_events` каждые 50 мс через тот же
+    /// мьютекс, что и сетевые методы. Пока идёт запрос к недоступному
+    /// backend, опрос обязан проходить — иначе субтитры встают на весь
+    /// таймаут запроса (Epic 21).
+    #[test]
+    fn network_call_does_not_hold_the_core_mutex() {
+        let root = edits_root("net-mutex");
+        let (url, accepted) = silent_server();
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_api_config(url, "t".into());
+
+        let calling = std::sync::Arc::clone(&core);
+        thread::spawn(move || {
+            let _ = calling.test_api_connection();
+        });
+
+        // Принятое соединение доказывает, что запрос ушёл и клиент сидит
+        // в ожидании ответа; до этого момента мерить нечего.
+        accepted
+            .recv_timeout(Duration::from_secs(5))
+            .expect("клиент должен дойти до отправки запроса");
+
+        assert!(
+            drain_events_completes_within(&core, Duration::from_secs(2)),
+            "drain_events ждёт сетевой вызов — живые субтитры встанут"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Тот же инвариант для генерации артефакта: таймаут LLM больше
+    /// минуты, и сегодня он держится только на `drop(guard)` в коде.
+    #[test]
+    fn generate_artifact_does_not_hold_the_core_mutex() {
+        let root = edits_root("net-mutex-artifact");
+        let meeting_id = "m-net-mutex".to_string();
+        seed_final_transcript(&root, &meeting_id);
+        let (url, accepted) = silent_server();
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_api_config(url, "t".into());
+        core.set_llm_config("backend".into(), "m1".into(), String::new(), "p1".into());
+
+        let calling = std::sync::Arc::clone(&core);
+        let meeting = meeting_id.clone();
+        thread::spawn(move || {
+            let _ = calling.generate_artifact(meeting, FfiArtifactKind::Brief);
+        });
+
+        accepted
+            .recv_timeout(Duration::from_secs(5))
+            .expect("клиент должен дойти до отправки запроса");
+
+        assert!(
+            drain_events_completes_within(&core, Duration::from_secs(2)),
+            "generate_artifact ждёт LLM под мьютексом"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn seed_segment_version(
