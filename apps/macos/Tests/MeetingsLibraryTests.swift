@@ -221,7 +221,9 @@ private final class LibraryCoreSpy: MeetingsCoreProviding, @unchecked Sendable {
                 kind: .brief,
                 templateId: "",
                 bodyMarkdown: "",
-                createdAtMs: 0
+                createdAtMs: 0,
+                isStale: false,
+                sourceVersion: 0
             ),
             error: ""
         )
