@@ -8,6 +8,11 @@ use crate::error::SyncError;
 pub struct SyncClient {
     base_url: String,
     token: String,
+    /// Один HTTP-клиент на всё время жизни. Каждый `build()` поднимает
+    /// свой tokio-рантайм и паркует вызывающего, то есть поток вставал
+    /// ещё до отправки запроса (Epic 21). Ошибка сборки хранится текстом
+    /// и отдаётся при вызове: подменять её на «не настроено» нельзя.
+    http: Result<reqwest::blocking::Client, String>,
 }
 
 impl SyncClient {
@@ -15,6 +20,10 @@ impl SyncClient {
         Self {
             base_url: trim_slash(base_url.into()),
             token: token.into(),
+            http: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|error| error.to_string()),
         }
     }
 
@@ -92,11 +101,10 @@ impl SyncClient {
         }
     }
 
-    fn http(&self) -> Result<reqwest::blocking::Client, SyncError> {
-        reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(SyncError::from)
+    fn http(&self) -> Result<&reqwest::blocking::Client, SyncError> {
+        self.http
+            .as_ref()
+            .map_err(|error| SyncError::Transport(error.clone()))
     }
 
     fn parse_json<T: serde::de::DeserializeOwned>(
@@ -165,6 +173,23 @@ mod tests {
         assert_eq!(job.id, "j1");
         assert_eq!(job.status, JobStatus::Succeeded);
         assert_eq!(job.artifact_ids, vec!["a1".to_string()]);
+    }
+
+    /// Клиент переживает первый запрос: он теперь общий на весь срок
+    /// жизни, а не собирается заново под каждый вызов.
+    #[test]
+    fn the_same_client_serves_repeated_calls() {
+        let mut server = Server::new();
+        let _m = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .with_body(r#"{"status":"ok"}"#)
+            .expect(2)
+            .create();
+        let client = SyncClient::new(server.url(), "dev-token");
+        assert!(client.health().is_ok());
+        assert!(client.health().is_ok());
+        _m.assert();
     }
 
     #[test]
