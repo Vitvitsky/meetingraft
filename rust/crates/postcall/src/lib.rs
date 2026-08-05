@@ -30,4 +30,4 @@ pub use polish::{
 pub use prompts::{brief_prompts, follow_up_prompts};
 pub use speakers::{SpeakerStat, speaker_stats};
 pub use templates::{make_artifact, render_brief, render_follow_up};
-pub use term_from_edit::term_from_edit;
+pub use term_from_edit::{promotable_term, term_from_edit};
