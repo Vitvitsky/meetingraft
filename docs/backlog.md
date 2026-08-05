@@ -76,6 +76,16 @@
   brief, glossary, participants) — **deferred**
 - Template picker, regeneration and versioning — **partial:** generate Brief /
   Follow-up in UI; versioning deferred
+- **Артефакт молча расходится с транскриптом.** Таблица `artifacts` не
+  хранит связи с версией Final — только `created_at_ms`. Правка сегмента
+  перерисовывает markdown транскрипта (`rerender_final_bodies`), а
+  собранный ранее Brief остаётся прежним и ничем не помечен. Сегодня
+  редко, потому что править нечем; после интерфейса правки (Epic 19)
+  станет обычным делом. Найдено при разборе спеки Epic 19 UI
+  2026-08-05, вынесено сюда сознательно — это про версионирование
+  артефактов, а не про правку. Дешёвый честный минимум: геттер времени
+  последней правки встречи и плашка «собран до правок» с предложением
+  пересобрать
 - Export artifacts — **partial:** copy to clipboard + **.md file export**
   (Final + Brief/Follow-up → Settings export folder, flat Obsidian-friendly
   names; `feat/markdown-export-obsidian`); mail draft **deferred**
