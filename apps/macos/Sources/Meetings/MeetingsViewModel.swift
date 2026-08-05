@@ -13,7 +13,10 @@ struct MarkdownExportResult: Equatable {
 }
 
 /// Контракт истории встреч для presentation model и тестов.
-protocol MeetingsCoreProviding: AnyObject {
+///
+/// `Sendable` — потому что сетевые методы вызываются с фонового потока:
+/// иначе они блокируют главный на весь таймаут запроса.
+protocol MeetingsCoreProviding: AnyObject, Sendable {
     func listMeetings() -> [FfiMeetingSummary]
     func renameMeeting(meetingId: String, title: String) -> String
     func deleteMeeting(meetingId: String) -> String
@@ -59,6 +62,7 @@ final class MeetingsViewModel {
     private(set) var backendJobStatus: BackendRefineStatus = .idle
     private(set) var backendJobId = ""
     private(set) var backendArtifactMarkdown = ""
+    private(set) var isGeneratingArtifact = false
     private(set) var exportStatusMessage = ""
     /// Строка поиска; пустая — показываем полный список.
     var query = "" {
@@ -214,8 +218,17 @@ final class MeetingsViewModel {
         )
     }
 
-    func generate(meetingId: String, kind: FfiArtifactKind) {
-        let result = core.generateArtifact(meetingId: meetingId, kind: kind)
+    /// LLM отвечает до минуты, поэтому вызов уходит с главного потока.
+    /// Ожидание видно по `isGeneratingArtifact` — без этого кнопка молчит.
+    func generate(meetingId: String, kind: FfiArtifactKind) async {
+        // Ссылка для фонового потока: свойство изолировано `@MainActor`,
+        // а замыкание — нет, поэтому читаем его здесь.
+        let backgroundCore = core
+        isGeneratingArtifact = true
+        defer { isGeneratingArtifact = false }
+        let result = await offMainThread {
+            backgroundCore.generateArtifact(meetingId: meetingId, kind: kind)
+        }
         guard result.error.isEmpty else {
             errorMessage = result.error
             return
@@ -345,7 +358,10 @@ final class MeetingsViewModel {
         backendArtifactMarkdown = ""
         errorMessage = nil
 
-        let job = core.submitBackendJob(meetingId: meetingId, kindCode: "refine")
+        let backgroundCore = core
+        let job = await offMainThread {
+            backgroundCore.submitBackendJob(meetingId: meetingId, kindCode: "refine")
+        }
         if !job.error.isEmpty {
             backendJobStatus = .failed
             backendJobId = job.id
@@ -375,7 +391,8 @@ final class MeetingsViewModel {
                 if Task.isCancelled {
                     return
                 }
-                current = core.getBackendJob(jobId: current.id)
+                let jobId = current.id
+                current = await offMainThread { backgroundCore.getBackendJob(jobId: jobId) }
                 if !current.error.isEmpty {
                     backendJobStatus = .failed
                     errorMessage = current.error
@@ -404,7 +421,9 @@ final class MeetingsViewModel {
             return
         }
 
-        let artifact = core.getBackendArtifact(artifactId: artifactId)
+        let artifact = await offMainThread {
+            backgroundCore.getBackendArtifact(artifactId: artifactId)
+        }
         if !artifact.error.isEmpty {
             backendJobStatus = .failed
             errorMessage = artifact.error

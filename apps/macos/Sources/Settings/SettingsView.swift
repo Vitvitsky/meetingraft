@@ -52,7 +52,7 @@ struct SettingsView: View {
         .onChange(of: providerStore.llmEngine) { _, engine in
             model.applyProviderConfig(providerStore)
             if engine.needsBackendModelPicker {
-                model.refreshBackendLlmModels(providerStore)
+                Task { await model.refreshBackendLlmModels(providerStore) }
             }
         }
         .onChange(of: providerStore.llmModelId) { _, _ in

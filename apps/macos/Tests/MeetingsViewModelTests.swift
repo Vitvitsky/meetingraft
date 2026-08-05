@@ -105,7 +105,7 @@ final class MeetingsViewModelTests: XCTestCase {
         )
     }
 
-    func testGeneratePublishesCoreErrorWithoutReloading() {
+    func testGeneratePublishesCoreErrorWithoutReloading() async {
         let core = MeetingsCoreSpy()
         core.generateResult = FfiGenerateArtifactResult(
             artifact: makeArtifact(id: "", meetingId: ""),
@@ -113,7 +113,7 @@ final class MeetingsViewModelTests: XCTestCase {
         )
         let viewModel = MeetingsViewModel(core: core)
 
-        viewModel.generate(meetingId: "meeting-1", kind: .brief)
+        await viewModel.generate(meetingId: "meeting-1", kind: .brief)
 
         XCTAssertEqual(viewModel.errorMessage, "final transcript not found")
         XCTAssertEqual(core.listArtifactsCallCount, 0)
@@ -266,7 +266,7 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertEqual(core.getBackendArtifactCallCount, 0)
     }
 
-    func testGenerateRefreshesArtifactsAndMeetingBadges() {
+    func testGenerateRefreshesArtifactsAndMeetingBadges() async {
         let generated = makeArtifact(id: "artifact-1", meetingId: "meeting-1")
         let updatedMeeting = makeMeeting(id: "meeting-1", artifactCount: 1)
         let core = MeetingsCoreSpy()
@@ -275,7 +275,7 @@ final class MeetingsViewModelTests: XCTestCase {
         core.meetingsAfterGenerate = [updatedMeeting]
         let viewModel = MeetingsViewModel(core: core)
 
-        viewModel.generate(meetingId: "meeting-1", kind: .brief)
+        await viewModel.generate(meetingId: "meeting-1", kind: .brief)
 
         XCTAssertEqual(viewModel.artifacts, [generated])
         XCTAssertEqual(viewModel.meetings, [updatedMeeting])
@@ -370,7 +370,7 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.exportStatusMessage, "Нужен Final transcript")
     }
 
-    func testApplyProviderConfigUpdatesCoreBeforeGenerate() {
+    func testApplyProviderConfigUpdatesCoreBeforeGenerate() async {
         let generated = makeArtifact(id: "artifact-1", meetingId: "meeting-1")
         let core = MeetingsCoreSpy()
         core.generateResult = FfiGenerateArtifactResult(artifact: generated, error: "")
@@ -385,7 +385,7 @@ final class MeetingsViewModelTests: XCTestCase {
             llmBaseUrl: "http://127.0.0.1:11434",
             llmProviderId: "default"
         )
-        viewModel.generate(meetingId: "meeting-1", kind: .brief)
+        await viewModel.generate(meetingId: "meeting-1", kind: .brief)
 
         XCTAssertEqual(core.apiBaseUrl, "http://localhost:8080")
         XCTAssertEqual(core.apiToken, "test-token")
@@ -439,7 +439,9 @@ final class MeetingsViewModelTests: XCTestCase {
     }
 }
 
-private final class MeetingsCoreSpy: MeetingsCoreProviding {
+/// Обращения к spy сериализованы `await` в тестах: presentation model
+/// ждёт результат фонового вызова, прежде чем читать счётчики.
+private final class MeetingsCoreSpy: MeetingsCoreProviding, @unchecked Sendable {
     var meetings: [FfiMeetingSummary]
     var captions: [FfiCaptionEvent]
     var finalTranscript: FfiFinalTranscript

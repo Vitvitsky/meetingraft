@@ -117,7 +117,9 @@ private struct FinalSegmentRow: View {
                         .onSubmit(onCommitEdit)
                         .onExitCommand(perform: onCancelEdit)
                         .onChange(of: isFieldFocused) { _, focused in
-                            if !focused, isEditing { onCommitEdit() }
+                            if !focused, isEditing {
+                                onCommitEdit()
+                            }
                         }
                     editingBar
                 } else {
