@@ -193,6 +193,7 @@ mod tests {
             speaker_pinned: false,
             text: "зашли на интра ру".into(),
             text_edited: false,
+            original_text: String::new(),
         }
     }
 
@@ -455,6 +456,7 @@ mod tests {
                 speaker_pinned: false,
                 text: "открой интра ру".into(),
                 text_edited: false,
+                original_text: String::new(),
             },
             FinalSegment {
                 index: 1,
@@ -465,6 +467,7 @@ mod tests {
                 speaker_pinned: false,
                 text: "тут ничего нет".into(),
                 text_edited: false,
+                original_text: String::new(),
             },
         ];
         let existing: Vec<SegmentEdit> = Vec::new();
@@ -501,6 +504,7 @@ mod tests {
             speaker_pinned: false,
             text: "открой интра ру".into(),
             text_edited: false,
+            original_text: String::new(),
         }];
         let existing = vec![SegmentEdit {
             id: "e0".into(),
@@ -550,6 +554,7 @@ mod tests {
             speaker_pinned: false,
             text: "открой интра ру".into(),
             text_edited: false,
+            original_text: String::new(),
         }];
         let existing = vec![SegmentEdit {
             id: "e0".into(),
@@ -601,6 +606,7 @@ mod tests {
             speaker_pinned: false,
             text: "открой интра ру".into(),
             text_edited: false,
+            original_text: String::new(),
         }];
         let existing: Vec<SegmentEdit> = Vec::new();
         let mut ids = ["n1".to_string()].into_iter();
@@ -640,6 +646,7 @@ mod tests {
             speaker_pinned: false,
             text: "Интра ру открывается медленно".into(),
             text_edited: false,
+            original_text: String::new(),
         }];
         let existing: Vec<SegmentEdit> = Vec::new();
         let mut ids = ["n1".to_string()].into_iter();
@@ -678,6 +685,7 @@ mod tests {
             speaker_pinned: false,
             text: "открой интра ру, а потом снова интра ру".into(),
             text_edited: false,
+            original_text: String::new(),
         }];
         let existing: Vec<SegmentEdit> = Vec::new();
         let mut ids = ["n1".to_string()].into_iter();

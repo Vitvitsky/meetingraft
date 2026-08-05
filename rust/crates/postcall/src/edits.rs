@@ -81,6 +81,7 @@ mod tests {
             speaker_pinned: false,
             text: text.into(),
             text_edited: false,
+            original_text: String::new(),
         }
     }
 

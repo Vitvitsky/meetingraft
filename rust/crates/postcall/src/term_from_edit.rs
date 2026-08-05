@@ -8,6 +8,7 @@
 //! через `initial_prompt` портит распознавание.
 
 use crate::{DiffOp, diff_words};
+use domain::{GlossaryKind, GlossaryScope, GlossaryTerm, SpeechLanguage};
 
 /// Сколько слов с каждой стороны ещё считается термином.
 const MAX_WORDS: usize = 3;
@@ -61,9 +62,141 @@ fn word_count(text: &str) -> usize {
     text.split_whitespace().count()
 }
 
+/// Подсказка, родившаяся из этой правки и действующая в этой встрече.
+///
+/// Пара берётся тем же разбором, что и при заведении термина
+/// (`plan_edit`), и сравнивается без учёта регистра — как в `normalize`.
+///
+/// Замена не возвращается: она уже подтверждена человеком, повышать
+/// нечего. Термин чужой встречи — тоже: замена там не применится, и
+/// следующий пересбор её не подтвердит.
+pub fn promotable_term<'a>(
+    original_text: &str,
+    edited_text: &str,
+    terms: &'a [GlossaryTerm],
+    meeting_id: &str,
+    language: SpeechLanguage,
+) -> Option<&'a GlossaryTerm> {
+    let (surface, canonical) = term_from_edit(original_text, edited_text)?;
+    terms.iter().find(|term| {
+        term.kind == GlossaryKind::Hint
+            && term.language == language
+            && term.surface.to_lowercase() == surface.to_lowercase()
+            && term.canonical.to_lowercase() == canonical.to_lowercase()
+            && match &term.scope {
+                GlossaryScope::Global => true,
+                GlossaryScope::Meeting { meeting_id: id } => id == meeting_id,
+            }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::{GlossaryKind, GlossaryScope, GlossaryTerm, SpeechLanguage};
+
+    fn term(
+        id: &str,
+        surface: &str,
+        canonical: &str,
+        kind: GlossaryKind,
+        scope: GlossaryScope,
+    ) -> GlossaryTerm {
+        GlossaryTerm {
+            id: id.to_string(),
+            surface: surface.to_string(),
+            canonical: canonical.to_string(),
+            language: SpeechLanguage::Ru,
+            scope,
+            kind,
+        }
+    }
+
+    #[test]
+    fn hint_born_from_edit_is_promotable() {
+        let terms = vec![term(
+            "t1",
+            "юни-эф-эф-ай",
+            "UniFFI",
+            GlossaryKind::Hint,
+            GlossaryScope::Meeting {
+                meeting_id: "m1".to_string(),
+            },
+        )];
+        let found = promotable_term(
+            "упирается в юни-эф-эф-ай",
+            "упирается в UniFFI",
+            &terms,
+            "m1",
+            SpeechLanguage::Ru,
+        );
+        assert_eq!(found.map(|t| t.id.as_str()), Some("t1"));
+    }
+
+    /// Замена уже подтверждена человеком — повышать нечего.
+    ///
+    /// В данных лежит именно `Replacement`: с подсказкой тест прошёл бы
+    /// вхолостую и ничего бы не проверил.
+    #[test]
+    fn replacement_is_not_promotable() {
+        let terms = vec![term(
+            "t1",
+            "юни-эф-эф-ай",
+            "UniFFI",
+            GlossaryKind::Replacement,
+            GlossaryScope::Global,
+        )];
+        let found = promotable_term(
+            "упирается в юни-эф-эф-ай",
+            "упирается в UniFFI",
+            &terms,
+            "m1",
+            SpeechLanguage::Ru,
+        );
+        assert!(found.is_none());
+    }
+
+    /// Термин чужой встречи предлагать нельзя: замена там не применится.
+    #[test]
+    fn term_of_another_meeting_is_not_promotable() {
+        let terms = vec![term(
+            "t1",
+            "юни-эф-эф-ай",
+            "UniFFI",
+            GlossaryKind::Hint,
+            GlossaryScope::Meeting {
+                meeting_id: "m2".to_string(),
+            },
+        )];
+        let found = promotable_term(
+            "упирается в юни-эф-эф-ай",
+            "упирается в UniFFI",
+            &terms,
+            "m1",
+            SpeechLanguage::Ru,
+        );
+        assert!(found.is_none());
+    }
+
+    /// Длинная правка термином не становится — значит и повышать нечего.
+    #[test]
+    fn long_edit_yields_no_promotable_term() {
+        let terms = vec![term(
+            "t1",
+            "что-то",
+            "другое",
+            GlossaryKind::Hint,
+            GlossaryScope::Global,
+        )];
+        let found = promotable_term(
+            "мы решили это на прошлой неделе целиком",
+            "мы договорились обсудить это в следующий понедельник",
+            &terms,
+            "m1",
+            SpeechLanguage::Ru,
+        );
+        assert!(found.is_none());
+    }
 
     #[test]
     fn single_word_replacement_becomes_term() {

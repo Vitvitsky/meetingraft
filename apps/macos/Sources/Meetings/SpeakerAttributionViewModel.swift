@@ -21,6 +21,16 @@ protocol SpeakerAttributionCoreProviding: AnyObject {
         speakerId: String
     ) -> String
     func unpinSegmentSpeaker(meetingId: String, version: UInt32, index: UInt32) -> String
+    func editSegmentText(meetingId: String, version: UInt32, index: UInt32, text: String) -> String
+    func listUnappliedEdits(meetingId: String) -> [FfiSegmentEdit]
+    func deleteSegmentEdit(editId: String) -> String
+    func promoteTermToReplacement(termId: String, meetingId: String, version: UInt32) -> String
+    func segmentAudio(
+        meetingId: String,
+        channelCode: String,
+        startMs: UInt64,
+        endMs: UInt64
+    ) -> FfiAudioFragment
 }
 
 extension MeetingCore: SpeakerAttributionCoreProviding {}
@@ -55,6 +65,13 @@ final class SpeakerAttributionViewModel {
     private(set) var segments: [FfiFinalSegment] = []
     private(set) var rows: [SpeakerRowModel] = []
     private(set) var errorMessage: String?
+    /// Индекс правящейся реплики; `nil` — никто не правится.
+    private(set) var editingIndex: UInt32?
+    /// Черновик правки живёт в модели, а не во вью: список
+    /// перерисовывается на каждое обновление, и набранное терялось бы.
+    var draftText = ""
+    /// Правки, не легшие ни на одну версию после пересбора.
+    private(set) var unappliedEdits: [FfiSegmentEdit] = []
 
     private let core: any SpeakerAttributionCoreProviding
     private var meetingId = ""
@@ -172,8 +189,106 @@ final class SpeakerAttributionViewModel {
         errorMessage = nil
     }
 
+    /// Предлагать ли «заменять всюду» для этой реплики.
+    ///
+    /// Решает ядро: непустой `promotableTermId` означает, что подсказка
+    /// родилась из правки, действует в этой встрече и ещё не стала
+    /// заменой. Повторять этот разбор в Swift нельзя (`AGENTS.md`).
+    func canPromote(index: UInt32) -> Bool {
+        guard let segment = segments.first(where: { $0.index == index }) else { return false }
+        return !segment.promotableTermId.isEmpty
+    }
+
+    func beginEdit(index: UInt32) {
+        guard let segment = segments.first(where: { $0.index == index }) else { return }
+        editingIndex = index
+        draftText = segment.text
+    }
+
+    /// Esc: ядро не трогаем — от правки отказались.
+    func cancelEdit() {
+        editingIndex = nil
+        draftText = ""
+    }
+
+    /// Enter или потеря фокуса.
+    ///
+    /// Состояние сбрасывается до вызова ядра: `finish` перечитывает
+    /// сегменты, и оставленный индекс открыл бы поле заново поверх уже
+    /// сохранённого текста.
+    func commitEdit() {
+        guard let index = editingIndex, let version else {
+            cancelEdit()
+            return
+        }
+        let text = draftText
+        editingIndex = nil
+        draftText = ""
+        finish(error: core.editSegmentText(
+            meetingId: meetingId,
+            version: version,
+            index: index,
+            text: text
+        ))
+    }
+
+    /// Вернуть распознанное. Это отмена, а не ещё одна правка: получив
+    /// исходный текст обратно, ядро удаляет запись из журнала.
+    func revertToOriginal(index: UInt32) {
+        guard let version,
+              let segment = segments.first(where: { $0.index == index }),
+              !segment.originalText.isEmpty
+        else { return }
+        finish(error: core.editSegmentText(
+            meetingId: meetingId,
+            version: version,
+            index: index,
+            text: segment.originalText
+        ))
+    }
+
+    func promoteTerm(index: UInt32) {
+        guard let version,
+              let segment = segments.first(where: { $0.index == index }),
+              !segment.promotableTermId.isEmpty
+        else { return }
+        finish(error: core.promoteTermToReplacement(
+            termId: segment.promotableTermId,
+            meetingId: meetingId,
+            version: version
+        ))
+    }
+
+    func dismissUnapplied(id: String) {
+        finish(error: core.deleteSegmentEdit(editId: id))
+    }
+
+    /// Звук реплики. Пустой фрагмент (`sampleRate == 0`) означает, что
+    /// записи за диапазон нет, — вью на это прячет кнопку.
+    func audioFragment(for segment: FfiFinalSegment) -> FfiAudioFragment {
+        core.segmentAudio(
+            meetingId: meetingId,
+            channelCode: segment.channel,
+            startMs: segment.startMs,
+            endMs: segment.endMs
+        )
+    }
+
+    /// Звук неприменившейся правки: сегмента у неё нет, а место есть.
+    func audioFragment(channelCode: String, startMs: UInt64, endMs: UInt64) -> FfiAudioFragment {
+        core.segmentAudio(
+            meetingId: meetingId,
+            channelCode: channelCode,
+            startMs: startMs,
+            endMs: endMs
+        )
+    }
+
     private func reload() {
         speakers = core.listSpeakers(meetingId: meetingId)
+        // Именно здесь, а не под `guard let version`: правка без версии —
+        // как раз та, которую надо показать.
+        unappliedEdits = core.listUnappliedEdits(meetingId: meetingId)
         guard let version else {
             segments = []
             rows = Self.rows(speakers: speakers, stats: [])

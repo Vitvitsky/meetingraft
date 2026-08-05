@@ -197,6 +197,7 @@ mod tests {
                     speaker_pinned: false,
                     text: "интра ру".into(),
                     text_edited: false,
+                    original_text: String::new(),
                 }],
             )
             .expect("segments");
@@ -222,6 +223,7 @@ mod tests {
                     speaker_pinned: false,
                     text: "интра ру".into(),
                     text_edited: false,
+                    original_text: String::new(),
                 }],
             )
             .expect("segments");
@@ -256,6 +258,7 @@ mod tests {
                     speaker_pinned: false,
                     text: "интра ру".into(),
                     text_edited: false,
+                    original_text: String::new(),
                 }],
             )
             .expect("segments");
@@ -333,6 +336,7 @@ mod tests {
                     speaker_pinned: false,
                     text: "интра ру".into(),
                     text_edited: false,
+                    original_text: String::new(),
                 }],
             )
             .expect("segments");
