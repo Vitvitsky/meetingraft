@@ -19,9 +19,10 @@
   `cargo clippy --all-targets -- -D warnings` чисто. Ключевой тест
   `edited_segment_carries_recognized_text` отдельно проверен на падение
   без исправления.
-- **Задачи 4–7 (Swift) не собирались**: на VPS нет ни `swift`, ни
-  `xcodebuild`, ни `swiftformat`. Шаги «прогнать на Mac» остались
-  неотмеченными намеренно — этот код не проверен.
+- **Задачи 4–7 (Swift) проверены на Маке**: `scripts/verify-mac.sh`
+  целиком зелёный. Написаны они были на VPS, где нет ни `swift`, ни
+  `xcodebuild`, ни `swiftformat`, — до прогона на Маке проверенными не
+  считались.
 
 Отступления от плана, сделанные по ходу:
 
@@ -845,7 +846,7 @@ func testPromoteTermSendsCoreProvidedId() {
 }
 ```
 
-- [ ] **Step 4: Прогнать и убедиться, что падает**
+- [x] **Step 4: Прогнать и убедиться, что падает**
 
 Run на Mac: `cd apps/macos && xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -only-testing:MeetingRaftTests/SpeakerAttributionViewModelTests test CODE_SIGNING_ALLOWED=NO`
 Expected: FAIL — компиляция, у модели нет `beginEdit` и остальных.
@@ -963,7 +964,7 @@ Expected: FAIL — компиляция, у модели нет `beginEdit` и �
 
 Именно здесь, а не под `guard let version`: правка без версии — как раз та, которую надо показать.
 
-- [ ] **Step 7: Прогнать тесты**
+- [x] **Step 7: Прогнать тесты**
 
 Run на Mac: `cd apps/macos && xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -only-testing:MeetingRaftTests/SpeakerAttributionViewModelTests test CODE_SIGNING_ALLOWED=NO`
 Expected: PASS
@@ -1123,7 +1124,7 @@ git commit -m "feat: add segment edit state to the attribution model"
             }
 ```
 
-- [ ] **Step 5: Собрать и прогнать**
+- [x] **Step 5: Собрать и прогнать**
 
 Run на Mac: `scripts/verify-mac.sh`
 Expected: сборка и тесты зелёные.
@@ -1188,7 +1189,7 @@ func testDismissUnappliedCallsCoreWithThatId() {
 }
 ```
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run на Mac: `xcodebuild … -only-testing:MeetingRaftTests/SpeakerAttributionViewModelTests test CODE_SIGNING_ALLOWED=NO`
 Expected: FAIL — `unappliedEdits` пуст либо метода нет.
@@ -1312,7 +1313,7 @@ struct UnappliedEditsBanner: View {
     }
 ```
 
-- [ ] **Step 5: Прогнать**
+- [x] **Step 5: Прогнать**
 
 Run на Mac: `scripts/verify-mac.sh`
 Expected: PASS
@@ -1381,7 +1382,7 @@ final class SegmentAudioPlayerTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run на Mac: `xcodebuild … -only-testing:MeetingRaftTests/SegmentAudioPlayerTests test CODE_SIGNING_ALLOWED=NO`
 Expected: FAIL — типа `SegmentAudioPlayer` нет.
@@ -1467,7 +1468,7 @@ final class SegmentAudioPlayer {
 }
 ```
 
-- [ ] **Step 4: Прогнать тесты**
+- [x] **Step 4: Прогнать тесты**
 
 Run на Mac: `xcodebuild … -only-testing:MeetingRaftTests/SegmentAudioPlayerTests test CODE_SIGNING_ALLOWED=NO`
 Expected: PASS
@@ -1551,5 +1552,5 @@ git commit -m "feat: play the audio behind a segment"
 ## После всех задач
 
 - [x] Обновить `docs/backlog.md`, Epic 19: закрыть пункт «Проигрывание фрагмента и **весь интерфейс** — плана нет», оставив открытыми сжатие словаря и перечисленные в спеке исключения.
-- [ ] `scripts/verify-mac.sh` целиком на Mac.
+- [x] `scripts/verify-mac.sh` целиком на Mac.
 - [ ] Pull request.
