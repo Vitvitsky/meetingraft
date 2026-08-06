@@ -224,14 +224,14 @@ impl AudioManifestStore {
         }
         let idx = channel_index(channel);
 
-        // Разрыв тайм-кодов: накопленное пишем как есть. Иначе строка
-        // манифеста заявит непрерывный кусок, которого нет, и всё после
-        // дыры поедет по времени.
-        let gap = matches!(
+        // Разрыв тайм-кодов или смена частоты: накопленное пишем как есть.
+        // Иначе строка манифеста заявит непрерывный кусок, которого нет,
+        // а две частоты под одной подписью испортят и сам звук.
+        let must_close = matches!(
             self.pending[idx].as_ref(),
-            Some(p) if p.next_timestamp_ms() != timestamp_ms
+            Some(p) if p.next_timestamp_ms() != timestamp_ms || p.sample_rate != sample_rate
         );
-        if gap {
+        if must_close {
             // Записанный чанк здесь намеренно не возвращается: сброс
             // служебный, а `Some` из `append_chunk` означает «набрался
             // целевой размер». Кому нужен чанк наверняка — берёт его у
@@ -1376,6 +1376,33 @@ pub(crate) mod tests {
             assert_eq!(chunks[0].frame_count, 1_600);
             assert_eq!(chunks[1].timestamp_ms, 500, "второй чанк со своего времени");
             assert_eq!(chunks[1].frame_count, 1_600);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Смена частоты рвёт пачку: в одном файле две частоты — испорченный
+    /// звук, и отбор на чтении такого уже не поймает.
+    #[test]
+    fn a_sample_rate_change_starts_a_new_chunk() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .unwrap();
+            // Продолжение по времени, но другая частота.
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 48_000, 100)
+                .unwrap();
+            store.flush_pending_chunks().unwrap();
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(chunks.len(), 2, "две частоты в одном файле недопустимы");
+            assert_eq!(chunks[0].sample_rate, 16_000);
+            assert_eq!(chunks[1].sample_rate, 48_000);
         }
         let _ = fs::remove_dir_all(&root);
     }
