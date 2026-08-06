@@ -3266,6 +3266,10 @@ mod tests {
                     .append_chunk(AudioChannel::Mic, &bytes, 16_000, index * 100)
                     .expect("chunk");
             }
+            // 1 с записи не добирает до целевых 2 с — без явного сброса
+            // накопитель остался бы только в памяти и пропал бы вместе
+            // со store.
+            store.flush_pending_chunks().expect("flush");
         }
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
 
@@ -3659,8 +3663,19 @@ mod tests {
             core.ingest_audio_chunk(FfiAudioChannel::System, pcm, 16_000, 100)
                 .is_empty()
         );
-        assert_eq!(core.manifest_chunk_count("rec-1".into()), 2);
+        // Оба кадра меньше целевого размера чанка (2 с) — накопитель ещё
+        // не сбросил их на диск, это не значит, что ingest не дошёл до
+        // хранилища.
+        assert_eq!(
+            core.manifest_chunk_count("rec-1".into()),
+            0,
+            "накопитель ещё не заполнен"
+        );
+        // `stop_recording` закрывает сессию и сбрасывает остаток на диск
+        // (`end_session` → `flush_pending_chunks`) — вот здесь ingest
+        // обоих каналов и должен подтвердиться.
         core.stop_recording();
+        assert_eq!(core.manifest_chunk_count("rec-1".into()), 2);
         let _ = std::fs::remove_dir_all(&root);
     }
 
