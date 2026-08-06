@@ -106,10 +106,6 @@ impl PendingChunk {
 
     /// Время, которым обязан начинаться следующий кадр, чтобы пачка
     /// осталась непрерывной.
-    ///
-    /// В этой задаче не используется: обнаружение разрывов записи —
-    /// отдельная задача (Task 2), метод под неё уже готов.
-    #[allow(dead_code)]
     fn next_timestamp_ms(&self) -> u64 {
         self.timestamp_ms + self.duration_ms()
     }
@@ -227,6 +223,21 @@ impl AudioManifestStore {
             return Err(AudioManifestError::SessionNotOpen);
         }
         let idx = channel_index(channel);
+
+        // Разрыв тайм-кодов: накопленное пишем как есть. Иначе строка
+        // манифеста заявит непрерывный кусок, которого нет, и всё после
+        // дыры поедет по времени.
+        let gap = matches!(
+            self.pending[idx].as_ref(),
+            Some(p) if p.next_timestamp_ms() != timestamp_ms
+        );
+        if gap {
+            // Записанный чанк здесь намеренно не возвращается: сброс
+            // служебный, а `Some` из `append_chunk` означает «набрался
+            // целевой размер». Кому нужен чанк наверняка — берёт его у
+            // `flush_pending_chunks`.
+            self.write_pending(channel)?;
+        }
 
         let entry = self.pending[idx].get_or_insert_with(|| PendingChunk {
             pcm: Vec::new(),
@@ -1333,6 +1344,61 @@ pub(crate) mod tests {
                 store.list_chunks("s2").unwrap().is_empty(),
                 "накопитель s1 не должен всплыть в s2"
             );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Разрыв тайм-кодов рвёт пачку: строка манифеста не должна заявлять
+    /// непрерывность там, где её нет.
+    ///
+    /// Без этой ветки два кадра склеятся в один чанк с `timestamp_ms = 0`,
+    /// и всё, что после дыры, поедет по времени.
+    #[test]
+    fn a_timestamp_gap_starts_a_new_chunk() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+
+            // 0..100 мс, дальше дыра, и кадр с 500 мс.
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .unwrap();
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 500)
+                .unwrap();
+            store.flush_pending_chunks().unwrap();
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(chunks.len(), 2, "через дыру склеивать нельзя");
+            assert_eq!(chunks[0].timestamp_ms, 0);
+            assert_eq!(chunks[0].frame_count, 1_600);
+            assert_eq!(chunks[1].timestamp_ms, 500, "второй чанк со своего времени");
+            assert_eq!(chunks[1].frame_count, 1_600);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Непрерывные кадры по-прежнему склеиваются: ветка разрыва не должна
+    /// срабатывать на нормальном потоке, иначе укрупнения не будет вовсе.
+    #[test]
+    fn contiguous_frames_still_merge() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            for index in 0..3 {
+                store
+                    .append_chunk(AudioChannel::Mic, &frame, 16_000, index * 100)
+                    .unwrap();
+            }
+            store.flush_pending_chunks().unwrap();
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(chunks.len(), 1, "непрерывное склеивается");
+            assert_eq!(chunks[0].frame_count, 4_800, "300 мс на 16 кГц");
         }
         let _ = fs::remove_dir_all(&root);
     }
