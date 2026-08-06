@@ -45,6 +45,13 @@ pub enum AudioManifestError {
 /// сотни мегабайт, а слушают всегда одну реплику.
 const MAX_FRAGMENT_MS: u64 = 30_000;
 
+/// Целевая длительность чанка на диске.
+///
+/// 100 мс — размер кадра живого пути (`AudioChunkPipeline.chunkDurationMs`),
+/// и на диске это 72 000 файлов в час на двух каналах. У хранения причин
+/// быть такой же гранулярности нет.
+const CHUNK_TARGET_MS: u64 = 2_000;
+
 /// Кусок записи с частотой дискретизации, на которой он записан.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PcmFragment {
@@ -79,12 +86,49 @@ pub struct ManifestChunk {
     pub timestamp_ms: u64,
 }
 
+/// Накопитель записи по каналу.
+///
+/// Живой путь получает свои 100 мс сразу, на диск они уходят пачкой.
+struct PendingChunk {
+    pcm: Vec<u8>,
+    sample_rate: u32,
+    /// Время первого кадра пачки.
+    timestamp_ms: u64,
+}
+
+impl PendingChunk {
+    fn duration_ms(&self) -> u64 {
+        if self.sample_rate == 0 {
+            return 0;
+        }
+        (self.pcm.len() as u64 / 2) * 1000 / u64::from(self.sample_rate)
+    }
+
+    /// Время, которым обязан начинаться следующий кадр, чтобы пачка
+    /// осталась непрерывной.
+    ///
+    /// В этой задаче не используется: обнаружение разрывов записи —
+    /// отдельная задача (Task 2), метод под неё уже готов.
+    #[allow(dead_code)]
+    fn next_timestamp_ms(&self) -> u64 {
+        self.timestamp_ms + self.duration_ms()
+    }
+}
+
+fn channel_index(channel: AudioChannel) -> usize {
+    match channel {
+        AudioChannel::Mic => 0,
+        AudioChannel::System => 1,
+    }
+}
+
 /// Store: SQLite + PCM files под `root/sessions/{id}/{channel}/`.
 pub struct AudioManifestStore {
     root: PathBuf,
     conn: Connection,
     active_session: Option<String>,
     next_seq: [u32; 2],
+    pending: [Option<PendingChunk>; 2],
 }
 
 impl AudioManifestStore {
@@ -109,6 +153,7 @@ impl AudioManifestStore {
             conn,
             active_session: None,
             next_seq: [0, 0],
+            pending: [None, None],
         })
     }
 
@@ -129,11 +174,18 @@ impl AudioManifestStore {
         }
         self.active_session = Some(session_id.to_string());
         self.next_seq = [0, 0];
+        // Остаток прошлой сессии не должен попасть в файлы новой.
+        // Штатно он уже сброшен в `end_session`; это страховка.
+        self.pending = [None, None];
         Ok(())
     }
 
     /// Закончить session: записать время окончания и сбросить active.
     pub fn end_session(&mut self, ended_at_ms: u64) -> Result<(), AudioManifestError> {
+        // Остаток на диск до закрытия: последние секунды записи нужны так
+        // же, как все прежние. Сброс до `take()` — ему нужна активная
+        // сессия, чтобы знать путь.
+        self.flush_pending_chunks()?;
         if let Some(session_id) = self.active_session.take() {
             self.conn.execute(
                 "UPDATE sessions SET ended_at_ms = ?2 WHERE id = ?1",
@@ -159,22 +211,57 @@ impl AudioManifestStore {
         Ok(())
     }
 
-    /// Записать PCM chunk на диск и в manifest.
+    /// Принять кадр живого пути в накопитель канала.
+    ///
+    /// Файл пишется не на каждый вызов: `Some` возвращается, когда этим
+    /// вызовом пачка ушла на диск по достижении целевого размера. Кому
+    /// нужен записанный чанк наверняка — `flush_pending_chunks`.
     pub fn append_chunk(
         &mut self,
         channel: AudioChannel,
         pcm: &[u8],
         sample_rate: u32,
         timestamp_ms: u64,
-    ) -> Result<ManifestChunk, AudioManifestError> {
+    ) -> Result<Option<ManifestChunk>, AudioManifestError> {
+        if self.active_session.is_none() {
+            return Err(AudioManifestError::SessionNotOpen);
+        }
+        let idx = channel_index(channel);
+
+        let entry = self.pending[idx].get_or_insert_with(|| PendingChunk {
+            pcm: Vec::new(),
+            sample_rate,
+            timestamp_ms,
+        });
+        entry.pcm.extend_from_slice(pcm);
+        // Через локальную переменную, а не прямо в `if`: иначе изменяемое
+        // одолжение `entry` дожило бы до вызова `write_pending`.
+        let is_full = entry.duration_ms() >= CHUNK_TARGET_MS;
+
+        if is_full {
+            return self.write_pending(channel);
+        }
+        Ok(None)
+    }
+
+    /// Записать накопленное по каналу файлом и строкой манифеста.
+    ///
+    /// Пустой накопитель — не ошибка и не пустой файл: `Ok(None)`.
+    fn write_pending(
+        &mut self,
+        channel: AudioChannel,
+    ) -> Result<Option<ManifestChunk>, AudioManifestError> {
+        let idx = channel_index(channel);
+        let Some(pending) = self.pending[idx].take() else {
+            return Ok(None);
+        };
+        if pending.pcm.is_empty() {
+            return Ok(None);
+        }
         let session_id = self
             .active_session
             .clone()
             .ok_or(AudioManifestError::SessionNotOpen)?;
-        let idx = match channel {
-            AudioChannel::Mic => 0,
-            AudioChannel::System => 1,
-        };
         let seq = self.next_seq[idx];
         self.next_seq[idx] = seq + 1;
 
@@ -188,9 +275,9 @@ impl AudioManifestStore {
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&abs, pcm)?;
+        fs::write(&abs, &pending.pcm)?;
 
-        let frame_count = (pcm.len() / 2) as u32;
+        let frame_count = (pending.pcm.len() / 2) as u32;
         self.conn.execute(
             "INSERT INTO audio_manifest
              (session_id, channel, seq, path, sample_rate, frame_count, timestamp_ms)
@@ -200,21 +287,35 @@ impl AudioManifestStore {
                 channel.dir_name(),
                 seq,
                 rel,
-                sample_rate,
+                pending.sample_rate,
                 frame_count,
-                timestamp_ms as i64
+                pending.timestamp_ms as i64
             ],
         )?;
 
-        Ok(ManifestChunk {
+        Ok(Some(ManifestChunk {
             session_id,
             channel,
             seq,
             path: abs,
-            sample_rate,
+            sample_rate: pending.sample_rate,
             frame_count,
-            timestamp_ms,
-        })
+            timestamp_ms: pending.timestamp_ms,
+        }))
+    }
+
+    /// Дописать остатки обоих каналов.
+    ///
+    /// Публичный: `end_session` зовёт его сам, но тестам и будущему
+    /// коду нужна явная точка сброса.
+    pub fn flush_pending_chunks(&mut self) -> Result<Vec<ManifestChunk>, AudioManifestError> {
+        let mut written = Vec::new();
+        for channel in [AudioChannel::Mic, AudioChannel::System] {
+            if let Some(chunk) = self.write_pending(channel)? {
+                written.push(chunk);
+            }
+        }
+        Ok(written)
     }
 
     /// Число чанков в session (оба канала).
@@ -1157,6 +1258,85 @@ pub(crate) mod tests {
         ))
     }
 
+    /// Двадцать кадров живого пути по 100 мс ложатся на диск одним файлом.
+    ///
+    /// Смысл всей работы: 100 мс — размер кадра STT, у хранения причин быть
+    /// таким же нет.
+    #[test]
+    fn twenty_live_frames_become_one_file() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            // 1600 кадров = ровно 100 мс на 16 кГц.
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            for index in 0..20 {
+                store
+                    .append_chunk(AudioChannel::Mic, &frame, 16_000, index * 100)
+                    .unwrap();
+            }
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(chunks.len(), 1, "20 кадров по 100 мс = один файл на 2 с");
+            assert_eq!(chunks[0].frame_count, 32_000, "2 с на 16 кГц");
+            assert_eq!(chunks[0].timestamp_ms, 0, "время первого кадра пачки");
+            assert_eq!(store.chunk_count("s1").unwrap(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Остаток меньше целевого размера обязан лечь на диск при закрытии
+    /// сессии: последние секунды записи нужны так же, как все прежние.
+    #[test]
+    fn end_session_writes_the_remainder() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            // Пять кадров — 500 мс, до целевых 2 с не добирает.
+            for index in 0..5 {
+                store
+                    .append_chunk(AudioChannel::Mic, &frame, 16_000, index * 100)
+                    .unwrap();
+            }
+            assert!(
+                store.list_chunks("s1").unwrap().is_empty(),
+                "до закрытия остаток ещё в накопителе"
+            );
+
+            store.end_session(2).unwrap();
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(chunks.len(), 1, "остаток дописан");
+            assert_eq!(chunks[0].frame_count, 8_000, "500 мс на 16 кГц");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Хвост прошлой сессии не должен попасть в файлы новой.
+    #[test]
+    fn begin_session_drops_the_previous_remainder() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .unwrap();
+
+            store.begin_session("s2", 2, "").unwrap();
+            store.flush_pending_chunks().unwrap();
+
+            assert!(
+                store.list_chunks("s2").unwrap().is_empty(),
+                "накопитель s1 не должен всплыть в s2"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn append_two_channels_lists_and_counts() {
         let root = tmp_root();
@@ -1169,6 +1349,7 @@ pub(crate) mod tests {
             store
                 .append_chunk(AudioChannel::System, &[3, 0, 4, 0], 16_000, 10)
                 .unwrap();
+            store.flush_pending_chunks().unwrap();
             assert_eq!(store.chunk_count("s1").unwrap(), 2);
             let list = store.list_chunks("s1").unwrap();
             assert_eq!(list.len(), 2);
@@ -1600,6 +1781,8 @@ pub(crate) mod tests {
                 .append_chunk(channel, &bytes, 16_000, index * 100)
                 .unwrap();
         }
+        // Пачка укрупняется, а нарезка по времени обязана остаться той же.
+        store.flush_pending_chunks().unwrap();
     }
 
     /// Фрагмент вырезается по времени, а не по границам чанков: реплика
@@ -1713,6 +1896,7 @@ pub(crate) mod tests {
             store
                 .append_chunk(AudioChannel::System, &[9, 0], 16_000, 0)
                 .unwrap();
+            store.flush_pending_chunks().unwrap();
 
             assert_eq!(
                 store.read_session_pcm("m1", AudioChannel::Mic).unwrap(),
@@ -1748,9 +1932,10 @@ pub(crate) mod tests {
         {
             let mut store = AudioManifestStore::open(&root).unwrap();
             store.begin_session("m1", 1, "").unwrap();
-            let chunk = store
+            store
                 .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
                 .unwrap();
+            let chunk = store.flush_pending_chunks().unwrap().remove(0);
             fs::remove_file(&chunk.path).unwrap();
 
             let err = store.read_session_pcm("m1", AudioChannel::Mic).unwrap_err();
@@ -1767,9 +1952,10 @@ pub(crate) mod tests {
         {
             let mut store = AudioManifestStore::open(&root).unwrap();
             store.begin_session("m1", 1, "").unwrap();
-            let chunk = store
+            store
                 .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
                 .unwrap();
+            let chunk = store.flush_pending_chunks().unwrap().remove(0);
             fs::write(&chunk.path, [1_u8, 0]).unwrap();
 
             let err = store.read_session_pcm("m1", AudioChannel::Mic).unwrap_err();
