@@ -2246,7 +2246,11 @@ impl MeetingCore {
         guard.mixer.set_system_expected(expected);
     }
 
-    pub fn stop_recording(&self) {
+    /// Остановить запись. Пустая строка — успех, непустая — текст ошибки.
+    ///
+    /// Ошибку закрытия сессии здесь терять нельзя: вместе с ней на диск
+    /// уходит остаток накопителя, то есть последние секунды записи.
+    pub fn stop_recording(&self) -> String {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
         let sid = guard.recording_session_id.clone();
         // Хвост микшера не должен ждать допуска — иначе теряются последние
@@ -2267,14 +2271,18 @@ impl MeetingCore {
                 let _ = assemble_and_store_final(store, &sid);
             }
         }
-        if let Some(store) = guard.store.as_mut() {
-            let _ = store.end_session(now_ms());
+        let mut error = String::new();
+        if let Some(store) = guard.store.as_mut()
+            && let Err(err) = store.end_session(now_ms())
+        {
+            error = err.to_string();
         }
         guard.store = None;
         guard.recording_session_id = None;
         guard.stt = None;
         guard.stt_backend = "idle".to_string();
         self.jobs.set_recording(false);
+        error
     }
 
     pub fn manifest_chunk_count(&self, session_id: String) -> u64 {
@@ -3266,6 +3274,10 @@ mod tests {
                     .append_chunk(AudioChannel::Mic, &bytes, 16_000, index * 100)
                     .expect("chunk");
             }
+            // 1 с записи не добирает до целевых 2 с — без явного сброса
+            // накопитель остался бы только в памяти и пропал бы вместе
+            // со store.
+            store.flush_pending_chunks().expect("flush");
         }
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
 
@@ -3659,8 +3671,19 @@ mod tests {
             core.ingest_audio_chunk(FfiAudioChannel::System, pcm, 16_000, 100)
                 .is_empty()
         );
-        assert_eq!(core.manifest_chunk_count("rec-1".into()), 2);
+        // Оба кадра меньше целевого размера чанка (2 с) — накопитель ещё
+        // не сбросил их на диск, это не значит, что ingest не дошёл до
+        // хранилища.
+        assert_eq!(
+            core.manifest_chunk_count("rec-1".into()),
+            0,
+            "накопитель ещё не заполнен"
+        );
+        // `stop_recording` закрывает сессию и сбрасывает остаток на диск
+        // (`end_session` → `flush_pending_chunks`) — вот здесь ingest
+        // обоих каналов и должен подтвердиться.
         core.stop_recording();
+        assert_eq!(core.manifest_chunk_count("rec-1".into()), 2);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -3932,6 +3955,105 @@ mod tests {
         );
         assert_eq!(core.list_artifacts(meeting_id.clone()).len(), 2);
         assert!(core.assemble_final_now(meeting_id).is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Успешная остановка не должна выглядеть как ошибка.
+    #[test]
+    fn stop_recording_reports_success_as_empty_string() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-stop-ok-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.start_recording("stop-ok".to_string(), String::new())
+                .is_empty()
+        );
+
+        assert_eq!(core.stop_recording(), "", "остановка прошла");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Хвост записи, лежащий в накопителе, доходит до диска через
+    /// `stop_recording`: иначе последние секунды встречи теряются молча.
+    #[test]
+    fn stop_recording_flushes_the_buffered_tail() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-stop-tail-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.start_recording("stop-tail".to_string(), String::new())
+                .is_empty()
+        );
+        // Пять кадров по 100 мс — до целевых 2 с не добирает, значит лежит
+        // в накопителе.
+        let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+        for index in 0..5 {
+            assert!(
+                core.ingest_audio_chunk(FfiAudioChannel::Mic, frame.clone(), 16_000, index * 100)
+                    .is_empty()
+            );
+        }
+
+        assert_eq!(core.stop_recording(), "");
+
+        assert_eq!(
+            core.manifest_chunk_count("stop-tail".to_string()),
+            1,
+            "хвост дописан при остановке"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Если финальный сброс накопителя не может записать файл, об этом
+    /// нужно узнать: молча потерянный хвост — это последние секунды
+    /// встречи, исчезнувшие без предупреждения человеку.
+    #[test]
+    fn stop_recording_reports_the_flush_error_when_the_tail_write_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-stop-tail-fails-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let session_id = "stop-tail-fails".to_string();
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.start_recording(session_id.clone(), String::new())
+                .is_empty()
+        );
+        // Пять кадров по 100 мс — до целевых 2 с не добирает, значит на
+        // диск ничего не ушло и seq накопителя всё ещё 0.
+        let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+        for index in 0..5 {
+            assert!(
+                core.ingest_audio_chunk(FfiAudioChannel::Mic, frame.clone(), 16_000, index * 100)
+                    .is_empty()
+            );
+        }
+
+        // Подменяем путь, куда финальный сброс попытается записать файл,
+        // каталогом: `fs::write` на существующий каталог падает с EISDIR
+        // — переносимое поведение POSIX, без прав и без гонки процессов.
+        let blocked_path = root
+            .join("sessions")
+            .join(&session_id)
+            .join("mic")
+            .join("000000.pcm");
+        std::fs::create_dir_all(&blocked_path).expect("подложный каталог должен создаться");
+
+        let error = core.stop_recording();
+        assert!(
+            !error.is_empty(),
+            "ожидалась ошибка записи хвоста, получено: {error:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
