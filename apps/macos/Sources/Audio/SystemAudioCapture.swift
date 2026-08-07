@@ -20,17 +20,40 @@ final class SystemAudioCapture: AudioTapping {
     private var ioProcId: AudioDeviceIOProcID?
     private var downmixer: PCMDownmixer?
     private var onSamples: (([Float]) -> Void)?
+    /// Разведка уже проходила успешно — повторять её не нужно.
+    private var didProbeSuccessfully = false
+
+    /// Страховка на случай, когда объект отпустили, не позвав `stop()`.
+    /// Tap и aggregate живут в `coreaudiod`, а не в нас, и без явной
+    /// уборки переживут наш процесс, ломая системный звук другим
+    /// приложениям (Epic 24). SIGKILL этим не покрывается — там не
+    /// выполняется вообще ничего.
+    deinit {
+        stop()
+    }
 
     /// Разведка: создаём tap и сразу отпускаем. Первый вызов поднимает
     /// системный запрос разрешения «System Audio Recording» (macOS 15+).
+    ///
+    /// Удачная разведка запоминается: каждый созданный tap — это шанс
+    /// оставить его в `coreaudiod` навсегда (Epic 24), и делать этот
+    /// бросок на каждый `startRecording` незачем. Отказ не кэшируется:
+    /// разрешение могли выдать между попытками, а неудавшийся
+    /// `createTap` после себя ничего не оставляет.
     func prepare() {
         guard tapId == kAudioObjectUnknown else {
             isAvailable = true
             return
         }
+        guard !didProbeSuccessfully else {
+            isAvailable = true
+            status = .granted
+            return
+        }
         switch createTap() {
         case let .success(id):
             destroyTap(id)
+            didProbeSuccessfully = true
             isAvailable = true
             status = .granted
         case let .failure(error):
@@ -105,15 +128,25 @@ final class SystemAudioCapture: AudioTapping {
     }
 
     /// Идемпотентно: повторный вызов не должен ронять Core Audio.
+    ///
+    /// Каждый отказ уборки идёт в лог. Оставленный tap или aggregate
+    /// живёт в `coreaudiod` дольше нашего процесса и ломает системный
+    /// звук соседним приложениям (Epic 24) — молчать про такое нельзя.
     func stop() {
         if aggregateId != kAudioObjectUnknown, let ioProcId {
-            AudioDeviceStop(aggregateId, ioProcId)
-            AudioDeviceDestroyIOProcID(aggregateId, ioProcId)
+            logFailure(AudioDeviceStop(aggregateId, ioProcId), "AudioDeviceStop")
+            logFailure(
+                AudioDeviceDestroyIOProcID(aggregateId, ioProcId),
+                "AudioDeviceDestroyIOProcID"
+            )
         }
         ioProcId = nil
 
         if aggregateId != kAudioObjectUnknown {
-            AudioHardwareDestroyAggregateDevice(aggregateId)
+            logFailure(
+                AudioHardwareDestroyAggregateDevice(aggregateId),
+                "AudioHardwareDestroyAggregateDevice"
+            )
             aggregateId = kAudioObjectUnknown
         }
         if tapId != kAudioObjectUnknown {
@@ -141,7 +174,15 @@ final class SystemAudioCapture: AudioTapping {
     }
 
     private func destroyTap(_ id: AudioObjectID) {
-        AudioHardwareDestroyProcessTap(id)
+        logFailure(AudioHardwareDestroyProcessTap(id), "AudioHardwareDestroyProcessTap")
+    }
+
+    /// Отказ уборки Core Audio — в лог. Вернуть его наверх некуда:
+    /// `stop()` зовётся из `deinit` и из аварийных веток `start`, где
+    /// обрабатывать его уже нечем, но знать о нём надо.
+    private func logFailure(_ status: OSStatus, _ call: String) {
+        guard status != noErr else { return }
+        log.error("\(call, privacy: .public) failed: \(status, privacy: .public)")
     }
 
     private func createAggregate(tapId: AudioObjectID, outputUid: String) -> AudioObjectID? {
