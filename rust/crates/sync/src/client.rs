@@ -8,11 +8,26 @@ use crate::error::SyncError;
 pub struct SyncClient {
     base_url: String,
     token: String,
-    /// Один HTTP-клиент на всё время жизни. Каждый `build()` поднимает
-    /// свой tokio-рантайм и паркует вызывающего, то есть поток вставал
-    /// ещё до отправки запроса (Epic 21). Ошибка сборки хранится текстом
-    /// и отдаётся при вызове: подменять её на «не настроено» нельзя.
-    http: Result<reqwest::blocking::Client, String>,
+    /// Один HTTP-клиент на всё время жизни, построенный при первом
+    /// запросе.
+    ///
+    /// Каждый `build()` поднимает свой tokio-рантайм и паркует
+    /// вызывающего, то есть поток встаёт ещё до отправки запроса
+    /// (Epic 21). Строить его в конструкторе не годится:
+    /// `MeetingCore::with_data_root` зовётся из `AppShellView.init` на
+    /// главном потоке, так что парковка приходилась на запуск
+    /// приложения — и приходилась даже когда backend не настроен и
+    /// клиент не понадобится вовсе.
+    ///
+    /// `Arc` здесь несущий: каждый запрос из `ffi` работает с **копией**
+    /// клиента, снятой из-под мьютекса ядра (`sync_client_snapshot`).
+    /// Ячейка на экземпляр означала бы, что копия строит клиент заново,
+    /// то есть ту же парковку на каждый вызов, от которой Epic 21 и
+    /// уходил.
+    ///
+    /// Ошибка сборки хранится текстом и отдаётся при вызове: подменять
+    /// её на «не настроено» нельзя.
+    http: std::sync::Arc<std::sync::OnceLock<Result<reqwest::blocking::Client, String>>>,
 }
 
 impl SyncClient {
@@ -20,10 +35,7 @@ impl SyncClient {
         Self {
             base_url: trim_slash(base_url.into()),
             token: token.into(),
-            http: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .map_err(|error| error.to_string()),
+            http: std::sync::Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -103,6 +115,12 @@ impl SyncClient {
 
     fn http(&self) -> Result<&reqwest::blocking::Client, SyncError> {
         self.http
+            .get_or_init(|| {
+                reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()
+                    .map_err(|error| error.to_string())
+            })
             .as_ref()
             .map_err(|error| SyncError::Transport(error.clone()))
     }
@@ -128,6 +146,37 @@ mod tests {
     use super::*;
     use crate::dto::{JobKind, JobStatus};
     use mockito::Server;
+
+    /// Конструктор зовётся при запуске приложения на главном потоке
+    /// (`AppShellView.init` → `MeetingCore::with_data_root`), а сборка
+    /// `reqwest` паркует вызывающего. Строить там нечего: backend может
+    /// быть не настроен вовсе.
+    #[test]
+    fn new_does_not_build_the_http_client() {
+        let client = SyncClient::new("http://127.0.0.1:1", "dev-token");
+        assert!(
+            client.http.get().is_none(),
+            "клиент построен в конструкторе — главный поток паркуется на старте приложения"
+        );
+    }
+
+    /// Каждый запрос из `ffi` идёт по копии, снятой из-под мьютекса
+    /// ядра. Если ячейка своя у каждой копии, ленивость превращается в
+    /// сборку клиента на каждый вызов — ровно та парковка, от которой
+    /// Epic 21 уходил.
+    #[test]
+    fn clones_share_one_http_client() {
+        let client = SyncClient::new("http://127.0.0.1:1", "dev-token");
+        let snapshot = client.clone();
+
+        // Запрос заведомо не дойдёт — важно, что он строит клиент.
+        let _ = snapshot.health();
+
+        assert!(
+            client.http.get().is_some(),
+            "копия построила собственный клиент — парковка вернулась на каждый запрос"
+        );
+    }
 
     #[test]
     fn health_ok_against_mock() {
