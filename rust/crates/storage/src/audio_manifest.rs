@@ -31,6 +31,16 @@ pub enum AudioManifestError {
         version: u32,
         index: u32,
     },
+    /// Частота 0 ломает накопитель бесшумно: длительность пачки всегда 0,
+    /// целевой размер не достигается никогда, а строка с такой частотой на
+    /// диске молча пропускается `read_pcm_range` — записанное читается как
+    /// ничто.
+    #[error("invalid sample rate: 0")]
+    InvalidSampleRate,
+    /// Нечётная длина ломает выравнивание i16 всему, что легло в пачку
+    /// после неё: раньше страя байт портил один файл в 100 мс, теперь — 2 с.
+    #[error("pcm length must be even (i16 frames), got {0}")]
+    OddPcmLength(usize),
     #[error("chunk {path} truncated: expected {expected_frames} frames, got {actual_frames}")]
     ChunkTruncated {
         path: String,
@@ -232,6 +242,18 @@ impl AudioManifestStore {
         if self.active_session.is_none() {
             return Err(AudioManifestError::SessionNotOpen);
         }
+        // Обе проверки — про молчаливую порчу, а не про живой путь: Swift
+        // шлёт постоянные 16 кГц и всегда парами байт. Но частота 0 сделала
+        // бы накопитель невозможным (`duration_ms` всегда 0, целевой размер
+        // недостижим, `next_timestamp_ms` не двигается), а нечётная длина
+        // сдвинула бы выравнивание i16 всем кадрам пачки после неё — 2 с
+        // шума вместо звука. Видимая ошибка лучше и того, и другого.
+        if sample_rate == 0 {
+            return Err(AudioManifestError::InvalidSampleRate);
+        }
+        if !pcm.len().is_multiple_of(2) {
+            return Err(AudioManifestError::OddPcmLength(pcm.len()));
+        }
         let idx = channel_index(channel);
 
         // Разрыв тайм-кодов или смена частоты: накопленное пишем как есть.
@@ -273,16 +295,21 @@ impl AudioManifestStore {
         channel: AudioChannel,
     ) -> Result<Option<ManifestChunk>, AudioManifestError> {
         let idx = channel_index(channel);
+        if self.pending[idx].is_none() {
+            return Ok(None);
+        }
+        // Сессию проверяем до `take()`: иначе отказ означал бы «звук уже
+        // уничтожен», а не «звук всё ещё в накопителе».
+        let session_id = self
+            .active_session
+            .clone()
+            .ok_or(AudioManifestError::SessionNotOpen)?;
         let Some(pending) = self.pending[idx].take() else {
             return Ok(None);
         };
         if pending.pcm.is_empty() {
             return Ok(None);
         }
-        let session_id = self
-            .active_session
-            .clone()
-            .ok_or(AudioManifestError::SessionNotOpen)?;
         let seq = self.next_seq[idx];
         self.next_seq[idx] = seq + 1;
 
@@ -1457,6 +1484,92 @@ pub(crate) mod tests {
             let chunks = store.list_chunks("s1").unwrap();
             assert_eq!(chunks.len(), 1, "непрерывное склеивается");
             assert_eq!(chunks[0].frame_count, 4_800, "300 мс на 16 кГц");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Частота 0 отвергается, а не копится.
+    ///
+    /// С нулевой частотой длительность пачки всегда 0: целевой размер
+    /// недостижим, накопитель растёт без границы, а если такая строка всё
+    /// же доедет до диска, `read_pcm_range` пропустит её молча — звук,
+    /// который читается как ничто.
+    #[test]
+    fn a_zero_sample_rate_is_rejected() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+
+            let err = store
+                .append_chunk(AudioChannel::Mic, &frame, 0, 0)
+                .unwrap_err();
+
+            assert!(
+                matches!(err, AudioManifestError::InvalidSampleRate),
+                "{err:?}"
+            );
+            store.end_session(2).unwrap();
+            assert!(
+                store.list_chunks("s1").unwrap().is_empty(),
+                "отвергнутый кадр не должен осесть в накопителе"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Нечётная длина отвергается: один лишний байт сдвинул бы выравнивание
+    /// i16 всем кадрам пачки после себя — 2 с шума вместо звука.
+    #[test]
+    fn an_odd_pcm_length_is_rejected() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+
+            let err = store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2], 16_000, 0)
+                .unwrap_err();
+
+            assert!(
+                matches!(err, AudioManifestError::OddPcmLength(3)),
+                "{err:?}"
+            );
+            store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
+                .unwrap();
+            let chunk = store.flush_pending_chunks().unwrap().remove(0);
+            assert_eq!(
+                chunk.frame_count, 2,
+                "лишний байт не должен был попасть в пачку"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Отказ по закрытой сессии не имеет права уничтожать накопленное:
+    /// «звук ещё в памяти» — поправимо, «звук уже стёрт» — нет.
+    #[test]
+    fn a_flush_without_session_keeps_the_buffer() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
+                .unwrap();
+            // Состояние недостижимое штатно, поэтому строится напрямую:
+            // накопитель полон, сессии нет.
+            store.active_session = None;
+
+            let err = store.flush_pending_chunks().unwrap_err();
+            assert!(matches!(err, AudioManifestError::SessionNotOpen), "{err:?}");
+
+            // Накопленное на месте: вернув сессию, его удаётся дописать.
+            store.active_session = Some("s1".to_string());
+            let chunk = store.flush_pending_chunks().unwrap().remove(0);
+            assert_eq!(chunk.frame_count, 2, "накопленное пережило отказ");
         }
         let _ = fs::remove_dir_all(&root);
     }
