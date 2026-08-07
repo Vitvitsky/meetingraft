@@ -2595,4 +2595,72 @@ pub(crate) mod tests {
         }
         let _ = fs::remove_dir_all(&root);
     }
+
+    /// Одна и та же секунда звука, разложенная по-разному, обязана давать
+    /// один и тот же срез. Это и есть проверка утверждения «читатели не
+    /// задеты»: адресация идёт по `timestamp_ms` и `frame_count`, а не по
+    /// границам файлов.
+    #[test]
+    fn enlarged_and_legacy_layouts_read_identically() {
+        // Секунда: десять кадров по 100 мс, каждый залит своим номером.
+        let frames: Vec<Vec<u8>> = (0..10)
+            .map(|index| {
+                let sample = (index as i16) + 1;
+                (0..1_600).flat_map(|_| sample.to_le_bytes()).collect()
+            })
+            .collect();
+
+        // Раскладка через накопитель: один файл на всю секунду.
+        let enlarged_root = tmp_root();
+        let enlarged = {
+            let mut store = AudioManifestStore::open(&enlarged_root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            for (index, frame) in frames.iter().enumerate() {
+                store
+                    .append_chunk(AudioChannel::Mic, frame, 16_000, index as u64 * 100)
+                    .unwrap();
+            }
+            store.flush_pending_chunks().unwrap();
+            assert_eq!(
+                store.list_chunks("m1").unwrap().len(),
+                1,
+                "секунда легла одним файлом"
+            );
+            store
+                .read_pcm_range("m1", AudioChannel::Mic, 150, 640)
+                .unwrap()
+        };
+
+        // Раскладка как до правки: файл на каждые 100 мс. Достигается
+        // сбросом после каждого кадра.
+        let legacy_root = tmp_root();
+        let legacy = {
+            let mut store = AudioManifestStore::open(&legacy_root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            for (index, frame) in frames.iter().enumerate() {
+                store
+                    .append_chunk(AudioChannel::Mic, frame, 16_000, index as u64 * 100)
+                    .unwrap();
+                store.flush_pending_chunks().unwrap();
+            }
+            assert_eq!(
+                store.list_chunks("m1").unwrap().len(),
+                10,
+                "раскладка по 100 мс на файл"
+            );
+            store
+                .read_pcm_range("m1", AudioChannel::Mic, 150, 640)
+                .unwrap()
+        };
+
+        assert_eq!(enlarged.sample_rate, legacy.sample_rate);
+        assert_eq!(enlarged.pcm, legacy.pcm, "срез не зависит от раскладки");
+        // И это не совпадение двух пустот.
+        assert_eq!(enlarged.pcm.len(), 7_840, "490 мс на 16 кГц");
+        assert_eq!(enlarged.pcm[0], 2, "срез начинается внутри второго кадра");
+        assert_eq!(*enlarged.pcm.last().unwrap(), 7, "и кончается в седьмом");
+
+        let _ = fs::remove_dir_all(&enlarged_root);
+        let _ = fs::remove_dir_all(&legacy_root);
+    }
 }
