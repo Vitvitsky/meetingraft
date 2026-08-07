@@ -181,14 +181,24 @@ impl AudioManifestStore {
         // Остаток на диск до закрытия: последние секунды записи нужны так
         // же, как все прежние. Сброс до `take()` — ему нужна активная
         // сессия, чтобы знать путь.
-        self.flush_pending_chunks()?;
+        //
+        // Ошибка сброса откладывается, а не выходит наверх сразу: иначе
+        // неудачная запись файла оставила бы встречу вечно открытой —
+        // `ended_at_ms` пустой, `MeetingSummary::duration_ms()` отдаёт
+        // `None`, и в библиотеке запись висит без длительности. Закрытие
+        // сессии к записи файла отношения не имеет, значит и падать вместе
+        // с ней не должно; ошибку вызывающий всё равно получит.
+        let flush_error = self.flush_pending_chunks().err();
         if let Some(session_id) = self.active_session.take() {
             self.conn.execute(
                 "UPDATE sessions SET ended_at_ms = ?2 WHERE id = ?1",
                 params![session_id, ended_at_ms as i64],
             )?;
         }
-        Ok(())
+        match flush_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Переименовать встречу. Неизвестный id — ошибка, а не тихий no-op.
@@ -319,14 +329,35 @@ impl AudioManifestStore {
     ///
     /// Публичный: `end_session` зовёт его сам, но тестам и будущему
     /// коду нужна явная точка сброса.
+    ///
+    /// Каналы пробуются оба, даже если первый упал: они пишутся в разные
+    /// файлы, и отказ на `mic` ничего не говорит про `system`. Выход по
+    /// первой ошибке оставил бы накопитель второго канала в памяти, а
+    /// `stop_recording` роняет store сразу после сброса (`guard.store =
+    /// None`) — до 2 с записи другого канала исчезли бы молча.
+    ///
+    /// Возврат при частичном успехе — `Err` с первой встреченной ошибкой:
+    /// вызывающему нужна именно она. Успешно записанный чанк другого канала
+    /// при этом уже лежит и на диске, и в манифесте — теряется только его
+    /// место в возвращённом списке, но не сама запись.
     pub fn flush_pending_chunks(&mut self) -> Result<Vec<ManifestChunk>, AudioManifestError> {
         let mut written = Vec::new();
+        let mut first_error = None;
         for channel in [AudioChannel::Mic, AudioChannel::System] {
-            if let Some(chunk) = self.write_pending(channel)? {
-                written.push(chunk);
+            match self.write_pending(channel) {
+                Ok(Some(chunk)) => written.push(chunk),
+                Ok(None) => {}
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
             }
         }
-        Ok(written)
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(written),
+        }
     }
 
     /// Число чанков в session (оба канала).
@@ -1426,6 +1457,92 @@ pub(crate) mod tests {
             let chunks = store.list_chunks("s1").unwrap();
             assert_eq!(chunks.len(), 1, "непрерывное склеивается");
             assert_eq!(chunks[0].frame_count, 4_800, "300 мс на 16 кГц");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Сбой записи одного канала не имеет права утащить с собой звук
+    /// другого.
+    ///
+    /// Каналы пишутся в разные файлы: отказ на `mic` ничего не говорит про
+    /// `system`. Если сброс выходит по первой же ошибке, накопитель второго
+    /// канала остаётся в памяти и умирает вместе со store (`stop_recording`
+    /// делает `guard.store = None`) — до 2 с записи исчезают, и в тексте
+    /// ошибки об этом ни слова.
+    #[test]
+    fn a_failed_mic_flush_still_writes_the_system_tail() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            // Оба канала копят: иначе проверять нечего.
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .unwrap();
+            store
+                .append_chunk(AudioChannel::System, &frame, 16_000, 0)
+                .unwrap();
+
+            // Каталог на месте будущего файла `mic`: `fs::write` падает с
+            // EISDIR — переносимое поведение POSIX, без прав и без гонки.
+            let blocked = root
+                .join("sessions")
+                .join("s1")
+                .join("mic")
+                .join("000000.pcm");
+            fs::create_dir_all(&blocked).unwrap();
+
+            let err = store.flush_pending_chunks().unwrap_err();
+            assert!(matches!(err, AudioManifestError::Io(_)), "{err:?}");
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(
+                chunks.len(),
+                1,
+                "хвост system обязан лечь на диск, несмотря на отказ mic"
+            );
+            assert_eq!(chunks[0].channel, AudioChannel::System);
+            assert_eq!(chunks[0].frame_count, 1_600, "100 мс на 16 кГц");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Сессия обязана закрыться даже когда сброс остатка не удался.
+    ///
+    /// Иначе встреча остаётся в базе вечно открытой: `ended_at_ms` не
+    /// записан, `MeetingSummary::duration_ms()` отдаёт `None`, и библиотека
+    /// встреч показывает запись без длительности — из-за неудачной записи
+    /// файла, к закрытию сессии отношения не имеющей.
+    #[test]
+    fn end_session_closes_the_session_even_when_the_flush_fails() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .unwrap();
+
+            let blocked = root
+                .join("sessions")
+                .join("s1")
+                .join("mic")
+                .join("000000.pcm");
+            fs::create_dir_all(&blocked).unwrap();
+
+            let err = store.end_session(5_000).unwrap_err();
+            assert!(matches!(err, AudioManifestError::Io(_)), "{err:?}");
+
+            let summaries = store.list_meeting_summaries().unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(
+                summaries[0].ended_at_ms,
+                Some(5_000),
+                "встреча закрыта, а не оставлена открытой навсегда"
+            );
+            assert_eq!(summaries[0].duration_ms(), Some(4_999));
         }
         let _ = fs::remove_dir_all(&root);
     }
