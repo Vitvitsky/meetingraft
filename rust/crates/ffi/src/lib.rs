@@ -4013,6 +4013,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Если финальный сброс накопителя не может записать файл, об этом
+    /// нужно узнать: молча потерянный хвост — это последние секунды
+    /// встречи, исчезнувшие без предупреждения человеку.
+    #[test]
+    fn stop_recording_reports_the_flush_error_when_the_tail_write_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-stop-tail-fails-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let session_id = "stop-tail-fails".to_string();
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.start_recording(session_id.clone(), String::new())
+                .is_empty()
+        );
+        // Пять кадров по 100 мс — до целевых 2 с не добирает, значит на
+        // диск ничего не ушло и seq накопителя всё ещё 0.
+        let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+        for index in 0..5 {
+            assert!(
+                core.ingest_audio_chunk(FfiAudioChannel::Mic, frame.clone(), 16_000, index * 100)
+                    .is_empty()
+            );
+        }
+
+        // Подменяем путь, куда финальный сброс попытается записать файл,
+        // каталогом: `fs::write` на существующий каталог падает с EISDIR
+        // — переносимое поведение POSIX, без прав и без гонки процессов.
+        let blocked_path = root
+            .join("sessions")
+            .join(&session_id)
+            .join("mic")
+            .join("000000.pcm");
+        std::fs::create_dir_all(&blocked_path).expect("подложный каталог должен создаться");
+
+        let error = core.stop_recording();
+        assert!(
+            !error.is_empty(),
+            "ожидалась ошибка записи хвоста, получено: {error:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn generate_artifact_reports_missing_final() {
         let root = std::env::temp_dir().join(format!(
