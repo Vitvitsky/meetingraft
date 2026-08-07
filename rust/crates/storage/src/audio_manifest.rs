@@ -229,16 +229,15 @@ impl AudioManifestStore {
 
     /// Принять кадр живого пути в накопитель канала.
     ///
-    /// Файл пишется не на каждый вызов: `Some` возвращается, когда этим
-    /// вызовом пачка ушла на диск по достижении целевого размера. Кому
-    /// нужен записанный чанк наверняка — `flush_pending_chunks`.
+    /// Файл пишется не на каждый вызов; записанные чанки отдаёт
+    /// `flush_pending_chunks`.
     pub fn append_chunk(
         &mut self,
         channel: AudioChannel,
         pcm: &[u8],
         sample_rate: u32,
         timestamp_ms: u64,
-    ) -> Result<Option<ManifestChunk>, AudioManifestError> {
+    ) -> Result<(), AudioManifestError> {
         if self.active_session.is_none() {
             return Err(AudioManifestError::SessionNotOpen);
         }
@@ -264,10 +263,6 @@ impl AudioManifestStore {
             Some(p) if p.next_timestamp_ms() != timestamp_ms || p.sample_rate != sample_rate
         );
         if must_close {
-            // Записанный чанк здесь намеренно не возвращается: сброс
-            // служебный, а `Some` из `append_chunk` означает «набрался
-            // целевой размер». Кому нужен чанк наверняка — берёт его у
-            // `flush_pending_chunks`.
             self.write_pending(channel)?;
         }
 
@@ -282,9 +277,9 @@ impl AudioManifestStore {
         let is_full = entry.duration_ms() >= CHUNK_TARGET_MS;
 
         if is_full {
-            return self.write_pending(channel);
+            self.write_pending(channel)?;
         }
-        Ok(None)
+        Ok(())
     }
 
     /// Записать накопленное по каналу файлом и строкой манифеста.
@@ -1460,7 +1455,11 @@ pub(crate) mod tests {
             let chunks = store.list_chunks("s1").unwrap();
             assert_eq!(chunks.len(), 2, "две частоты в одном файле недопустимы");
             assert_eq!(chunks[0].sample_rate, 16_000);
+            assert_eq!(chunks[0].timestamp_ms, 0);
+            assert_eq!(chunks[0].frame_count, 1_600);
             assert_eq!(chunks[1].sample_rate, 48_000);
+            assert_eq!(chunks[1].timestamp_ms, 100, "второй чанк со своего времени");
+            assert_eq!(chunks[1].frame_count, 1_600);
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -2884,6 +2883,8 @@ pub(crate) mod tests {
         };
 
         assert_eq!(enlarged.sample_rate, legacy.sample_rate);
+        // Иначе одинаковая ошибка в частоте с обеих сторон прошла бы мимо.
+        assert_eq!(enlarged.sample_rate, 16_000);
         assert_eq!(enlarged.pcm, legacy.pcm, "срез не зависит от раскладки");
         // И это не совпадение двух пустот.
         assert_eq!(enlarged.pcm.len(), 7_840, "490 мс на 16 кГц");
