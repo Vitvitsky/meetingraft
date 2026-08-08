@@ -408,7 +408,8 @@ final class MeetingsViewModelTests: XCTestCase {
             startedAtMs: 1_754_159_200_000,
             endedAtMs: endedAtMs,
             hasFinal: true,
-            artifactCount: artifactCount
+            artifactCount: artifactCount,
+            audioDeletedAtMs: 0
         )
     }
 
@@ -536,7 +537,8 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding, @unchecked Sendable 
                     startedAtMs: meeting.startedAtMs,
                     endedAtMs: meeting.endedAtMs,
                     hasFinal: meeting.hasFinal,
-                    artifactCount: meeting.artifactCount
+                    artifactCount: meeting.artifactCount,
+                    audioDeletedAtMs: meeting.audioDeletedAtMs
                 )
             }
         }
