@@ -162,6 +162,21 @@ const STEPS: &[&str] = &[
     "
     ALTER TABLE audio_manifest ADD COLUMN codec TEXT NOT NULL DEFAULT 'pcm_s16le';
     ",
+    // 10 — из чего собран артефакт (Epic 8). Тело Final переписывается на
+    // месте семью операциями — правкой текста и назначением спикеров, —
+    // и собранный раньше Brief расходился с транскриптом молча. NULL
+    // означает «собран до того, как приложение начало это отслеживать»:
+    // выдать неизвестное за устаревшее значило бы соврать в другую
+    // сторону.
+    //
+    // Порядок относительно шага 9 не переставлять: `codec` уже уехал в
+    // `main` и мог примениться к настоящим базам. Поменяв их местами, мы
+    // получили бы базу на версии 9 с колонкой `codec`, которой шаг 10
+    // попытался бы добавить её второй раз — и миграция упала бы совсем.
+    "
+    ALTER TABLE artifacts ADD COLUMN source_version INTEGER;
+    ALTER TABLE artifacts ADD COLUMN source_fingerprint TEXT;
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.
@@ -276,6 +291,57 @@ mod tests {
     }
 
     /// База до версионирования: таблицы есть, `user_version` нулевой.
+    fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+        conn.prepare(&format!("PRAGMA table_info({table})"))
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+            })
+            .expect("table_info readable")
+            .iter()
+            .any(|name| name == column)
+    }
+
+    /// База, уже поднятая до версии 9 предыдущей сборкой, обязана
+    /// домигрировать до конца.
+    ///
+    /// Так выглядит машина человека, который поставил сборку с FLAC раньше,
+    /// чем сборку с метками артефактов. Шаги 9 и 10 добавились в разных
+    /// ветках, и порядок между ними менять нельзя: если колонка `codec`
+    /// станет шагом 10, эта база попробует добавить её второй раз,
+    /// миграция упадёт, и приложение вообще не откроет базу.
+    ///
+    /// Состояние версии 9 здесь записано явно, а не выведено из `STEPS`:
+    /// это исторический факт о том, что оставила та сборка, и он не должен
+    /// меняться вместе с текущим списком шагов. Ни один тест «с нуля»
+    /// такого не увидит — все они мигрируют от пустой базы.
+    #[test]
+    fn a_database_already_at_step_nine_migrates_the_rest_of_the_way() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(baseline_schema()).expect("baseline");
+        for step in &STEPS[1..8] {
+            conn.execute_batch(step).expect("шаги 2..8");
+        }
+        conn.execute_batch(
+            "ALTER TABLE audio_manifest ADD COLUMN codec TEXT NOT NULL DEFAULT 'pcm_s16le';
+             PRAGMA user_version = 9;",
+        )
+        .expect("состояние, оставленное сборкой с FLAC");
+
+        migrate(&conn).expect("домигрировать поверх версии 9");
+
+        assert_eq!(current_version(&conn).expect("version"), schema_version());
+        assert!(
+            has_column(&conn, "artifacts", "source_version"),
+            "артефакты остались без source_version"
+        );
+        assert!(
+            has_column(&conn, "artifacts", "source_fingerprint"),
+            "артефакты остались без source_fingerprint"
+        );
+    }
+
     #[test]
     fn migrate_legacy_database_keeps_rows() {
         let conn = Connection::open_in_memory().expect("in-memory db");

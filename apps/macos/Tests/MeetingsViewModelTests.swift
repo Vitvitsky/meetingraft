@@ -426,7 +426,8 @@ final class MeetingsViewModelTests: XCTestCase {
         meetingId: String,
         kind: FfiArtifactKind = .brief,
         body: String = "# Brief",
-        createdAtMs: UInt64 = 1_754_159_400_000
+        createdAtMs: UInt64 = 1_754_159_400_000,
+        isStale: Bool = false
     ) -> FfiArtifact {
         FfiArtifact(
             id: id,
@@ -434,7 +435,9 @@ final class MeetingsViewModelTests: XCTestCase {
             kind: kind,
             templateId: kind == .followUp ? "follow-up.v1" : "brief.v1",
             bodyMarkdown: body,
-            createdAtMs: createdAtMs
+            createdAtMs: createdAtMs,
+            isStale: isStale,
+            sourceVersion: 1
         )
     }
 }
@@ -506,7 +509,9 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding, @unchecked Sendable 
                 kind: .brief,
                 templateId: "",
                 bodyMarkdown: "",
-                createdAtMs: 0
+                createdAtMs: 0,
+                isStale: false,
+                sourceVersion: 0
             ),
             error: ""
         )

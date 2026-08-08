@@ -59,6 +59,15 @@ struct MeetingDetailView: View {
         .onChange(of: viewModel.selectedFinalVersion) { _, _ in
             reloadAttribution()
         }
+        .onChange(of: section) { _, newValue in
+            // Правки в Final и Speakers переписывают текст транскрипта, а
+            // признак отставания артефакта считается при чтении. Без
+            // перечитывания плашка появилась бы только при повторном
+            // заходе во встречу — то есть почти никогда.
+            if newValue == .artifacts {
+                viewModel.reload(meetingId: meeting.id)
+            }
+        }
         .onChange(of: rebuild.state) { _, newValue in
             // Проход закончился — перечитываем: появилась новая версия.
             if newValue == "succeeded" {
@@ -353,8 +362,18 @@ struct MeetingDetailView: View {
                         viewModel.selectArtifact(artifact)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(artifactTitle(artifact.kind))
-                                .font(.headline)
+                            HStack(spacing: 4) {
+                                Text(artifactTitle(artifact.kind))
+                                    .font(.headline)
+                                // Видно до открытия: иначе расхождение
+                                // находится только случайным кликом.
+                                if artifact.isStale {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(Theme.warning)
+                                        .help("Собран до правок транскрипта")
+                                }
+                            }
                             Text(artifactDate(artifact.createdAtMs))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -482,6 +501,10 @@ struct MeetingDetailView: View {
                 }
                 .padding()
 
+                if artifact.isStale {
+                    stalenessBanner(artifact)
+                }
+
                 Divider()
 
                 ScrollView {
@@ -497,6 +520,45 @@ struct MeetingDetailView: View {
                 systemImage: "doc.text"
             )
         }
+    }
+
+    /// Транскрипт изменился после сборки артефакта.
+    ///
+    /// Пересборка предлагается, но не делается сама: текст мог быть уже
+    /// отправлен или доработан руками, и молча его переписать — та же
+    /// ошибка, что и молча оставить расхождение.
+    private func stalenessBanner(_ artifact: FfiArtifact) -> some View {
+        HStack(spacing: Theme.Space.sm) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.warning)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Собран до правок транскрипта")
+                    .font(.caption.weight(.semibold))
+                Text(stalenessDetail(artifact))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Пересобрать") {
+                applyProviderConfig()
+                Task { await viewModel.generate(meetingId: meeting.id, kind: artifact.kind) }
+            }
+            .disabled(!canGenerateArtifacts || viewModel.isGeneratingArtifact)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(Theme.warning.opacity(0.12))
+    }
+
+    /// Что именно разошлось: другая версия Final или правка внутри той же.
+    private func stalenessDetail(_ artifact: FfiArtifact) -> String {
+        guard let current = viewModel.finalTranscript else {
+            return "Текст транскрипта изменился после сборки"
+        }
+        if artifact.sourceVersion != current.version {
+            return "Собран по версии \(artifact.sourceVersion), сейчас \(current.version)"
+        }
+        return "Версия та же, но текст правился после сборки"
     }
 
     private func provenanceBanner(_ text: String) -> some View {

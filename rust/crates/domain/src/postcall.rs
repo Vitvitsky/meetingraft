@@ -30,6 +30,16 @@ pub struct Artifact {
     pub template_id: String,
     pub body_markdown: String,
     pub created_at_ms: u64,
+    /// Версия Final, из которой артефакт собран.
+    ///
+    /// `None` — артефакт из базы, заведённой до отслеживания источника.
+    /// Это не то же, что «устарел»: про такой ничего не известно.
+    pub source_version: Option<u32>,
+    /// Отпечаток тела Final на момент сборки ([`body_fingerprint`]).
+    ///
+    /// Версии мало: правка сегмента и переименование спикера переписывают
+    /// текст на месте, номер версии при этом не меняя.
+    pub source_fingerprint: Option<String>,
 }
 
 /// Краткая сводка встречи для списка/истории.
@@ -244,10 +254,50 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
+/// Отпечаток текста, из которого собран артефакт.
+///
+/// FNV-1a 64 бита. `DefaultHasher` из std для этого не годится: он не
+/// обещает одинакового значения между версиями Rust, а отпечаток ложится
+/// в базу и обязан пережить обновление приложения.
+///
+/// Криптостойкость не нужна — текст сравнивается сам с собой, злого
+/// умысла в сценарии нет.
+pub fn body_fingerprint(body: &str) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for byte in body.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("{hash:016x}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ArtifactKind, SegmentEdit, edits_by_position};
+    use super::{ArtifactKind, SegmentEdit, body_fingerprint, edits_by_position};
     use crate::AudioChannel;
+
+    #[test]
+    fn fingerprint_is_stable_for_the_same_text() {
+        assert_eq!(
+            body_fingerprint("Обсудили границу FFI."),
+            body_fingerprint("Обсудили границу FFI.")
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_with_a_single_character() {
+        assert_ne!(body_fingerprint("Пётр: да"), body_fingerprint("Пётр: нет"));
+    }
+
+    /// Значение прибито константой: отпечатки лежат в базах пользователей,
+    /// и смена алгоритма обязана быть решением, а не побочным эффектом.
+    #[test]
+    fn fingerprint_value_is_pinned() {
+        assert_eq!(body_fingerprint(""), "cbf29ce484222325");
+        assert_eq!(body_fingerprint("MeetingRaft"), "888faeb606a56a89");
+    }
 
     #[test]
     fn artifact_kind_brief_distinct_from_follow_up() {
