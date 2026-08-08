@@ -152,6 +152,16 @@ const STEPS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_segment_edits_meeting
         ON segment_edits(meeting_id, applied_version);
     ",
+    // 9 — формат файла чанка (Epic 22). Умолчание `pcm_s16le` — это и есть
+    // отсутствие миграции данных: всё уже записанное описывается верно, а
+    // сами файлы не трогаются.
+    //
+    // Колонка на строку, а не настройка на базу: в одной сессии могут
+    // соседствовать пачки разных форматов, и это не случайность, а рабочий
+    // путь отката при отказе кодера.
+    "
+    ALTER TABLE audio_manifest ADD COLUMN codec TEXT NOT NULL DEFAULT 'pcm_s16le';
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.
@@ -203,6 +213,37 @@ mod tests {
         )
         .expect("sqlite_master readable")
             > 0
+    }
+
+    /// База, созданная до появления колонки, обязана подняться так, чтобы
+    /// её чанки описывались честно: до сжатия формат был только сырой PCM.
+    ///
+    /// Соврав здесь, мы отдадим старый файл декодеру FLAC.
+    #[test]
+    fn migration_marks_existing_chunks_as_raw_pcm() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(baseline_schema()).expect("baseline");
+        conn.execute(
+            "INSERT INTO audio_manifest
+             (session_id, channel, seq, path, sample_rate, frame_count, timestamp_ms)
+             VALUES ('s1', 'mic', 0, 'sessions/s1/mic/000000.pcm', 16000, 32000, 0)",
+            [],
+        )
+        .expect("legacy row");
+
+        migrate(&conn).expect("migrate");
+
+        let codec: String = conn
+            .query_row(
+                "SELECT codec FROM audio_manifest WHERE seq = 0",
+                [],
+                |row| row.get(0),
+            )
+            .expect("codec");
+        assert_eq!(
+            codec, "pcm_s16le",
+            "старая строка описана неверно — её файл прочитают как FLAC"
+        );
     }
 
     #[test]
