@@ -62,6 +62,12 @@ const MAX_FRAGMENT_MS: u64 = 30_000;
 /// быть такой же гранулярности нет.
 const CHUNK_TARGET_MS: u64 = 2_000;
 
+/// Сырой PCM `i16` little-endian — формат до появления сжатия.
+///
+/// Он же умолчание колонки `codec`, поэтому им описаны все записи,
+/// сделанные до этой работы.
+const CODEC_PCM: &str = "pcm_s16le";
+
 /// Кусок записи с частотой дискретизации, на которой он записан.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PcmFragment {
@@ -323,8 +329,8 @@ impl AudioManifestStore {
         let frame_count = (pending.pcm.len() / 2) as u32;
         self.conn.execute(
             "INSERT INTO audio_manifest
-             (session_id, channel, seq, path, sample_rate, frame_count, timestamp_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (session_id, channel, seq, path, sample_rate, frame_count, timestamp_ms, codec)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 session_id,
                 channel.dir_name(),
@@ -332,7 +338,8 @@ impl AudioManifestStore {
                 rel,
                 pending.sample_rate,
                 frame_count,
-                pending.timestamp_ms as i64
+                pending.timestamp_ms as i64,
+                CODEC_PCM
             ],
         )?;
 
@@ -1320,6 +1327,31 @@ pub(crate) mod tests {
             "meetingraft-storage-test-{nanos}-{seq}-{:?}",
             std::thread::current().id()
         ))
+    }
+
+    /// Записанная пачка описывает свой формат.
+    ///
+    /// Без этого читатель не отличит сырой PCM от FLAC, когда появится
+    /// второй формат: имя файла форматом не является.
+    #[test]
+    fn a_written_chunk_records_its_codec() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .unwrap();
+            store.flush_pending_chunks().unwrap();
+
+            let codec: String = store
+                .connection()
+                .query_row("SELECT codec FROM audio_manifest", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(codec, "pcm_s16le");
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// Двадцать кадров живого пути по 100 мс ложатся на диск одним файлом.
