@@ -66,9 +66,15 @@ final class PCMDownmixerTests: XCTestCase {
         let (format, chunk) = makeBuffer(sampleRate: 48000, channels: 2, frames: chunkFrames)
         let chunked = try XCTUnwrap(PCMDownmixer(from: format))
         var chunkedTotal = 0
+        var perChunk: [Int] = []
         for _ in 0 ..< chunks {
-            chunkedTotal += chunked.convert(chunk).count
+            let produced = chunked.convert(chunk).count
+            perChunk.append(produced)
+            chunkedTotal += produced
         }
+        // ДИАГНОСТИКА (снять после разбора): разовая задержка в начале и
+        // постоянная потеря на каждой границе выглядят по-разному.
+        print("DIAG per-chunk: \(perChunk)")
 
         let (wholeFormat, whole) = makeBuffer(
             sampleRate: 48000,
@@ -77,6 +83,7 @@ final class PCMDownmixerTests: XCTestCase {
         )
         let single = try XCTUnwrap(PCMDownmixer(from: wholeFormat))
         let wholeTotal = single.convert(whole).count
+        print("DIAG chunkedTotal=\(chunkedTotal) wholeTotal=\(wholeTotal)")
 
         XCTAssertGreaterThan(wholeTotal, 0, "опорная конвертация пуста — сравнивать нечего")
         XCTAssertEqual(
