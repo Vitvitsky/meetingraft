@@ -109,7 +109,9 @@ final class AudioCaptureCoordinator {
         } catch {
             lastError = "Не удалось запустить микрофон: \(error.localizedDescription)"
             microphone.stop()
-            core.stopRecording()
+            // lastError уже содержит настоящую причину — не перетирать.
+            // Записывать нечего: запись не началась.
+            _ = core.stopRecording()
             sessionId = nil
             isRecording = false
             sttBackend = "idle"
@@ -134,7 +136,10 @@ final class AudioCaptureCoordinator {
     func stopRecording() {
         microphone.stop()
         systemAudio.stop()
-        core.stopRecording()
+        let error = core.stopRecording()
+        if !error.isEmpty {
+            lastError = "Не удалось сохранить хвост записи: \(error)"
+        }
         core.setSystemAudioExpected(expected: false)
         isRecording = false
         sttBackend = "idle"
