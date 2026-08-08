@@ -871,6 +871,50 @@ fn mutate_glossary(
     refresh_glossary(inner)
 }
 
+/// Ядро с выбранным исполнителем задач.
+///
+/// Свободной функцией, а не методом: приватный метод внутри
+/// `#[uniffi::export]`-блока всё равно пытается пройти через границу
+/// (`CLAUDE.md`).
+///
+/// Существует ради тестов поведения **при идущей** пересборке:
+/// `ThreadSpawner` даёт гонку, и написанный на нём тест был бы то
+/// зелёным, то красным.
+fn core_with_spawner(
+    data_root: String,
+    spawner: Box<dyn postcall::Spawner>,
+) -> std::sync::Arc<MeetingCore> {
+    let root = PathBuf::from(data_root);
+    std::sync::Arc::new(MeetingCore {
+        inner: Mutex::new(MeetingCoreInner {
+            session: MeetingSession::new(),
+            started_at: None,
+            store: None,
+            recording_session_id: None,
+            diagnostics: DiagnosticsLog::new(&root, true),
+            data_root: root,
+            stt: None,
+            stt_backend: "idle".to_string(),
+            mixer: ChannelMixer::new(),
+            glossary: GlossaryEngine::from_terms(Vec::new()),
+            pending_live_captions: VecDeque::new(),
+            language_policy: LanguagePolicy::default_v1(),
+            translation_policy: TranslationPolicy::disabled(),
+            host_translation_available: false,
+            host_translation_queue: HostPendingQueue::default(),
+            pending_translations: VecDeque::new(),
+            sync_client: SyncClient::new("", ""),
+            llm_engine: "builtin_templates".to_string(),
+            llm_model_id: String::new(),
+            llm_base_url: String::new(),
+            llm_provider_id: String::new(),
+            preferred_whisper_model: "auto".to_string(),
+            post_call_whisper_model: "large-v3-turbo".to_string(),
+        }),
+        jobs: RebuildJobs::new(spawner),
+    })
+}
+
 #[uniffi::export]
 impl MeetingCore {
     #[uniffi::constructor]
@@ -880,35 +924,7 @@ impl MeetingCore {
 
     #[uniffi::constructor]
     pub fn with_data_root(data_root: String) -> std::sync::Arc<Self> {
-        let root = PathBuf::from(data_root);
-        std::sync::Arc::new(Self {
-            inner: Mutex::new(MeetingCoreInner {
-                session: MeetingSession::new(),
-                started_at: None,
-                store: None,
-                recording_session_id: None,
-                diagnostics: DiagnosticsLog::new(&root, true),
-                data_root: root,
-                stt: None,
-                stt_backend: "idle".to_string(),
-                mixer: ChannelMixer::new(),
-                glossary: GlossaryEngine::from_terms(Vec::new()),
-                pending_live_captions: VecDeque::new(),
-                language_policy: LanguagePolicy::default_v1(),
-                translation_policy: TranslationPolicy::disabled(),
-                host_translation_available: false,
-                host_translation_queue: HostPendingQueue::default(),
-                pending_translations: VecDeque::new(),
-                sync_client: SyncClient::new("", ""),
-                llm_engine: "builtin_templates".to_string(),
-                llm_model_id: String::new(),
-                llm_base_url: String::new(),
-                llm_provider_id: String::new(),
-                preferred_whisper_model: "auto".to_string(),
-                post_call_whisper_model: "large-v3-turbo".to_string(),
-            }),
-            jobs: RebuildJobs::new(Box::new(ThreadSpawner)),
-        })
+        core_with_spawner(data_root, Box::new(ThreadSpawner))
     }
 
     /// Primary язык распознавания (`ru` | `en` | `es`). Не включает перевод.
@@ -1394,6 +1410,38 @@ impl MeetingCore {
             .search(&query, limit)
             .map(|hits| hits.into_iter().map(search_hit_to_ffi).collect())
             .unwrap_or_default()
+    }
+
+    /// Удалить запись встречи, оставив транскрипт и всё остальное.
+    ///
+    /// Пустая строка — успех, по конвенции границы.
+    pub fn delete_meeting_audio(&self, meeting_id: String) -> String {
+        if !self.active_final_rebuild(meeting_id.clone()).is_empty() {
+            // Проход держит дорожки и читает манифест по ходу: выдернуть
+            // из-под него файлы значит уронить долгую работу непонятно чем.
+            return "final rebuild in progress".to_string();
+        }
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        if guard.recording_session_id.as_deref() == Some(meeting_id.as_str()) {
+            return "meeting is being recorded".to_string();
+        }
+        let root = guard.data_root.clone();
+        drop(guard);
+        match AudioManifestStore::open(&root) {
+            Ok(mut store) => match store.delete_meeting_audio(&meeting_id, now_ms()) {
+                Ok(()) => String::new(),
+                Err(err) => err.to_string(),
+            },
+            Err(err) => err.to_string(),
+        }
+    }
+
+    /// Сколько занимает запись встречи на диске; 0 — записи нет.
+    pub fn meeting_audio_bytes(&self, meeting_id: String) -> u64 {
+        let Some(store) = open_store(self) else {
+            return 0;
+        };
+        store.meeting_audio_bytes(&meeting_id).unwrap_or(0)
     }
 
     /// Удалить встречу целиком; пустая строка ошибки означает успех.
@@ -3530,6 +3578,97 @@ mod tests {
     }
 
     /// Второй запуск по той же встрече не плодит параллельный проход.
+    /// Успешный путь границы: запись уходит, транскрипт остаётся, размер
+    /// становится нулём.
+    #[test]
+    fn deleting_audio_through_the_boundary_keeps_the_transcript() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-delete-audio-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store.begin_session("m1", 1, "Планёрка").expect("session");
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .expect("chunk");
+            store
+                .upsert_final_transcript(&domain::FinalTranscript {
+                    meeting_id: "m1".into(),
+                    version: 1,
+                    body_markdown: "Обсудили сроки".into(),
+                    created_at_ms: 10,
+                })
+                .expect("final");
+            store.end_session(20).expect("end");
+        }
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(core.meeting_audio_bytes("m1".into()) > 0, "записи нет");
+
+        let error = core.delete_meeting_audio("m1".into());
+
+        assert!(error.is_empty(), "{error}");
+        assert_eq!(core.meeting_audio_bytes("m1".into()), 0);
+        let summary = core
+            .list_meetings()
+            .into_iter()
+            .find(|m| m.id == "m1")
+            .expect("встреча исчезла целиком");
+        assert!(summary.audio_deleted_at_ms > 0, "метка не доехала");
+        assert!(summary.has_final, "Final не пережил удаления записи");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Выдернуть файлы из-под идущей пересборки нельзя.
+    ///
+    /// Она держит дорожки и читает манифест по ходу; удаление посреди
+    /// прохода дало бы непонятный отказ в середине долгой работы.
+    ///
+    /// `NeverSpawner` здесь несущий: с `ThreadSpawner` проход без аудио
+    /// падает мгновенно и задача успевает завершиться, а `InlineSpawner`
+    /// заканчивает её до возврата из `spawn`. Ни на том, ни на другом
+    /// «сейчас идёт пересборка» не выразить.
+    #[test]
+    fn deleting_audio_during_a_rebuild_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-delete-during-rebuild-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store.begin_session("m1", 1, "").expect("session");
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .expect("chunk");
+            store.end_session(2).expect("end");
+        }
+
+        let core = core_with_spawner(
+            root.to_string_lossy().into_owned(),
+            Box::new(postcall::NeverSpawner),
+        );
+        let job = core.start_final_rebuild("m1".into());
+        assert!(!job.is_empty(), "задача не завелась — проверять нечего");
+
+        let error = core.delete_meeting_audio("m1".into());
+
+        assert!(!error.is_empty(), "удаление прошло посреди пересборки");
+        // Главное утверждение: отказ произошёл до удаления, а не после.
+        let store = AudioManifestStore::open(&root).expect("store");
+        assert!(
+            !store.list_chunks("m1").expect("chunks").is_empty(),
+            "файлы удалены, несмотря на отказ"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn starting_rebuild_twice_returns_the_same_job() {
         let root = std::env::temp_dir().join(format!(
