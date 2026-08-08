@@ -1,6 +1,7 @@
 //! Live STT engines (ADR-005).
 
 mod batch;
+mod echo;
 mod engine;
 mod hallucination;
 mod local_agreement;
@@ -16,6 +17,7 @@ mod whisper;
 mod whisper_batch;
 
 pub use batch::{BatchTranscribeError, BatchTranscriber, MockBatchTranscriber, normalize_segments};
+pub use echo::{EchoReport, EchoWindow, detect_echo};
 pub use engine::SttEngine;
 pub use hallucination::{is_hallucination_prefix, is_whisper_hallucination};
 pub use local_agreement::{
