@@ -398,27 +398,29 @@ impl AudioManifestStore {
         let seq = self.next_seq[idx];
         self.next_seq[idx] = seq + 1;
 
-        // Откат на сырой PCM при отказе кодера — задача 4. Пока отказ
-        // ведёт себя как любая другая ошибка записи.
-        let encoded = encode_flac(&pending.pcm, pending.sample_rate).map_err(|message| {
-            AudioManifestError::Flac {
-                path: format!("sessions/{session_id}/{}/{seq:06}", channel.dir_name()),
-                message,
-            }
-        })?;
+        // Отказ кодера не должен стоить пачки. Пишем сырым PCM, говорим об
+        // этом строкой манифеста — колонка `codec` на строку делает такую
+        // пачку обычной, а не особым случаем, — и всё равно отдаём ошибку
+        // наверх. Обратный порядок потерял бы 2 с звука там, где терять
+        // было не нужно.
+        let encoded = encode_flac(&pending.pcm, pending.sample_rate);
+        let (codec, extension, payload) = match &encoded {
+            Ok(bytes) => (CODEC_FLAC, "flac", bytes.as_slice()),
+            Err(_) => (CODEC_PCM, "pcm", pending.pcm.as_slice()),
+        };
 
         let rel = format!(
             "sessions/{}/{}/{:06}.{}",
             session_id,
             channel.dir_name(),
             seq,
-            "flac"
+            extension
         );
         let abs = self.root.join(&rel);
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&abs, &encoded)?;
+        fs::write(&abs, payload)?;
 
         // Кадры считаются по исходному PCM и только по нему: на этом стоит
         // вся адресация записи, и посчитать их от сжатых байтов значило бы
@@ -436,9 +438,16 @@ impl AudioManifestStore {
                 pending.sample_rate,
                 frame_count,
                 pending.timestamp_ms as i64,
-                CODEC_FLAC
+                codec
             ],
         )?;
+
+        // Запись уже совершена и зафиксирована — ошибка идёт после неё.
+        // Контракт необычный, поэтому назван вслух: данные целы, человек
+        // предупреждён.
+        if let Err(message) = encoded {
+            return Err(AudioManifestError::Flac { path: rel, message });
+        }
 
         Ok(Some(ManifestChunk {
             session_id,
@@ -1465,7 +1474,7 @@ pub(crate) mod tests {
         fs::create_dir_all(abs.parent().unwrap()).unwrap();
         fs::write(&abs, bytes).unwrap();
         let frame_count = if codec == "flac" {
-            32_000
+            decode_flac(bytes, rel).unwrap().len()
         } else {
             bytes.len() / 2
         };
@@ -1564,6 +1573,91 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Отказ кодера не стоит человеку двух секунд записи.
+    ///
+    /// Пачка ложится сырым PCM, строка описывает её честно, и ошибка всё
+    /// равно уезжает наверх: звук цел, и при этом никто не молчит.
+    ///
+    /// Сеам — частота вне допустимого для FLAC (больше 2²⁰). Продакшн
+    /// этим путём не ходит, а кодер отказывает по-настоящему, без подмены
+    /// зависимостей.
+    #[test]
+    fn an_encoder_failure_falls_back_to_raw_pcm_and_still_reports() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+
+            let samples = sawtooth(1_600);
+            let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &bytes, 2_000_000, 0)
+                .unwrap();
+            let error = store.flush_pending_chunks().unwrap_err();
+
+            assert!(
+                matches!(error, AudioManifestError::Flac { .. }),
+                "отказ кодера промолчал: {error:?}"
+            );
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(chunks.len(), 1, "звук потерян из-за отказа кодера");
+            let codec: String = store
+                .connection()
+                .query_row("SELECT codec FROM audio_manifest", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(codec, "pcm_s16le", "пачка описана не тем форматом");
+
+            let read = store.read_session_pcm("s1", AudioChannel::Mic).unwrap();
+            assert_eq!(read, samples, "откат исказил звук");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Пачки разных форматов в одной сессии читаются одной дорожкой.
+    ///
+    /// Не экзотика: ровно так выглядит запись, в которой кодер один раз
+    /// отказал. Диспетчеризация по строке, а не по сессии, ради этого и
+    /// сделана.
+    #[test]
+    fn a_session_mixing_flac_and_raw_chunks_reads_as_one_track() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+
+            let first = sawtooth(1_600);
+            let second: Vec<i16> = sawtooth(1_600).iter().map(|s| -s).collect();
+
+            insert_chunk(
+                &store,
+                &root,
+                "sessions/s1/mic/000000.flac",
+                &encode_for_test(&first),
+                "flac",
+            );
+            let raw: Vec<u8> = second.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let abs = root.join("sessions/s1/mic/000001.pcm");
+            fs::write(&abs, &raw).unwrap();
+            store
+                .connection()
+                .execute(
+                    "INSERT INTO audio_manifest
+                     (session_id, channel, seq, path, sample_rate, frame_count, timestamp_ms, codec)
+                     VALUES ('s1', 'mic', 1, 'sessions/s1/mic/000001.pcm', 16000, 1600, 100,
+                             'pcm_s16le')",
+                    [],
+                )
+                .unwrap();
+
+            let read = store.read_session_pcm("s1", AudioChannel::Mic).unwrap();
+            let mut expected = first;
+            expected.extend_from_slice(&second);
+            assert_eq!(read, expected, "смешанная сессия прочиталась не целиком");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// В потоке нет ни padding, ни таблицы перемотки.
     ///
     /// Выглядит мелочью и ею не является: `Options::default()` кладёт и то
@@ -1629,17 +1723,15 @@ pub(crate) mod tests {
 
             let samples = sawtooth(32_000);
             let mut encoded = encode_for_test(&samples);
+            let rel = "sessions/s1/mic/000000.flac";
+            // Строка пишется по целому чанку, портится потом сам файл —
+            // так это и происходит в жизни.
+            insert_chunk(&store, &root, rel, &encoded, "flac");
             // Рвём середину звуковых кадров, а не заголовок: заголовок
             // отсеял бы и совсем наивный читатель.
             let middle = encoded.len() / 2;
             encoded[middle] ^= 0xFF;
-            insert_chunk(
-                &store,
-                &root,
-                "sessions/s1/mic/000000.flac",
-                &encoded,
-                "flac",
-            );
+            fs::write(root.join(rel), &encoded).unwrap();
 
             let result = store.read_session_pcm("s1", AudioChannel::Mic);
             assert!(
