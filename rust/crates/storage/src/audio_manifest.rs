@@ -1090,6 +1090,36 @@ impl AudioManifestStore {
         Ok(fragment)
     }
 
+    /// Сколько места занимает запись встречи на диске.
+    ///
+    /// Считается обходом файлов, а не как `frame_count * 2`: после FLAC
+    /// сырой размер завышает реальный больше чем вдвое, а завышенное
+    /// вдвое число — не оценка, а обещание, которое не выполнится.
+    ///
+    /// Каталога нет — ноль, а не ошибка: удалённая или ещё не начатая
+    /// запись места и не занимает.
+    pub fn meeting_audio_bytes(&self, meeting_id: &str) -> Result<u64, AudioManifestError> {
+        fn walk(dir: &Path) -> Result<u64, std::io::Error> {
+            let mut total = 0;
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let meta = entry.metadata()?;
+                total += if meta.is_dir() {
+                    walk(&entry.path())?
+                } else {
+                    meta.len()
+                };
+            }
+            Ok(total)
+        }
+
+        let dir = self.root.join("sessions").join(meeting_id);
+        if !dir.exists() {
+            return Ok(0);
+        }
+        Ok(walk(&dir)?)
+    }
+
     /// Удалить запись встречи, оставив всё остальное.
     ///
     /// Транскрипт нужен всегда, запись полугодовой давности — почти
@@ -3078,6 +3108,56 @@ pub(crate) mod tests {
             })
             .unwrap();
         store.end_session(30).unwrap();
+    }
+
+    /// Размер — то, что освободится, то есть сумма файлов на диске.
+    ///
+    /// Второе утверждение здесь несущее: без него тест прошёл бы и на
+    /// `frame_count * 2`, то есть на числе, завышенном после FLAC вдвое.
+    #[test]
+    fn audio_bytes_counts_files_not_raw_frames() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            // Речеподобная пачка: на константе FLAC сжал бы почти в ноль,
+            // и разница с сырым размером ничего бы не доказывала.
+            let bytes: Vec<u8> = speechlike(32_000, 0)
+                .iter()
+                .flat_map(|s| s.to_le_bytes())
+                .collect();
+            store
+                .append_chunk(AudioChannel::Mic, &bytes, 16_000, 0)
+                .unwrap();
+            store.end_session(2).unwrap();
+
+            let on_disk: u64 = store
+                .list_chunks("m1")
+                .unwrap()
+                .iter()
+                .map(|chunk| fs::metadata(root.join(&chunk.path)).unwrap().len())
+                .sum();
+            let raw: u64 = store
+                .list_chunks("m1")
+                .unwrap()
+                .iter()
+                .map(|chunk| u64::from(chunk.frame_count) * 2)
+                .sum();
+
+            assert_eq!(store.meeting_audio_bytes("m1").unwrap(), on_disk);
+            assert!(
+                on_disk < raw * 4 / 5,
+                "сжатия нет, и тест прошёл бы на сыром размере: {on_disk} против {raw}"
+            );
+
+            store.delete_meeting_audio("m1", 999).unwrap();
+            assert_eq!(
+                store.meeting_audio_bytes("m1").unwrap(),
+                0,
+                "удалённая запись места не занимает"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// Уходит только запись. Всё, ради чего встреча хранится, остаётся.
