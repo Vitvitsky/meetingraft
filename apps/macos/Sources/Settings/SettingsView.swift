@@ -82,6 +82,8 @@ struct SettingsView: View {
         case .backend:
             BackendSettingsSection(model: model)
         case .data:
+            AudioRetentionSection(model: model)
+
             DataSettingsSection(model: model)
         }
     }

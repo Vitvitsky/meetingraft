@@ -20,6 +20,10 @@ protocol MeetingsCoreProviding: AnyObject, Sendable {
     func listMeetings() -> [FfiMeetingSummary]
     func renameMeeting(meetingId: String, title: String) -> String
     func deleteMeeting(meetingId: String) -> String
+    func deleteMeetingAudio(meetingId: String) -> String
+    func meetingAudioBytes(meetingId: String) -> UInt64
+    func previewAudioSweep(olderThanMs: UInt64) -> [FfiAudioSweepEntry]
+    func runAudioSweep(olderThanMs: UInt64) -> FfiAudioSweepResult
     func searchMeetings(query: String, limit: UInt32) -> [FfiSearchHit]
     func listCaptions(meetingId: String) -> [FfiCaptionEvent]
     func getFinalTranscript(meetingId: String) -> FfiFinalTranscript
@@ -120,6 +124,24 @@ final class MeetingsViewModel {
             return
         }
         reload()
+    }
+
+    /// Удалить запись встречи, оставив транскрипт и всё остальное.
+    ///
+    /// Отдельно от `delete`: транскрипт нужен всегда, а запись
+    /// полугодовой давности — почти никогда (Epic 22).
+    func deleteAudio(meetingId: String) {
+        let error = core.deleteMeetingAudio(meetingId: meetingId)
+        guard error.isEmpty else {
+            errorMessage = error
+            return
+        }
+        reload()
+    }
+
+    /// Сколько занимает запись на диске; 0 — записи нет.
+    func audioBytes(meetingId: String) -> UInt64 {
+        core.meetingAudioBytes(meetingId: meetingId)
     }
 
     /// Удалить встречу со всеми материалами.

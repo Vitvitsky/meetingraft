@@ -184,6 +184,40 @@ private final class LibraryCoreSpy: MeetingsCoreProviding, @unchecked Sendable {
         return ""
     }
 
+    // Epic 22: удаление аудио отдельно от встречи. Дубли обязаны знать о
+    // каждом методе протокола, иначе тестовая цель не собирается.
+    var deletedAudioCalls: [String] = []
+    var deleteAudioError = ""
+    var audioBytesByMeeting: [String: UInt64] = [:]
+    var sweepPreview: [FfiAudioSweepEntry] = []
+
+    func deleteMeetingAudio(meetingId: String) -> String {
+        deletedAudioCalls.append(meetingId)
+        guard deleteAudioError.isEmpty else { return deleteAudioError }
+        audioBytesByMeeting[meetingId] = 0
+        return ""
+    }
+
+    func meetingAudioBytes(meetingId: String) -> UInt64 {
+        audioBytesByMeeting[meetingId] ?? 0
+    }
+
+    func previewAudioSweep(olderThanMs: UInt64) -> [FfiAudioSweepEntry] {
+        sweepPreview.filter { $0.startedAtMs < olderThanMs }
+    }
+
+    func runAudioSweep(olderThanMs: UInt64) -> FfiAudioSweepResult {
+        let taken = previewAudioSweep(olderThanMs: olderThanMs)
+        for entry in taken {
+            _ = deleteMeetingAudio(meetingId: entry.meetingId)
+        }
+        return FfiAudioSweepResult(
+            deletedCount: UInt32(taken.count),
+            freedBytes: taken.reduce(0) { $0 + $1.bytes },
+            skipped: []
+        )
+    }
+
     func searchMeetings(query: String, limit _: UInt32) -> [FfiSearchHit] {
         searchQueries.append(query)
         return searchHits

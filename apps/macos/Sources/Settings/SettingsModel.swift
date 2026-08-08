@@ -20,6 +20,13 @@ final class SettingsModel {
     private(set) var isTestingConnection = false
     private(set) var isRefreshingBackendModels = false
 
+    // Чистка аудио (Epic 22). Предпросмотр отдельно от удаления: показ,
+    // который удаляет, — худшее, что здесь можно построить.
+    var audioSweepMonths = 6
+    private(set) var audioSweepPreview: [FfiAudioSweepEntry] = []
+    private(set) var audioSweepPreviewed = false
+    private(set) var audioSweepReport = ""
+
     private var core: MeetingCore?
     private let downloader: WhisperDownloading
 
@@ -106,6 +113,48 @@ final class SettingsModel {
             isDownloading = false
             downloadProgress = nil
         }
+    }
+
+    var audioSweepTotalBytes: UInt64 {
+        audioSweepPreview.reduce(0) { $0 + $1.bytes }
+    }
+
+    /// Что уйдёт при чистке. Ничего не удаляет.
+    func previewAudioSweep() {
+        guard let core else { return }
+        audioSweepPreview = core.previewAudioSweep(olderThanMs: sweepThresholdMs())
+        audioSweepPreviewed = true
+        audioSweepReport = ""
+    }
+
+    /// Удалить то, что показал предпросмотр.
+    func runAudioSweep() {
+        guard let core else { return }
+        let result = core.runAudioSweep(olderThanMs: sweepThresholdMs())
+        let freed = ByteCountFormatter.string(
+            fromByteCount: Int64(result.freedBytes),
+            countStyle: .file
+        )
+        var report = String(
+            localized: "Удалено записей: \(result.deletedCount), освобождено \(freed)"
+        )
+        if !result.skipped.isEmpty {
+            // Пропуски называются вслух: молчание сделало бы число
+            // удалённых враньём.
+            report += "\n" + String(localized: "Пропущено: ") + result.skipped.joined(separator: ", ")
+        }
+        audioSweepReport = report
+        previewAudioSweep()
+    }
+
+    /// Порог в абсолютном времени. Календарь живёт здесь, а не в ядре.
+    private func sweepThresholdMs() -> UInt64 {
+        let cutoff = Calendar.current.date(
+            byAdding: .month,
+            value: -audioSweepMonths,
+            to: Date()
+        ) ?? Date()
+        return UInt64(max(0, cutoff.timeIntervalSince1970 * 1000))
     }
 
     /// Сеть блокирует поток на весь таймаут, поэтому запрос уходит с
