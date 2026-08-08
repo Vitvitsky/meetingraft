@@ -23,30 +23,18 @@ final class SystemAudioCapture: AudioTapping {
     /// Разведка уже проходила успешно — повторять её не нужно.
     private var didProbeSuccessfully = false
 
-    /// UID нашего aggregate. Фиксированный: по нему следующий запуск
-    /// узнаёт брошенное устройство.
     private static let aggregateUid = "com.vitvitsky.meetingraft.aggregate"
-
-    /// UID созданных нами объектов Core Audio → pid создателя.
-    ///
-    /// Единственный способ опознать свой мусор после SIGKILL: объект в
-    /// `coreaudiod` жив, а связи с умершим процессом у него нет. Pid
-    /// нужен, чтобы не снести объекты **живого** соседа — во время
-    /// разработки рядом со сборкой из Xcode вполне работает
-    /// установленная копия, и у неё тот же домен `UserDefaults`.
-    private static let ownedObjectsKey = "com.vitvitsky.meetingraft.systemAudio.ownedObjects"
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        sweepLeftovers()
-    }
 
     /// Страховка на случай, когда объект отпустили, не позвав `stop()`.
     /// Tap и aggregate живут в `coreaudiod`, а не в нас, и без явной
-    /// уборки переживут наш процесс, ломая системный звук другим
-    /// приложениям (Epic 24). SIGKILL этим не покрывается — там не
-    /// выполняется вообще ничего.
+    /// уборки переживут наш процесс.
+    ///
+    /// SIGKILL этим не покрывается, и покрыть его нечем: подметание при
+    /// старте здесь стояло и было снесено — наш tap приватный, а
+    /// `kAudioHardwarePropertyTapList` приватные tap'ы не показывает даже
+    /// собственному следующему запуску. Замер 2026-08-08: список пуст при
+    /// заведомо идущей записи. Защита, которая не может сработать, хуже
+    /// её отсутствия — она создаёт уверенность (Epic 24).
     deinit {
         stop()
     }
@@ -162,11 +150,10 @@ final class SystemAudioCapture: AudioTapping {
         ioProcId = nil
 
         if aggregateId != kAudioObjectUnknown {
-            let destroyStatus = AudioHardwareDestroyAggregateDevice(aggregateId)
-            logFailure(destroyStatus, "AudioHardwareDestroyAggregateDevice")
-            if destroyStatus == noErr {
-                forget(Self.aggregateUid)
-            }
+            logFailure(
+                AudioHardwareDestroyAggregateDevice(aggregateId),
+                "AudioHardwareDestroyAggregateDevice"
+            )
             aggregateId = kAudioObjectUnknown
         }
         if tapId != kAudioObjectUnknown {
@@ -190,20 +177,11 @@ final class SystemAudioCapture: AudioTapping {
             // Отказ в TCC приходит как ошибка операции, отдельного кода нет.
             return .failure(result == kAudioHardwareIllegalOperationError ? .denied : .unsupported)
         }
-        if let uid = Self.tapUid(of: id) {
-            remember(uid)
-        }
         return .success(id)
     }
 
     private func destroyTap(_ id: AudioObjectID) {
-        // UID читается до уничтожения: после него объекта уже нет.
-        let uid = Self.tapUid(of: id)
-        let destroyStatus = AudioHardwareDestroyProcessTap(id)
-        logFailure(destroyStatus, "AudioHardwareDestroyProcessTap")
-        if destroyStatus == noErr, let uid {
-            forget(uid)
-        }
+        logFailure(AudioHardwareDestroyProcessTap(id), "AudioHardwareDestroyProcessTap")
     }
 
     /// Отказ уборки Core Audio — в лог. Вернуть его наверх некуда:
@@ -238,109 +216,7 @@ final class SystemAudioCapture: AudioTapping {
         var id = AudioObjectID(kAudioObjectUnknown)
         let result = AudioHardwareCreateAggregateDevice(description as CFDictionary, &id)
         guard result == noErr, id != kAudioObjectUnknown else { return nil }
-        remember(Self.aggregateUid)
         return id
-    }
-
-    // MARK: - Уборка за прошлыми запусками
-
-    /// Снести объекты Core Audio, оставшиеся от мёртвых процессов.
-    ///
-    /// Штатный выход зовёт `stop()`, SIGKILL — нет, и тогда tap с
-    /// aggregate остаются в `coreaudiod`, где мешают снимать системный
-    /// звук уже всем, включая чужие приложения (Epic 24). Отсюда
-    /// подметание при старте.
-    ///
-    /// Оно же и замер: ненулевая строка в логе — прямое доказательство,
-    /// что утечка реальна. Если она не появляется никогда, разбор
-    /// Epic 24 надо пересматривать.
-    private func sweepLeftovers() {
-        let owned = defaults.dictionary(forKey: Self.ownedObjectsKey) as? [String: Int] ?? [:]
-        let abandoned = Set(owned.filter { !Self.isProcessAlive($0.value) }.keys)
-        guard !abandoned.isEmpty else { return }
-
-        var swept = 0
-        for id in Self.tapIds() where Self.tapUid(of: id).map(abandoned.contains) == true {
-            let status = AudioHardwareDestroyProcessTap(id)
-            logFailure(status, "AudioHardwareDestroyProcessTap (leftover)")
-            if status == noErr {
-                swept += 1
-            }
-        }
-        if abandoned.contains(Self.aggregateUid), let id = Self.deviceId(withUid: Self.aggregateUid) {
-            let status = AudioHardwareDestroyAggregateDevice(id)
-            logFailure(status, "AudioHardwareDestroyAggregateDevice (leftover)")
-            if status == noErr {
-                swept += 1
-            }
-        }
-
-        // Записи снимаются независимо от исхода: не нашли — объекта уже
-        // нет, не снесли — повторные попытки каждый запуск ничего не
-        // изменят, а список будет расти вечно.
-        defaults.set(owned.filter { !abandoned.contains($0.key) }, forKey: Self.ownedObjectsKey)
-        log.error(
-            "Core Audio leftovers from dead processes: \(abandoned.count, privacy: .public) known, \(swept, privacy: .public) destroyed"
-        )
-    }
-
-    private func remember(_ uid: String) {
-        var owned = defaults.dictionary(forKey: Self.ownedObjectsKey) as? [String: Int] ?? [:]
-        owned[uid] = Int(ProcessInfo.processInfo.processIdentifier)
-        defaults.set(owned, forKey: Self.ownedObjectsKey)
-    }
-
-    private func forget(_ uid: String) {
-        var owned = defaults.dictionary(forKey: Self.ownedObjectsKey) as? [String: Int] ?? [:]
-        owned.removeValue(forKey: uid)
-        defaults.set(owned, forKey: Self.ownedObjectsKey)
-    }
-
-    /// Жив ли процесс. `EPERM` — жив, но чужой; для нас это тоже «жив».
-    ///
-    /// Pid переиспользуются, так что чужой процесс с тем же номером
-    /// заставит нас пропустить уборку. Ошибка в безопасную сторону:
-    /// лучше не убрать своё, чем убить чужое живое.
-    private static func isProcessAlive(_ pid: Int) -> Bool {
-        kill(pid_t(pid), 0) == 0 || errno == EPERM
-    }
-
-    /// Все process tap'ы системы. macOS 14.4+.
-    private static func tapIds() -> [AudioObjectID] {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyTapList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        return objectIds(of: AudioObjectID(kAudioObjectSystemObject), at: &address)
-    }
-
-    private static func deviceId(withUid uid: String) -> AudioObjectID? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        return objectIds(of: AudioObjectID(kAudioObjectSystemObject), at: &address)
-            .first { deviceUid(of: $0) == uid }
-    }
-
-    private static func objectIds(
-        of owner: AudioObjectID,
-        at address: inout AudioObjectPropertyAddress
-    ) -> [AudioObjectID] {
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(owner, &address, 0, nil, &size) == noErr else {
-            return []
-        }
-        let count = Int(size) / MemoryLayout<AudioObjectID>.size
-        guard count > 0 else { return [] }
-
-        var ids = [AudioObjectID](repeating: kAudioObjectUnknown, count: count)
-        guard AudioObjectGetPropertyData(owner, &address, 0, nil, &size, &ids) == noErr else {
-            return []
-        }
-        return ids
     }
 
     private static func deviceUid(of deviceId: AudioObjectID) -> String? {
