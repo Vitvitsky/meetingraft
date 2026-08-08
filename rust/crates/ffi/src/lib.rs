@@ -118,6 +118,8 @@ pub struct FfiMeetingSummary {
     pub ended_at_ms: u64,
     pub has_final: bool,
     pub artifact_count: u64,
+    /// Когда удалили запись встречи; 0 — не удаляли (Epic 22).
+    pub audio_deleted_at_ms: u64,
 }
 
 /// Сегмент финального транскрипта для Swift.
@@ -607,6 +609,7 @@ fn meeting_summary_to_ffi(summary: MeetingSummary) -> FfiMeetingSummary {
         ended_at_ms: summary.ended_at_ms.unwrap_or(0),
         has_final: summary.has_final,
         artifact_count: summary.artifact_count,
+        audio_deleted_at_ms: summary.audio_deleted_at_ms.unwrap_or(0),
     }
 }
 

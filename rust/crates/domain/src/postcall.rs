@@ -53,6 +53,8 @@ pub struct MeetingSummary {
     pub ended_at_ms: Option<u64>,
     pub has_final: bool,
     pub artifact_count: u64,
+    /// Когда у встречи удалили запись. `None` — не удаляли (Epic 22).
+    pub audio_deleted_at_ms: Option<u64>,
 }
 
 impl MeetingSummary {

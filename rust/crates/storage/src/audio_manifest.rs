@@ -784,7 +784,8 @@ impl AudioManifestStore {
                      SELECT COUNT(*)
                      FROM artifacts
                      WHERE artifacts.meeting_id = sessions.id
-                 )
+                 ),
+                 sessions.audio_deleted_at_ms
              FROM sessions
              ORDER BY sessions.started_at_ms DESC, sessions.id",
         )?;
@@ -796,6 +797,7 @@ impl AudioManifestStore {
                 ended_at_ms: row.get::<_, Option<i64>>(3)?.map(|value| value as u64),
                 has_final: row.get(4)?,
                 artifact_count: row.get::<_, i64>(5)? as u64,
+                audio_deleted_at_ms: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
             })
         })?;
 
@@ -1849,6 +1851,38 @@ pub(crate) mod tests {
             assert!(
                 result.is_err(),
                 "битый поток прочитан молча — человек получит тишину вместо звука"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Сводка доносит метку удаления до Swift.
+    ///
+    /// Без неё карточка встречи не отличит «записи не было» от «запись
+    /// удалили», и отсутствие кнопки прослушивания станет загадкой.
+    #[test]
+    fn a_summary_carries_the_audio_deletion_mark() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            store.end_session(2).unwrap();
+
+            let summary = store.list_meeting_summaries().unwrap().remove(0);
+            assert_eq!(summary.audio_deleted_at_ms, None, "ничего не удаляли");
+
+            store
+                .connection()
+                .execute(
+                    "UPDATE sessions SET audio_deleted_at_ms = 4242 WHERE id = 'm1'",
+                    [],
+                )
+                .unwrap();
+            let summary = store.list_meeting_summaries().unwrap().remove(0);
+            assert_eq!(
+                summary.audio_deleted_at_ms,
+                Some(4_242),
+                "метка не доехала до сводки"
             );
         }
         let _ = fs::remove_dir_all(&root);
