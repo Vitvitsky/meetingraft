@@ -16,7 +16,8 @@ final class MeetingsLibraryTests: XCTestCase {
             startedAtMs: startedAtMs,
             endedAtMs: endedAtMs,
             hasFinal: false,
-            artifactCount: 0
+            artifactCount: 0,
+            audioDeletedAtMs: 0
         )
     }
 
@@ -171,7 +172,8 @@ private final class LibraryCoreSpy: MeetingsCoreProviding, @unchecked Sendable {
                 startedAtMs: meeting.startedAtMs,
                 endedAtMs: meeting.endedAtMs,
                 hasFinal: meeting.hasFinal,
-                artifactCount: meeting.artifactCount
+                artifactCount: meeting.artifactCount,
+                audioDeletedAtMs: meeting.audioDeletedAtMs
             )
         }
         return ""
