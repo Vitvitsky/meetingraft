@@ -4113,7 +4113,8 @@ mod tests {
             .join("sessions")
             .join(&session_id)
             .join("mic")
-            .join("000000.pcm");
+            // Расширение идёт за кодеком: пачки пишутся FLAC (Epic 22).
+            .join("000000.flac");
         std::fs::create_dir_all(&blocked_path).expect("подложный каталог должен создаться");
 
         let error = core.stop_recording();

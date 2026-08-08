@@ -160,6 +160,44 @@ fn decode_chunk(bytes: &[u8], codec: &str, path: &str) -> Result<Vec<i16>, Audio
     }
 }
 
+/// Пачка в самостоятельный поток FLAC.
+///
+/// Кодируется в память, а не прямо в файл: при отказе кодера на диске не
+/// должно остаться недописанного файла, за который потом отвечает строка
+/// манифеста.
+///
+/// `no_padding().no_seektable()` обязательны. Умолчание крейта кладёт в
+/// поток 4 КБ padding и таблицу перемотки — 4 122 байта на пачку, около
+/// 15 МБ в час мёртвого веса. Перематывать файл на 2 с не по чему: он сам
+/// себе единица адресации, и её даёт манифест.
+///
+/// Ошибка возвращается текстом: вызывающий не отдаёт её наверх как есть,
+/// а сперва спасает звук откатом на сырой PCM.
+fn encode_flac(pcm: &[u8], sample_rate: u32) -> Result<Vec<u8>, String> {
+    let samples: Vec<i32> = pcm
+        .chunks_exact(2)
+        .map(|pair| i32::from(i16::from_le_bytes([pair[0], pair[1]])))
+        .collect();
+
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = flac_codec::encode::FlacSampleWriter::new(
+            &mut buffer,
+            flac_codec::encode::Options::default()
+                .no_padding()
+                .no_seektable(),
+            sample_rate,
+            16,
+            1,
+            Some(samples.len() as u64),
+        )
+        .map_err(|error| error.to_string())?;
+        writer.write(&samples).map_err(|error| error.to_string())?;
+        writer.finalize().map_err(|error| error.to_string())?;
+    }
+    Ok(buffer.into_inner())
+}
+
 fn decode_flac(bytes: &[u8], path: &str) -> Result<Vec<i16>, AudioManifestError> {
     let flac_error = |error: flac_codec::Error| AudioManifestError::Flac {
         path: path.to_string(),
@@ -360,18 +398,31 @@ impl AudioManifestStore {
         let seq = self.next_seq[idx];
         self.next_seq[idx] = seq + 1;
 
+        // Откат на сырой PCM при отказе кодера — задача 4. Пока отказ
+        // ведёт себя как любая другая ошибка записи.
+        let encoded = encode_flac(&pending.pcm, pending.sample_rate).map_err(|message| {
+            AudioManifestError::Flac {
+                path: format!("sessions/{session_id}/{}/{seq:06}", channel.dir_name()),
+                message,
+            }
+        })?;
+
         let rel = format!(
-            "sessions/{}/{}/{:06}.pcm",
+            "sessions/{}/{}/{:06}.{}",
             session_id,
             channel.dir_name(),
-            seq
+            seq,
+            "flac"
         );
         let abs = self.root.join(&rel);
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&abs, &pending.pcm)?;
+        fs::write(&abs, &encoded)?;
 
+        // Кадры считаются по исходному PCM и только по нему: на этом стоит
+        // вся адресация записи, и посчитать их от сжатых байтов значило бы
+        // сломать `read_pcm_range` и тайм-коды сегментов.
         let frame_count = (pending.pcm.len() / 2) as u32;
         self.conn.execute(
             "INSERT INTO audio_manifest
@@ -385,7 +436,7 @@ impl AudioManifestStore {
                 pending.sample_rate,
                 frame_count,
                 pending.timestamp_ms as i64,
-                CODEC_PCM
+                CODEC_FLAC
             ],
         )?;
 
@@ -1461,6 +1512,106 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Записанное живым путём читается сэмпл в сэмпл.
+    ///
+    /// Главный тест работы: всё остальное имеет смысл, только если сжатие
+    /// без потерь. Наполнение меняется по ходу пачки — на константе
+    /// круговой проход прошёл бы и у декодера, вернувшего нули.
+    #[test]
+    fn a_recorded_chunk_survives_the_round_trip_unchanged() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+
+            let mut expected: Vec<i16> = Vec::new();
+            for index in 0..20u64 {
+                let frame: Vec<i16> = (0..1_600)
+                    .map(|n| (((n + index as i64 * 1_600) % 4_000) as i16) - 2_000)
+                    .collect();
+                let bytes: Vec<u8> = frame.iter().flat_map(|s| s.to_le_bytes()).collect();
+                store
+                    .append_chunk(AudioChannel::Mic, &bytes, 16_000, index * 100)
+                    .unwrap();
+                expected.extend_from_slice(&frame);
+            }
+            store.flush_pending_chunks().unwrap();
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(chunks.len(), 1, "пачка на 2 с");
+            assert_eq!(chunks[0].frame_count, 32_000, "кадры считаются по PCM");
+            assert_eq!(
+                chunks[0].path.extension().and_then(|e| e.to_str()),
+                Some("flac"),
+                "расширение обязано идти за кодеком"
+            );
+
+            let codec: String = store
+                .connection()
+                .query_row("SELECT codec FROM audio_manifest", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(codec, "flac");
+
+            let read = store.read_session_pcm("s1", AudioChannel::Mic).unwrap();
+            assert_eq!(read, expected, "сжатие потеряло сэмплы");
+
+            let on_disk = fs::metadata(root.join(&chunks[0].path)).unwrap().len();
+            assert!(
+                on_disk < 64_000,
+                "файл не меньше сырого PCM — сжатия нет: {on_disk} байт"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// В потоке нет ни padding, ни таблицы перемотки.
+    ///
+    /// Выглядит мелочью и ею не является: `Options::default()` кладёт и то
+    /// и другое, это 4 122 байта на пачку и около 15 МБ в час впустую.
+    /// Умолчание — ровно та настройка, которую пишут не глядя.
+    #[test]
+    fn the_written_stream_carries_no_padding_or_seektable() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let bytes: Vec<u8> = sawtooth(32_000)
+                .iter()
+                .flat_map(|s| s.to_le_bytes())
+                .collect();
+            store
+                .append_chunk(AudioChannel::Mic, &bytes, 16_000, 0)
+                .unwrap();
+            store.flush_pending_chunks().unwrap();
+
+            let path = store.list_chunks("s1").unwrap()[0].path.clone();
+            let stream = fs::read(root.join(&path)).unwrap();
+            assert_eq!(&stream[..4], b"fLaC");
+
+            // Заголовок блока метаданных: байт (last << 7 | type), затем
+            // длина тремя байтами big-endian.
+            let mut offset = 4;
+            let mut kinds = Vec::new();
+            loop {
+                let header = stream[offset];
+                let length = u32::from_be_bytes([
+                    0,
+                    stream[offset + 1],
+                    stream[offset + 2],
+                    stream[offset + 3],
+                ]);
+                kinds.push(header & 0x7F);
+                offset += 4 + length as usize;
+                if header & 0x80 != 0 {
+                    break;
+                }
+            }
+            assert!(!kinds.contains(&1), "в потоке padding: {kinds:?}");
+            assert!(!kinds.contains(&3), "в потоке таблица перемотки: {kinds:?}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Испорченный FLAC обязан стать ошибкой.
     ///
     /// Отдать короткий фрагмент значило бы подсунуть человеку тишину
@@ -1519,7 +1670,7 @@ pub(crate) mod tests {
                 .connection()
                 .query_row("SELECT codec FROM audio_manifest", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(codec, "pcm_s16le");
+            assert_eq!(codec, "flac");
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -1804,7 +1955,7 @@ pub(crate) mod tests {
                 .join("sessions")
                 .join("s1")
                 .join("mic")
-                .join("000000.pcm");
+                .join("000000.flac");
             fs::create_dir_all(&blocked).unwrap();
 
             let err = store.flush_pending_chunks().unwrap_err();
@@ -1843,7 +1994,7 @@ pub(crate) mod tests {
                 .join("sessions")
                 .join("s1")
                 .join("mic")
-                .join("000000.pcm");
+                .join("000000.flac");
             fs::create_dir_all(&blocked).unwrap();
 
             let err = store.end_session(5_000).unwrap_err();
@@ -2475,17 +2626,35 @@ pub(crate) mod tests {
         let root = tmp_root();
         {
             let mut store = AudioManifestStore::open(&root).unwrap();
-            store.begin_session("m1", 1, "").unwrap();
-            store
-                .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
-                .unwrap();
-            let chunk = store.flush_pending_chunks().unwrap().remove(0);
-            fs::write(&chunk.path, [1_u8, 0]).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
 
-            let err = store.read_session_pcm("m1", AudioChannel::Mic).unwrap_err();
+            // Старый сырой чанк: именно здесь сверка числа кадров и живёт.
+            // У FLAC обрезку перехватывает декодер раньше неё (см.
+            // `a_corrupt_flac_chunk_is_an_error_not_a_short_fragment`), так
+            // что проверять её на нём — значит проверять не то.
+            let samples = sawtooth(1_600);
+            let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+            insert_chunk(
+                &store,
+                &root,
+                "sessions/s1/mic/000000.pcm",
+                &bytes,
+                "pcm_s16le",
+            );
+            // Файл короче, чем обещает строка манифеста.
+            fs::write(root.join("sessions/s1/mic/000000.pcm"), &bytes[..800]).unwrap();
+
+            let err = store.read_session_pcm("s1", AudioChannel::Mic).unwrap_err();
 
             assert!(
-                matches!(err, AudioManifestError::ChunkTruncated { .. }),
+                matches!(
+                    err,
+                    AudioManifestError::ChunkTruncated {
+                        expected_frames: 1_600,
+                        actual_frames: 400,
+                        ..
+                    }
+                ),
                 "{err:?}"
             );
         }
