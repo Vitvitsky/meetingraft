@@ -263,12 +263,16 @@ final class SystemAudioCapture: AudioTapping {
         for id in Self.tapIds() where Self.tapUid(of: id).map(abandoned.contains) == true {
             let status = AudioHardwareDestroyProcessTap(id)
             logFailure(status, "AudioHardwareDestroyProcessTap (leftover)")
-            if status == noErr { swept += 1 }
+            if status == noErr {
+                swept += 1
+            }
         }
         if abandoned.contains(Self.aggregateUid), let id = Self.deviceId(withUid: Self.aggregateUid) {
             let status = AudioHardwareDestroyAggregateDevice(id)
             logFailure(status, "AudioHardwareDestroyAggregateDevice (leftover)")
-            if status == noErr { swept += 1 }
+            if status == noErr {
+                swept += 1
+            }
         }
 
         // Записи снимаются независимо от исхода: не нашли — объекта уже
