@@ -784,7 +784,8 @@ impl AudioManifestStore {
                      SELECT COUNT(*)
                      FROM artifacts
                      WHERE artifacts.meeting_id = sessions.id
-                 )
+                 ),
+                 sessions.audio_deleted_at_ms
              FROM sessions
              ORDER BY sessions.started_at_ms DESC, sessions.id",
         )?;
@@ -796,6 +797,7 @@ impl AudioManifestStore {
                 ended_at_ms: row.get::<_, Option<i64>>(3)?.map(|value| value as u64),
                 has_final: row.get(4)?,
                 artifact_count: row.get::<_, i64>(5)? as u64,
+                audio_deleted_at_ms: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
             })
         })?;
 
@@ -1086,6 +1088,93 @@ impl AudioManifestStore {
             }
         }
         Ok(fragment)
+    }
+
+    /// Сколько места занимает запись встречи на диске.
+    ///
+    /// Считается обходом файлов, а не как `frame_count * 2`: после FLAC
+    /// сырой размер завышает реальный больше чем вдвое, а завышенное
+    /// вдвое число — не оценка, а обещание, которое не выполнится.
+    ///
+    /// Каталога нет — ноль, а не ошибка: удалённая или ещё не начатая
+    /// запись места и не занимает.
+    pub fn meeting_audio_bytes(&self, meeting_id: &str) -> Result<u64, AudioManifestError> {
+        fn walk(dir: &Path) -> Result<u64, std::io::Error> {
+            let mut total = 0;
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let meta = entry.metadata()?;
+                total += if meta.is_dir() {
+                    walk(&entry.path())?
+                } else {
+                    meta.len()
+                };
+            }
+            Ok(total)
+        }
+
+        let dir = self.root.join("sessions").join(meeting_id);
+        if !dir.exists() {
+            return Ok(0);
+        }
+        Ok(walk(&dir)?)
+    }
+
+    /// Удалить запись встречи, оставив всё остальное.
+    ///
+    /// Транскрипт нужен всегда, запись полугодовой давности — почти
+    /// никогда (Epic 22). Уходят только файлы и строки манифеста; титры,
+    /// Final, сегменты, журнал правок, артефакты, спикеры и поисковый
+    /// индекс остаются нетронутыми. Чтобы снести встречу целиком, есть
+    /// `delete_meeting`.
+    ///
+    /// Строки манифеста удаляются вместе с файлами намеренно: строка без
+    /// файла заставила бы `read_session_pcm` упасть с ошибкой
+    /// ввода-вывода, то есть выглядеть поломкой. Их отсутствие даёт ту
+    /// деградацию, которая уже построена, — пустой фрагмент прослушивания
+    /// и внятный отказ пересборки.
+    ///
+    /// Повторный вызов не ошибка и **не сдвигает метку**: дата удаления —
+    /// та, когда запись действительно удалили, а не последняя попытка.
+    ///
+    /// Время приходит аргументом, а не из системных часов: иначе повтор
+    /// нечем было бы проверить.
+    pub fn delete_meeting_audio(
+        &mut self,
+        meeting_id: &str,
+        now_ms: u64,
+    ) -> Result<(), AudioManifestError> {
+        if self.active_session.as_deref() == Some(meeting_id) {
+            return Err(AudioManifestError::SessionActive(meeting_id.to_owned()));
+        }
+
+        let transaction = self.conn.transaction()?;
+        let known: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        )?;
+        if known == 0 {
+            return Err(AudioManifestError::MeetingNotFound(meeting_id.to_owned()));
+        }
+        transaction.execute(
+            "DELETE FROM audio_manifest WHERE session_id = ?1",
+            params![meeting_id],
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET audio_deleted_at_ms = ?2
+             WHERE id = ?1 AND audio_deleted_at_ms IS NULL",
+            params![meeting_id, now_ms as i64],
+        )?;
+        transaction.commit()?;
+
+        // Файлы — после успешного коммита, как и в `delete_meeting`:
+        // откат не должен оставить строки без чанков.
+        let dir = self.root.join("sessions").join(meeting_id);
+        if dir.exists() {
+            fs::remove_dir_all(dir)?;
+        }
+        Ok(())
     }
 
     /// Удалить встречу целиком: строки БД, поисковый индекс и PCM-чанки
@@ -1849,6 +1938,38 @@ pub(crate) mod tests {
             assert!(
                 result.is_err(),
                 "битый поток прочитан молча — человек получит тишину вместо звука"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Сводка доносит метку удаления до Swift.
+    ///
+    /// Без неё карточка встречи не отличит «записи не было» от «запись
+    /// удалили», и отсутствие кнопки прослушивания станет загадкой.
+    #[test]
+    fn a_summary_carries_the_audio_deletion_mark() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            store.end_session(2).unwrap();
+
+            let summary = store.list_meeting_summaries().unwrap().remove(0);
+            assert_eq!(summary.audio_deleted_at_ms, None, "ничего не удаляли");
+
+            store
+                .connection()
+                .execute(
+                    "UPDATE sessions SET audio_deleted_at_ms = 4242 WHERE id = 'm1'",
+                    [],
+                )
+                .unwrap();
+            let summary = store.list_meeting_summaries().unwrap().remove(0);
+            assert_eq!(
+                summary.audio_deleted_at_ms,
+                Some(4_242),
+                "метка не доехала до сводки"
             );
         }
         let _ = fs::remove_dir_all(&root);
@@ -2924,6 +3045,261 @@ pub(crate) mod tests {
 
             assert_eq!(hits.len(), 1);
             assert_eq!(hits[0].ref_id, "f");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Собрать встречу со всем, что должно пережить удаление записи.
+    fn seed_full_meeting(store: &mut AudioManifestStore) {
+        store.begin_session("m1", 1, "Планёрка").unwrap();
+        let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+        store
+            .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+            .unwrap();
+        store
+            .append_caption(
+                "m1",
+                &CaptionEvent::new("c1".into(), "уникальное слово".into(), CaptionPhase::Final),
+                5,
+            )
+            .unwrap();
+        store
+            .upsert_final_transcript(&FinalTranscript {
+                meeting_id: "m1".into(),
+                version: 1,
+                body_markdown: "Обсудили сроки".into(),
+                created_at_ms: 10,
+            })
+            .unwrap();
+        store
+            .replace_final_segments("m1", 1, &[segment(0, 0, AudioChannel::Mic, "текст")])
+            .unwrap();
+        store
+            .upsert_segment_edit(&domain::SegmentEdit {
+                id: "e1".into(),
+                meeting_id: "m1".into(),
+                channel: AudioChannel::Mic,
+                start_ms: 0,
+                end_ms: 1_000,
+                original_text: "текст".into(),
+                edited_text: "правленый текст".into(),
+                created_at_ms: 5,
+                applied_version: Some(1),
+            })
+            .unwrap();
+        store
+            .insert_artifact(&Artifact {
+                id: "a1".into(),
+                meeting_id: "m1".into(),
+                kind: ArtifactKind::Brief,
+                template_id: "builtin".into(),
+                body_markdown: "Текст".into(),
+                source_version: Some(1),
+                source_fingerprint: Some("ff".into()),
+                created_at_ms: 20,
+            })
+            .unwrap();
+        store
+            .upsert_speaker(&Speaker {
+                id: "sp1".into(),
+                meeting_id: "m1".into(),
+                display_name: "Пётр".into(),
+                sort_index: 0,
+            })
+            .unwrap();
+        store.end_session(30).unwrap();
+    }
+
+    /// Размер — то, что освободится, то есть сумма файлов на диске.
+    ///
+    /// Второе утверждение здесь несущее: без него тест прошёл бы и на
+    /// `frame_count * 2`, то есть на числе, завышенном после FLAC вдвое.
+    #[test]
+    fn audio_bytes_counts_files_not_raw_frames() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            // Речеподобная пачка: на константе FLAC сжал бы почти в ноль,
+            // и разница с сырым размером ничего бы не доказывала.
+            let bytes: Vec<u8> = speechlike(32_000, 0)
+                .iter()
+                .flat_map(|s| s.to_le_bytes())
+                .collect();
+            store
+                .append_chunk(AudioChannel::Mic, &bytes, 16_000, 0)
+                .unwrap();
+            store.end_session(2).unwrap();
+
+            let on_disk: u64 = store
+                .list_chunks("m1")
+                .unwrap()
+                .iter()
+                .map(|chunk| fs::metadata(root.join(&chunk.path)).unwrap().len())
+                .sum();
+            let raw: u64 = store
+                .list_chunks("m1")
+                .unwrap()
+                .iter()
+                .map(|chunk| u64::from(chunk.frame_count) * 2)
+                .sum();
+
+            assert_eq!(store.meeting_audio_bytes("m1").unwrap(), on_disk);
+            assert!(
+                on_disk < raw * 4 / 5,
+                "сжатия нет, и тест прошёл бы на сыром размере: {on_disk} против {raw}"
+            );
+
+            store.delete_meeting_audio("m1", 999).unwrap();
+            assert_eq!(
+                store.meeting_audio_bytes("m1").unwrap(),
+                0,
+                "удалённая запись места не занимает"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Уходит только запись. Всё, ради чего встреча хранится, остаётся.
+    ///
+    /// Тест, ради которого работа существует: он ловит превращение
+    /// удаления аудио в `delete_meeting` под другим именем.
+    #[test]
+    fn deleting_audio_keeps_everything_else() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seed_full_meeting(&mut store);
+
+            store.delete_meeting_audio("m1", 999).unwrap();
+
+            // Ушло.
+            assert!(
+                store.list_chunks("m1").unwrap().is_empty(),
+                "строки манифеста остались"
+            );
+            assert!(
+                !root.join("sessions").join("m1").exists(),
+                "каталог с чанками остался"
+            );
+            let summary = store.list_meeting_summaries().unwrap().remove(0);
+            assert_eq!(
+                summary.audio_deleted_at_ms,
+                Some(999),
+                "метка не проставлена"
+            );
+
+            // Осталось — то, ради чего встречу и держат.
+            assert_eq!(summary.title, "Планёрка", "встреча исчезла целиком");
+            assert!(
+                !store.list_final_transcripts("m1").unwrap().is_empty(),
+                "Final"
+            );
+            assert!(
+                !store.list_final_segments("m1", 1).unwrap().is_empty(),
+                "сегменты"
+            );
+            assert!(!store.list_captions("m1").unwrap().is_empty(), "титры");
+            assert!(
+                !store.list_segment_edits("m1").unwrap().is_empty(),
+                "журнал правок"
+            );
+            assert!(!store.list_artifacts("m1").unwrap().is_empty(), "артефакты");
+            assert!(!store.list_speakers("m1").unwrap().is_empty(), "спикеры");
+            assert!(
+                !store.search("уникальное", 10).unwrap().is_empty(),
+                "поисковый индекс"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Удалять запись идущей встречи нельзя: потеряли бы звук прямо во
+    /// время неё.
+    #[test]
+    fn deleting_audio_of_the_active_session_is_refused() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .unwrap();
+            store.flush_pending_chunks().unwrap();
+
+            let error = store.delete_meeting_audio("m1", 999).unwrap_err();
+
+            assert!(
+                matches!(error, AudioManifestError::SessionActive(_)),
+                "{error:?}"
+            );
+            assert!(
+                !store.list_chunks("m1").unwrap().is_empty(),
+                "отказ произошёл после удаления, а не до"
+            );
+
+            let unknown = store.delete_meeting_audio("missing", 999).unwrap_err();
+            assert!(matches!(unknown, AudioManifestError::MeetingNotFound(_)));
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Дата удаления — первая. Повтор ничего не ломает и метку не двигает:
+    /// иначе «удалено полгода назад» превратилось бы в «удалено сегодня».
+    #[test]
+    fn deleting_audio_twice_keeps_the_first_date() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seed_full_meeting(&mut store);
+
+            store.delete_meeting_audio("m1", 111).unwrap();
+            store.delete_meeting_audio("m1", 222).unwrap();
+
+            let summary = store.list_meeting_summaries().unwrap().remove(0);
+            assert_eq!(summary.audio_deleted_at_ms, Some(111), "метка сдвинулась");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Каталог снесли снаружи — не наша беда: строки убираем, метку
+    /// ставим, отказывать не за что.
+    #[test]
+    fn deleting_audio_without_files_on_disk_still_marks_the_meeting() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seed_full_meeting(&mut store);
+            fs::remove_dir_all(root.join("sessions").join("m1")).unwrap();
+
+            store.delete_meeting_audio("m1", 999).unwrap();
+
+            let summary = store.list_meeting_summaries().unwrap().remove(0);
+            assert_eq!(summary.audio_deleted_at_ms, Some(999));
+            assert!(store.list_chunks("m1").unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// После удаления прослушивание отдаёт пустоту, а не ошибку.
+    ///
+    /// Вью прячет кнопку на пустой фрагмент; на ошибке показать было бы
+    /// нечего, и человек увидел бы поломку вместо отсутствия записи.
+    #[test]
+    fn reading_a_range_after_deletion_returns_empty_not_an_error() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            seed_full_meeting(&mut store);
+            store.delete_meeting_audio("m1", 999).unwrap();
+
+            let fragment = store
+                .read_pcm_range("m1", AudioChannel::Mic, 0, 1_000)
+                .expect("чтение диапазона обязано остаться успешным");
+
+            assert!(fragment.pcm.is_empty());
+            assert_eq!(fragment.sample_rate, 0, "вью прячет кнопку по этому полю");
         }
         let _ = fs::remove_dir_all(&root);
     }

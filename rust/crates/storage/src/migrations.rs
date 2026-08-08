@@ -177,6 +177,15 @@ const STEPS: &[&str] = &[
     ALTER TABLE artifacts ADD COLUMN source_version INTEGER;
     ALTER TABLE artifacts ADD COLUMN source_fingerprint TEXT;
     ",
+    // 11 — когда у встречи удалили аудио (Epic 22). NULL — не удаляли.
+    //
+    // Без метки отсутствие записи неотличимо от её отсутствия по другой
+    // причине: встреча, где не запустился микрофон, и встреча, где человек
+    // сам удалил запись полгода спустя, выглядели бы одинаково. Тот, кто
+    // не понимает, куда делась запись, решит, что программа её потеряла.
+    "
+    ALTER TABLE sessions ADD COLUMN audio_deleted_at_ms INTEGER;
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.
@@ -301,6 +310,33 @@ mod tests {
             .expect("table_info readable")
             .iter()
             .any(|name| name == column)
+    }
+
+    /// Существующая встреча после миграции считается неудалённой.
+    ///
+    /// Выдать неизвестное за «удалили» — соврать в другую сторону, как и с
+    /// `source_version` артефактов: человек увидел бы, что запись стёрли,
+    /// хотя её никто не трогал.
+    #[test]
+    fn migration_leaves_existing_meetings_marked_as_not_deleted() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(baseline_schema()).expect("baseline");
+        conn.execute(
+            "INSERT INTO sessions (id, started_at_ms) VALUES ('m1', 1)",
+            [],
+        )
+        .expect("legacy row");
+
+        migrate(&conn).expect("migrate");
+
+        let deleted: Option<i64> = conn
+            .query_row(
+                "SELECT audio_deleted_at_ms FROM sessions WHERE id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("column");
+        assert_eq!(deleted, None, "старая встреча помечена удалённой");
     }
 
     /// База, уже поднятая до версии 9 предыдущей сборкой, обязана

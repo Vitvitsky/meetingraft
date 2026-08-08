@@ -10,6 +10,7 @@ struct MeetingDetailView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
 
     @State private var section: MeetingDetailSection = .live
+    @State private var confirmingAudioDeletion = false
     @State private var rebuild: FinalRebuildViewModel
     @State private var attribution: SpeakerAttributionViewModel
 
@@ -29,6 +30,12 @@ struct MeetingDetailView: View {
             }
             .pickerStyle(.segmented)
             .padding()
+
+            Divider()
+
+            audioRow
+                .padding(.horizontal)
+                .padding(.vertical, Theme.Space.xs)
 
             Divider()
 
@@ -75,6 +82,22 @@ struct MeetingDetailView: View {
                 reloadAttribution()
             }
         }
+        .confirmationDialog(
+            "Удалить запись встречи?",
+            isPresented: $confirmingAudioDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Удалить запись", role: .destructive) {
+                viewModel.deleteAudio(meetingId: meeting.id)
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text(
+                "Транскрипт, правки и артефакты останутся. "
+                    + "Сам звук восстановить будет нельзя: "
+                    + "прослушать реплику и пересобрать транскрипт больше не получится."
+            )
+        }
         .alert(
             "Ошибка Meetings",
             isPresented: Binding(
@@ -105,6 +128,50 @@ struct MeetingDetailView: View {
         } message: {
             Text(attribution.errorMessage ?? "")
         }
+    }
+
+    /// Строка про запись: размер и удаление, либо факт, что её уже нет.
+    ///
+    /// Второе — то, ради чего заводилась метка: без неё пропавшая кнопка
+    /// прослушивания выглядела бы поломкой, а не следствием решения
+    /// человека (Epic 22).
+    @ViewBuilder
+    private var audioRow: some View {
+        if meeting.audioDeletedAtMs > 0 {
+            Label(
+                "Запись удалена \(Self.deletionDate.string(from: date(meeting.audioDeletedAtMs)))",
+                systemImage: "waveform.slash"
+            )
+            .font(Theme.Text.caption)
+            .foregroundStyle(.secondary)
+        } else {
+            let bytes = viewModel.audioBytes(meetingId: meeting.id)
+            if bytes > 0 {
+                HStack {
+                    Label(Self.sizeText(bytes), systemImage: "waveform")
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Удалить запись") { confirmingAudioDeletion = true }
+                        .buttonStyle(.link)
+                }
+            }
+        }
+    }
+
+    private static let deletionDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    private func date(_ milliseconds: UInt64) -> Date {
+        Date(timeIntervalSince1970: Double(milliseconds) / 1000)
+    }
+
+    private static func sizeText(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
     private func reloadAttribution() {

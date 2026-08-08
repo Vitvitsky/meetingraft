@@ -281,6 +281,106 @@ struct BackendSettingsSection: View {
 
 // MARK: - Данные
 
+/// Чистка старых записей (Epic 22).
+///
+/// Транскрипт нужен всегда, запись полугодовой давности — почти никогда.
+/// Автоматики здесь нет и не будет: молча терять то, что человек может
+/// считать своим, нельзя. Предпросмотр — отдельная кнопка, и он только
+/// считает.
+struct AudioRetentionSection: View {
+    @Bindable var model: SettingsModel
+    @State private var confirming = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.md) {
+            SettingsRow(
+                title: String(localized: "Delete audio older than"),
+                caption: String(
+                    localized: "Transcripts, edits and artifacts stay. The audio cannot be restored."
+                )
+            ) {
+                HStack(spacing: Theme.Space.xs) {
+                    Picker("", selection: $model.audioSweepMonths) {
+                        ForEach([3, 6, 12, 24], id: \.self) { months in
+                            Text("\(months)").tag(months)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 70)
+                    Text(String(localized: "months"))
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(.secondary)
+                    Button(String(localized: "Preview")) { model.previewAudioSweep() }
+                        .buttonStyle(.themedSecondary)
+                }
+            }
+
+            if model.audioSweepPreviewed {
+                Divider().overlay(Theme.borderSubtle)
+                preview
+            }
+
+            if !model.audioSweepReport.isEmpty {
+                Text(model.audioSweepReport)
+                    .font(Theme.Text.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .confirmationDialog(
+            String(localized: "Delete these recordings?"),
+            isPresented: $confirming,
+            titleVisibility: .visible
+        ) {
+            Button(String(localized: "Delete"), role: .destructive) { model.runAudioSweep() }
+            Button(String(localized: "Cancel"), role: .cancel) {}
+        } message: {
+            Text(
+                String(
+                    localized:
+                    "The audio cannot be restored. Transcripts, edits and artifacts are untouched."
+                )
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        if model.audioSweepPreview.isEmpty {
+            Text(String(localized: "Nothing to delete."))
+                .font(Theme.Text.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                ForEach(model.audioSweepPreview, id: \.meetingId) { entry in
+                    HStack {
+                        Text(entry.title.isEmpty ? String(localized: "Untitled") : entry.title)
+                            .font(Theme.Text.caption)
+                        Spacer()
+                        Text(Self.size(entry.bytes))
+                            .font(Theme.Text.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    Text(
+                        String(
+                            localized: "\(model.audioSweepPreview.count) recordings, "
+                        ) + Self.size(model.audioSweepTotalBytes)
+                    )
+                    .font(Theme.Text.caption)
+                    Spacer()
+                    Button(String(localized: "Delete")) { confirming = true }
+                        .buttonStyle(.link)
+                }
+            }
+        }
+    }
+
+    private static func size(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+}
+
 struct DataSettingsSection: View {
     @Bindable var model: SettingsModel
     @Environment(ProviderSettingsStore.self) private var providerStore

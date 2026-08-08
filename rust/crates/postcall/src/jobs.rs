@@ -85,6 +85,18 @@ impl Spawner for InlineSpawner {
     }
 }
 
+/// Не выполняет работу вовсе: задача остаётся заведённой навсегда.
+///
+/// Нужен там, где проверяется поведение **при идущем** проходе.
+/// `ThreadSpawner` даёт гонку — короткая работа успевает завершиться
+/// раньше проверки, — а `InlineSpawner` заканчивает её до возврата из
+/// `spawn`. Ни тем, ни другим «сейчас идёт пересборка» не выразить.
+pub struct NeverSpawner;
+
+impl Spawner for NeverSpawner {
+    fn spawn(&self, _work: Box<dyn FnOnce() + Send + 'static>) {}
+}
+
 /// Ручка, которую получает сама работа.
 pub struct JobHandle {
     job_id: String,

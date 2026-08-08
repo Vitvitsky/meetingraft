@@ -19,7 +19,8 @@ pub use diff::{DiffOp, DiffSpan, diff_words};
 pub use edit_service::{EditOutcome, occurrences_to_edit, plan_edit};
 pub use edits::reattach_edits;
 pub use jobs::{
-    InlineSpawner, JobHandle, RebuildJobs, RebuildProgress, RebuildState, Spawner, ThreadSpawner,
+    InlineSpawner, JobHandle, NeverSpawner, RebuildJobs, RebuildProgress, RebuildState, Spawner,
+    ThreadSpawner,
 };
 pub use llm::{LlmClient, LlmError, NullLlmClient};
 pub use llm_http::{OllamaNativeClient, OpenAiCompatLlmClient};
