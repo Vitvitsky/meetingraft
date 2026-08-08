@@ -1527,6 +1527,112 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Речеподобный сигнал: основной тон с вибрато, гармоники, огибающая
+    /// слогов и немного шума.
+    ///
+    /// Пила для замера не годится: она предсказывается LPC точно и жмётся
+    /// почти в ноль, так что и время, и размер вышли бы враньём.
+    fn speechlike(frames: usize, offset: usize) -> Vec<i16> {
+        let mut out = Vec::with_capacity(frames);
+        let mut noise: u32 = 0x1234_5678_u32.wrapping_add(offset as u32);
+        for n in offset..offset + frames {
+            let t = n as f64 / 16_000.0;
+            let f0 = 120.0 + 8.0 * (2.0 * std::f64::consts::PI * 5.0 * t).sin();
+            let syllable = (0.5 + 0.5 * (2.0 * std::f64::consts::PI * 3.5 * t).sin()).powi(2);
+            let mut sample = 0.0;
+            for harmonic in 1..=12 {
+                sample += (1.0 / f64::from(harmonic).powf(1.4))
+                    * (2.0 * std::f64::consts::PI * f0 * f64::from(harmonic) * t).sin();
+            }
+            noise = noise.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let hiss = f64::from((noise >> 16) as i32 - 32_768) / 32_768.0;
+            let value = (sample * syllable * 0.25 + hiss * 0.01) * 20_000.0;
+            out.push(value.clamp(-32_768.0, 32_767.0) as i16);
+        }
+        out
+    }
+
+    /// Сколько закрытие пачки занимает под мьютексом ядра.
+    ///
+    /// Не утверждение, а прибор: гоняется руками и печатает число.
+    /// Утверждать здесь нечего — порог зависит от машины, а падающий по
+    /// таймингу тест на чужом железе врёт чаще, чем ловит.
+    ///
+    /// Зачем: `append_chunk` зовётся из `ingest_audio_chunk`, который
+    /// держит мьютекс ядра весь вызов, а через тот же мьютекс каждые 50 мс
+    /// идёт `drain_events` живых субтитров. Всё, что здесь измерено,
+    /// добавляется к паузе субтитров. Худший случай — два канала подряд,
+    /// то есть удвоенное число.
+    ///
+    /// Меряется **тот самый вызов `append_chunk`, внутри которого пачка
+    /// закрывается**, а не отдельный `flush_pending_chunks`: в проде сброс
+    /// происходит именно там. Замер по пустому накопителю показал бы
+    /// микросекунды и не значил бы ничего — на этом прибор уже один раз
+    /// соврал.
+    ///
+    /// ```text
+    /// cargo test -p meetingraft-storage flush_timing -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "прибор, а не проверка: печатает время, ничего не утверждает"]
+    fn flush_timing_of_a_two_second_chunk() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+
+            let runs = 20u64;
+            // Кадры живого пути по 100 мс, как их шлёт Swift.
+            let frames: Vec<Vec<u8>> = (0..(runs as usize * 20))
+                .map(|index| {
+                    speechlike(1_600, index * 1_600)
+                        .iter()
+                        .flat_map(|s| s.to_le_bytes())
+                        .collect()
+                })
+                .collect();
+
+            let mut closing = std::time::Duration::ZERO;
+            for (index, frame) in frames.iter().enumerate() {
+                let at = index as u64 * 100;
+                // Каждый двадцатый кадр добирает пачку до 2 с и закрывает её.
+                if index % 20 == 19 {
+                    let started = std::time::Instant::now();
+                    store
+                        .append_chunk(AudioChannel::Mic, frame, 16_000, at)
+                        .unwrap();
+                    closing += started.elapsed();
+                } else {
+                    store
+                        .append_chunk(AudioChannel::Mic, frame, 16_000, at)
+                        .unwrap();
+                }
+            }
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(
+                chunks.len(),
+                runs as usize,
+                "пачки не закрылись — мерить нечего"
+            );
+
+            let per_chunk = closing.as_secs_f64() * 1_000.0 / runs as f64;
+            let total: u64 = chunks
+                .iter()
+                .map(|chunk| fs::metadata(root.join(&chunk.path)).unwrap().len())
+                .sum();
+            let raw = runs * 64_000;
+            println!(
+                "закрытие пачки 2 с: {per_chunk:.3} мс (бюджет drain_events 50 мс, \
+                 худший случай два канала — {:.3} мс); \
+                 размер {total} Б из {raw} Б ({:.1}%, сигнал синтетический)",
+                per_chunk * 2.0,
+                100.0 * total as f64 / raw as f64
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Записанное живым путём читается сэмпл в сэмпл.
     ///
     /// Главный тест работы: всё остальное имеет смысл, только если сжатие
