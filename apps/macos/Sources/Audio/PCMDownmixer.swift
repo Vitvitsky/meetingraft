@@ -35,7 +35,18 @@ final class PCMDownmixer {
         guard buffer.frameLength > 0 else { return [] }
 
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
+        let expected = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+
+        // Запас — целый чанк, а не десяток кадров.
+        //
+        // Конвертер придерживает часть входа между вызовами и отдаёт её
+        // только когда придёт следующий чанк. Значит за один вызов кадров
+        // выходит больше, чем даёт текущий чанк, и буфер по размеру чанка
+        // становится потолком: с запасом в 64 кадра выдача упиралась ровно
+        // в `capacity` (замер на Маке 2026-08-08: 1664 при ожидаемых 1600),
+        // придержанное копилось, а хвост отставал тем сильнее, чем дольше
+        // шла запись.
+        let capacity = expected * 2 + 64
         guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
             return []
         }

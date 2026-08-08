@@ -47,49 +47,50 @@ final class PCMDownmixerTests: XCTestCase {
         return (format, buffer)
     }
 
-    /// Нарезка на чанки не меняет длину результата.
+    /// В установившемся режиме чанк на входе даёт ровно свою долю на выходе.
     ///
-    /// Никаких ожидаемых чисел: тот же звук подаётся десятью кусками и
-    /// одним куском, и сравниваются длины. Задержка фильтра у обоих
-    /// одинакова и из сравнения выпадает — а потеря кадров осталась бы.
+    /// Ожидаемое число не зашито, а посчитано из входа: 4800 кадров на
+    /// 48 кГц — это 1600 кадров на 16 кГц, и никакой другой ответ не
+    /// является «без потерь». Разгон в начале потока из счёта выпадает:
+    /// меряются вторые десять чанков, первые десять отброшены.
     ///
-    /// Два предыдущих захода зашивали сюда константу (сперва сумму с
-    /// начала потока, потом установившийся режим), и оба раза константа
-    /// оказывалась не той. Число, которого нет, ошибиться не может.
+    /// Сравнивать нарезку с одним куском — а такой заход тут был —
+    /// нельзя: конвертер придерживает часть входа до следующего чанка,
+    /// и величина придержанного зависит от того, как подавали вход
+    /// (замер на Маке 2026-08-08: 15738 чанками против 15013 одним
+    /// куском). Одинаковой задержки, которая «выпадает из сравнения»,
+    /// у двух дорог нет.
     ///
     /// Измерение **одного** вызова когда-то дало вывод «теряется 15%», на
     /// котором держался сброс конвертера после каждого чанка.
-    func testChunkingDoesNotChangeTheFrameCount() throws {
-        let chunks = 10
+    func testSteadyStateKeepsEveryFrame() throws {
         let chunkFrames: AVAudioFrameCount = 4800
-
         let (format, chunk) = makeBuffer(sampleRate: 48000, channels: 2, frames: chunkFrames)
-        let chunked = try XCTUnwrap(PCMDownmixer(from: format))
-        var chunkedTotal = 0
-        var perChunk: [Int] = []
-        for _ in 0 ..< chunks {
-            let produced = chunked.convert(chunk).count
-            perChunk.append(produced)
-            chunkedTotal += produced
-        }
-        // ДИАГНОСТИКА (снять после разбора): разовая задержка в начале и
-        // постоянная потеря на каждой границе выглядят по-разному.
-        print("DIAG per-chunk: \(perChunk)")
-
-        let (wholeFormat, whole) = makeBuffer(
-            sampleRate: 48000,
-            channels: 2,
-            frames: chunkFrames * AVAudioFrameCount(chunks)
+        let perChunkExpected = Int(
+            Double(chunkFrames) * AudioChunkPipeline.targetSampleRate / 48000
         )
-        let single = try XCTUnwrap(PCMDownmixer(from: wholeFormat))
-        let wholeTotal = single.convert(whole).count
-        print("DIAG chunkedTotal=\(chunkedTotal) wholeTotal=\(wholeTotal)")
+        let downmixer = try XCTUnwrap(PCMDownmixer(from: format))
 
-        XCTAssertGreaterThan(wholeTotal, 0, "опорная конвертация пуста — сравнивать нечего")
+        var perChunk: [Int] = []
+        for _ in 0 ..< 20 {
+            perChunk.append(downmixer.convert(chunk).count)
+        }
+        let steady = perChunk.dropFirst(10)
+
+        XCTAssertTrue(
+            steady.allSatisfy { $0 > 0 },
+            "в установившемся режиме есть пустые вызовы — считать нечего: \(perChunk)"
+        )
         XCTAssertEqual(
-            chunkedTotal,
-            wholeTotal,
-            "нарезка изменила число кадров: чанками \(chunkedTotal), одним куском \(wholeTotal)"
+            steady.reduce(0, +),
+            10 * perChunkExpected,
+            "кадры теряются на границах чанков: \(perChunk)"
+        )
+        XCTAssertLessThanOrEqual(
+            perChunk[0],
+            perChunkExpected,
+            "первый чанк не короче установившегося — задержки фильтра нет, "
+                + "то есть конвертер всё-таки сбрасывается: \(perChunk)"
         )
     }
 
