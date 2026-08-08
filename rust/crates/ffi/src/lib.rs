@@ -122,6 +122,26 @@ pub struct FfiMeetingSummary {
     pub audio_deleted_at_ms: u64,
 }
 
+/// Встреча-кандидат на чистку аудио.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiAudioSweepEntry {
+    pub meeting_id: String,
+    pub title: String,
+    pub started_at_ms: u64,
+    /// Сколько освободится: размер файлов на диске.
+    pub bytes: u64,
+}
+
+/// Чем кончилась чистка.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiAudioSweepResult {
+    pub deleted_count: u32,
+    pub freed_bytes: u64,
+    /// Встречи, которые пропустили, и почему. Тихо пропустить значило бы
+    /// соврать в отчёте о числе удалённых.
+    pub skipped: Vec<String>,
+}
+
 /// Сегмент финального транскрипта для Swift.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiFinalSegment {
@@ -1434,6 +1454,65 @@ impl MeetingCore {
             },
             Err(err) => err.to_string(),
         }
+    }
+
+    /// Что уйдёт при чистке аудио старше порога.
+    ///
+    /// **Чистая функция.** Считает и показывает, не удаляет: человек,
+    /// решивший посмотреть, сколько освободится, не должен этим что-то
+    /// потерять.
+    ///
+    /// Порог — абсолютное время, а не «N месяцев»: календарь живёт в
+    /// Swift, ядру он не нужен и заводить его сюда незачем.
+    ///
+    /// Уже очищенные встречи в список не попадают: показывать
+    /// «освободится 0 Б» бессмысленно.
+    pub fn preview_audio_sweep(&self, older_than_ms: u64) -> Vec<FfiAudioSweepEntry> {
+        let Some(store) = open_store(self) else {
+            return Vec::new();
+        };
+        store
+            .list_meeting_summaries()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|summary| {
+                summary.started_at_ms < older_than_ms && summary.audio_deleted_at_ms.is_none()
+            })
+            .filter_map(|summary| {
+                let bytes = store.meeting_audio_bytes(&summary.id).unwrap_or(0);
+                (bytes > 0).then_some(FfiAudioSweepEntry {
+                    meeting_id: summary.id,
+                    title: summary.title,
+                    started_at_ms: summary.started_at_ms,
+                    bytes,
+                })
+            })
+            .collect()
+    }
+
+    /// Удалить аудио всех встреч старше порога.
+    ///
+    /// Занятые — идёт запись или пересборка — пропускаются и попадают в
+    /// `skipped`. Тихо пропустить значило бы соврать в отчёте о числе
+    /// удалённых.
+    pub fn run_audio_sweep(&self, older_than_ms: u64) -> FfiAudioSweepResult {
+        let mut result = FfiAudioSweepResult {
+            deleted_count: 0,
+            freed_bytes: 0,
+            skipped: Vec::new(),
+        };
+        for entry in self.preview_audio_sweep(older_than_ms) {
+            let error = self.delete_meeting_audio(entry.meeting_id.clone());
+            if error.is_empty() {
+                result.deleted_count += 1;
+                result.freed_bytes += entry.bytes;
+            } else {
+                result
+                    .skipped
+                    .push(format!("{}: {error}", entry.meeting_id));
+            }
+        }
+        result
     }
 
     /// Сколько занимает запись встречи на диске; 0 — записи нет.
@@ -3578,6 +3657,124 @@ mod tests {
     }
 
     /// Второй запуск по той же встрече не плодит параллельный проход.
+    /// Собрать две встречи с записью: старую и свежую.
+    fn seed_two_meetings(root: &std::path::Path) {
+        let mut store = AudioManifestStore::open(root).expect("store");
+        for (id, started) in [("old", 1_000u64), ("fresh", 9_000u64)] {
+            store.begin_session(id, started, id).expect("session");
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .expect("chunk");
+            store.end_session(started + 10).expect("end");
+        }
+    }
+
+    /// Предпросмотр ничего не удаляет.
+    ///
+    /// Самый опасный дефект этой работы: человек нажимает «посмотреть,
+    /// сколько освободится» и теряет записи.
+    #[test]
+    fn previewing_the_sweep_deletes_nothing() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-sweep-preview-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_two_meetings(&root);
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let first = core.preview_audio_sweep(5_000);
+        let second = core.preview_audio_sweep(5_000);
+
+        assert_eq!(first.len(), 1, "порог взял не то");
+        assert_eq!(
+            second.len(),
+            first.len(),
+            "второй просмотр увидел другое число встреч — значит первый удалял"
+        );
+        assert_eq!(
+            first[0].bytes, second[0].bytes,
+            "второй просмотр показал другой размер — значит первый что-то сделал"
+        );
+        assert!(
+            core.meeting_audio_bytes("old".into()) > 0,
+            "предпросмотр удалил запись"
+        );
+        let summary = core
+            .list_meetings()
+            .into_iter()
+            .find(|m| m.id == "old")
+            .expect("встреча");
+        assert_eq!(
+            summary.audio_deleted_at_ms, 0,
+            "предпросмотр поставил метку"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Пачка берёт только то, что старше порога.
+    #[test]
+    fn the_sweep_takes_only_meetings_older_than_the_threshold() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-sweep-run-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_two_meetings(&root);
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let result = core.run_audio_sweep(5_000);
+
+        assert_eq!(result.deleted_count, 1);
+        assert!(result.freed_bytes > 0, "освобождено ноль байт");
+        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+        assert_eq!(
+            core.meeting_audio_bytes("old".into()),
+            0,
+            "старую не убрали"
+        );
+        assert!(
+            core.meeting_audio_bytes("fresh".into()) > 0,
+            "свежую записали в старьё"
+        );
+
+        // Повтор: чистить больше нечего, а не «удалили ещё раз».
+        assert!(core.preview_audio_sweep(5_000).is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Занятая встреча пропускается и попадает в отчёт, а не исчезает
+    /// из него молча.
+    #[test]
+    fn the_sweep_reports_what_it_skipped() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-sweep-skip-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        seed_two_meetings(&root);
+        let core = core_with_spawner(
+            root.to_string_lossy().into_owned(),
+            Box::new(postcall::NeverSpawner),
+        );
+        core.start_final_rebuild("old".into());
+
+        let result = core.run_audio_sweep(5_000);
+
+        assert_eq!(result.deleted_count, 0);
+        assert_eq!(result.skipped.len(), 1, "пропуск не попал в отчёт");
+        assert!(result.skipped[0].contains("old"), "{:?}", result.skipped);
+        assert!(
+            core.meeting_audio_bytes("old".into()) > 0,
+            "пропущенную всё-таки удалили"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Успешный путь границы: запись уходит, транскрипт остаётся, размер
     /// становится нулём.
     #[test]
