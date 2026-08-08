@@ -31,6 +31,16 @@ pub enum AudioManifestError {
         version: u32,
         index: u32,
     },
+    /// Частота 0 ломает накопитель бесшумно: длительность пачки всегда 0,
+    /// целевой размер не достигается никогда, а строка с такой частотой на
+    /// диске молча пропускается `read_pcm_range` — записанное читается как
+    /// ничто.
+    #[error("invalid sample rate: 0")]
+    InvalidSampleRate,
+    /// Нечётная длина ломает выравнивание i16 всему, что легло в пачку
+    /// после неё: раньше страя байт портил один файл в 100 мс, теперь — 2 с.
+    #[error("pcm length must be even (i16 frames), got {0}")]
+    OddPcmLength(usize),
     #[error("chunk {path} truncated: expected {expected_frames} frames, got {actual_frames}")]
     ChunkTruncated {
         path: String,
@@ -181,14 +191,24 @@ impl AudioManifestStore {
         // Остаток на диск до закрытия: последние секунды записи нужны так
         // же, как все прежние. Сброс до `take()` — ему нужна активная
         // сессия, чтобы знать путь.
-        self.flush_pending_chunks()?;
+        //
+        // Ошибка сброса откладывается, а не выходит наверх сразу: иначе
+        // неудачная запись файла оставила бы встречу вечно открытой —
+        // `ended_at_ms` пустой, `MeetingSummary::duration_ms()` отдаёт
+        // `None`, и в библиотеке запись висит без длительности. Закрытие
+        // сессии к записи файла отношения не имеет, значит и падать вместе
+        // с ней не должно; ошибку вызывающий всё равно получит.
+        let flush_error = self.flush_pending_chunks().err();
         if let Some(session_id) = self.active_session.take() {
             self.conn.execute(
                 "UPDATE sessions SET ended_at_ms = ?2 WHERE id = ?1",
                 params![session_id, ended_at_ms as i64],
             )?;
         }
-        Ok(())
+        match flush_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Переименовать встречу. Неизвестный id — ошибка, а не тихий no-op.
@@ -209,18 +229,29 @@ impl AudioManifestStore {
 
     /// Принять кадр живого пути в накопитель канала.
     ///
-    /// Файл пишется не на каждый вызов: `Some` возвращается, когда этим
-    /// вызовом пачка ушла на диск по достижении целевого размера. Кому
-    /// нужен записанный чанк наверняка — `flush_pending_chunks`.
+    /// Файл пишется не на каждый вызов; записанные чанки отдаёт
+    /// `flush_pending_chunks`.
     pub fn append_chunk(
         &mut self,
         channel: AudioChannel,
         pcm: &[u8],
         sample_rate: u32,
         timestamp_ms: u64,
-    ) -> Result<Option<ManifestChunk>, AudioManifestError> {
+    ) -> Result<(), AudioManifestError> {
         if self.active_session.is_none() {
             return Err(AudioManifestError::SessionNotOpen);
+        }
+        // Обе проверки — про молчаливую порчу, а не про живой путь: Swift
+        // шлёт постоянные 16 кГц и всегда парами байт. Но частота 0 сделала
+        // бы накопитель невозможным (`duration_ms` всегда 0, целевой размер
+        // недостижим, `next_timestamp_ms` не двигается), а нечётная длина
+        // сдвинула бы выравнивание i16 всем кадрам пачки после неё — 2 с
+        // шума вместо звука. Видимая ошибка лучше и того, и другого.
+        if sample_rate == 0 {
+            return Err(AudioManifestError::InvalidSampleRate);
+        }
+        if !pcm.len().is_multiple_of(2) {
+            return Err(AudioManifestError::OddPcmLength(pcm.len()));
         }
         let idx = channel_index(channel);
 
@@ -232,10 +263,6 @@ impl AudioManifestStore {
             Some(p) if p.next_timestamp_ms() != timestamp_ms || p.sample_rate != sample_rate
         );
         if must_close {
-            // Записанный чанк здесь намеренно не возвращается: сброс
-            // служебный, а `Some` из `append_chunk` означает «набрался
-            // целевой размер». Кому нужен чанк наверняка — берёт его у
-            // `flush_pending_chunks`.
             self.write_pending(channel)?;
         }
 
@@ -250,9 +277,9 @@ impl AudioManifestStore {
         let is_full = entry.duration_ms() >= CHUNK_TARGET_MS;
 
         if is_full {
-            return self.write_pending(channel);
+            self.write_pending(channel)?;
         }
-        Ok(None)
+        Ok(())
     }
 
     /// Записать накопленное по каналу файлом и строкой манифеста.
@@ -263,16 +290,21 @@ impl AudioManifestStore {
         channel: AudioChannel,
     ) -> Result<Option<ManifestChunk>, AudioManifestError> {
         let idx = channel_index(channel);
+        if self.pending[idx].is_none() {
+            return Ok(None);
+        }
+        // Сессию проверяем до `take()`: иначе отказ означал бы «звук уже
+        // уничтожен», а не «звук всё ещё в накопителе».
+        let session_id = self
+            .active_session
+            .clone()
+            .ok_or(AudioManifestError::SessionNotOpen)?;
         let Some(pending) = self.pending[idx].take() else {
             return Ok(None);
         };
         if pending.pcm.is_empty() {
             return Ok(None);
         }
-        let session_id = self
-            .active_session
-            .clone()
-            .ok_or(AudioManifestError::SessionNotOpen)?;
         let seq = self.next_seq[idx];
         self.next_seq[idx] = seq + 1;
 
@@ -319,14 +351,35 @@ impl AudioManifestStore {
     ///
     /// Публичный: `end_session` зовёт его сам, но тестам и будущему
     /// коду нужна явная точка сброса.
+    ///
+    /// Каналы пробуются оба, даже если первый упал: они пишутся в разные
+    /// файлы, и отказ на `mic` ничего не говорит про `system`. Выход по
+    /// первой ошибке оставил бы накопитель второго канала в памяти, а
+    /// `stop_recording` роняет store сразу после сброса (`guard.store =
+    /// None`) — до 2 с записи другого канала исчезли бы молча.
+    ///
+    /// Возврат при частичном успехе — `Err` с первой встреченной ошибкой:
+    /// вызывающему нужна именно она. Успешно записанный чанк другого канала
+    /// при этом уже лежит и на диске, и в манифесте — теряется только его
+    /// место в возвращённом списке, но не сама запись.
     pub fn flush_pending_chunks(&mut self) -> Result<Vec<ManifestChunk>, AudioManifestError> {
         let mut written = Vec::new();
+        let mut first_error = None;
         for channel in [AudioChannel::Mic, AudioChannel::System] {
-            if let Some(chunk) = self.write_pending(channel)? {
-                written.push(chunk);
+            match self.write_pending(channel) {
+                Ok(Some(chunk)) => written.push(chunk),
+                Ok(None) => {}
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
             }
         }
-        Ok(written)
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(written),
+        }
     }
 
     /// Число чанков в session (оба канала).
@@ -1402,7 +1455,11 @@ pub(crate) mod tests {
             let chunks = store.list_chunks("s1").unwrap();
             assert_eq!(chunks.len(), 2, "две частоты в одном файле недопустимы");
             assert_eq!(chunks[0].sample_rate, 16_000);
+            assert_eq!(chunks[0].timestamp_ms, 0);
+            assert_eq!(chunks[0].frame_count, 1_600);
             assert_eq!(chunks[1].sample_rate, 48_000);
+            assert_eq!(chunks[1].timestamp_ms, 100, "второй чанк со своего времени");
+            assert_eq!(chunks[1].frame_count, 1_600);
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -1426,6 +1483,178 @@ pub(crate) mod tests {
             let chunks = store.list_chunks("s1").unwrap();
             assert_eq!(chunks.len(), 1, "непрерывное склеивается");
             assert_eq!(chunks[0].frame_count, 4_800, "300 мс на 16 кГц");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Частота 0 отвергается, а не копится.
+    ///
+    /// С нулевой частотой длительность пачки всегда 0: целевой размер
+    /// недостижим, накопитель растёт без границы, а если такая строка всё
+    /// же доедет до диска, `read_pcm_range` пропустит её молча — звук,
+    /// который читается как ничто.
+    #[test]
+    fn a_zero_sample_rate_is_rejected() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+
+            let err = store
+                .append_chunk(AudioChannel::Mic, &frame, 0, 0)
+                .unwrap_err();
+
+            assert!(
+                matches!(err, AudioManifestError::InvalidSampleRate),
+                "{err:?}"
+            );
+            store.end_session(2).unwrap();
+            assert!(
+                store.list_chunks("s1").unwrap().is_empty(),
+                "отвергнутый кадр не должен осесть в накопителе"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Нечётная длина отвергается: один лишний байт сдвинул бы выравнивание
+    /// i16 всем кадрам пачки после себя — 2 с шума вместо звука.
+    #[test]
+    fn an_odd_pcm_length_is_rejected() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+
+            let err = store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2], 16_000, 0)
+                .unwrap_err();
+
+            assert!(
+                matches!(err, AudioManifestError::OddPcmLength(3)),
+                "{err:?}"
+            );
+            store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
+                .unwrap();
+            let chunk = store.flush_pending_chunks().unwrap().remove(0);
+            assert_eq!(
+                chunk.frame_count, 2,
+                "лишний байт не должен был попасть в пачку"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Отказ по закрытой сессии не имеет права уничтожать накопленное:
+    /// «звук ещё в памяти» — поправимо, «звук уже стёрт» — нет.
+    #[test]
+    fn a_flush_without_session_keeps_the_buffer() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            store
+                .append_chunk(AudioChannel::Mic, &[1, 0, 2, 0], 16_000, 0)
+                .unwrap();
+            // Состояние недостижимое штатно, поэтому строится напрямую:
+            // накопитель полон, сессии нет.
+            store.active_session = None;
+
+            let err = store.flush_pending_chunks().unwrap_err();
+            assert!(matches!(err, AudioManifestError::SessionNotOpen), "{err:?}");
+
+            // Накопленное на месте: вернув сессию, его удаётся дописать.
+            store.active_session = Some("s1".to_string());
+            let chunk = store.flush_pending_chunks().unwrap().remove(0);
+            assert_eq!(chunk.frame_count, 2, "накопленное пережило отказ");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Сбой записи одного канала не имеет права утащить с собой звук
+    /// другого.
+    ///
+    /// Каналы пишутся в разные файлы: отказ на `mic` ничего не говорит про
+    /// `system`. Если сброс выходит по первой же ошибке, накопитель второго
+    /// канала остаётся в памяти и умирает вместе со store (`stop_recording`
+    /// делает `guard.store = None`) — до 2 с записи исчезают, и в тексте
+    /// ошибки об этом ни слова.
+    #[test]
+    fn a_failed_mic_flush_still_writes_the_system_tail() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            // Оба канала копят: иначе проверять нечего.
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .unwrap();
+            store
+                .append_chunk(AudioChannel::System, &frame, 16_000, 0)
+                .unwrap();
+
+            // Каталог на месте будущего файла `mic`: `fs::write` падает с
+            // EISDIR — переносимое поведение POSIX, без прав и без гонки.
+            let blocked = root
+                .join("sessions")
+                .join("s1")
+                .join("mic")
+                .join("000000.pcm");
+            fs::create_dir_all(&blocked).unwrap();
+
+            let err = store.flush_pending_chunks().unwrap_err();
+            assert!(matches!(err, AudioManifestError::Io(_)), "{err:?}");
+
+            let chunks = store.list_chunks("s1").unwrap();
+            assert_eq!(
+                chunks.len(),
+                1,
+                "хвост system обязан лечь на диск, несмотря на отказ mic"
+            );
+            assert_eq!(chunks[0].channel, AudioChannel::System);
+            assert_eq!(chunks[0].frame_count, 1_600, "100 мс на 16 кГц");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Сессия обязана закрыться даже когда сброс остатка не удался.
+    ///
+    /// Иначе встреча остаётся в базе вечно открытой: `ended_at_ms` не
+    /// записан, `MeetingSummary::duration_ms()` отдаёт `None`, и библиотека
+    /// встреч показывает запись без длительности — из-за неудачной записи
+    /// файла, к закрытию сессии отношения не имеющей.
+    #[test]
+    fn end_session_closes_the_session_even_when_the_flush_fails() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s1", 1, "").unwrap();
+            let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &frame, 16_000, 0)
+                .unwrap();
+
+            let blocked = root
+                .join("sessions")
+                .join("s1")
+                .join("mic")
+                .join("000000.pcm");
+            fs::create_dir_all(&blocked).unwrap();
+
+            let err = store.end_session(5_000).unwrap_err();
+            assert!(matches!(err, AudioManifestError::Io(_)), "{err:?}");
+
+            let summaries = store.list_meeting_summaries().unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(
+                summaries[0].ended_at_ms,
+                Some(5_000),
+                "встреча закрыта, а не оставлена открытой навсегда"
+            );
+            assert_eq!(summaries[0].duration_ms(), Some(4_999));
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -2654,6 +2883,8 @@ pub(crate) mod tests {
         };
 
         assert_eq!(enlarged.sample_rate, legacy.sample_rate);
+        // Иначе одинаковая ошибка в частоте с обеих сторон прошла бы мимо.
+        assert_eq!(enlarged.sample_rate, 16_000);
         assert_eq!(enlarged.pcm, legacy.pcm, "срез не зависит от раскладки");
         // И это не совпадение двух пустот.
         assert_eq!(enlarged.pcm.len(), 7_840, "490 мс на 16 кГц");

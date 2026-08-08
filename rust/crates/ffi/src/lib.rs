@@ -2112,6 +2112,18 @@ impl MeetingCore {
     /// уезжать в ядро. Пустая строка допустима.
     pub fn start_recording(&self, session_id: String, title: String) -> String {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
+        // Поверх идущей записи новую не начинаем. Подмена store уронила бы
+        // прежний вместе с накопителем (до 2 с на канал) и с незакрытой
+        // сессией: аудио пропало бы молча, а встреча осталась бы навсегда
+        // без `ended_at_ms`. Отказ виден в Swift через `lastError`, и при
+        // нём идущая запись продолжается — терять нечего.
+        //
+        // Заблокировать это навсегда отказ не может: `stop_recording`
+        // сбрасывает `store` в `None` безусловно, даже когда закрытие
+        // сессии вернуло ошибку.
+        if guard.store.is_some() {
+            return "recording already in progress: stop it first".to_string();
+        }
         let root = guard.data_root.clone();
         match AudioManifestStore::open(&root) {
             Ok(mut store) => {
@@ -4009,6 +4021,61 @@ mod tests {
             1,
             "хвост дописан при остановке"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Вторая запись не начинается поверх первой.
+    ///
+    /// `guard.store = Some(store)` уронил бы прежний store вместе с
+    /// накопителем (до 2 с на канал) и с незакрытой сессией. Отказ виден
+    /// в Swift через `lastError`, накопленное остаётся на месте и уходит
+    /// на диск штатным `stop_recording`.
+    #[test]
+    fn start_recording_refuses_to_replace_a_live_session() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-start-twice-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.start_recording("rec-first".to_string(), String::new())
+                .is_empty()
+        );
+        // Пять кадров по 100 мс — до целевых 2 с не добирает, значит лежат
+        // в накопителе и подмена store их бы съела.
+        let frame: Vec<u8> = (0..1_600).flat_map(|_| 7_i16.to_le_bytes()).collect();
+        for index in 0..5 {
+            assert!(
+                core.ingest_audio_chunk(FfiAudioChannel::Mic, frame.clone(), 16_000, index * 100)
+                    .is_empty()
+            );
+        }
+
+        let error = core.start_recording("rec-second".to_string(), String::new());
+
+        assert!(
+            !error.is_empty(),
+            "вторая запись поверх идущей должна быть отклонена"
+        );
+        assert!(
+            core.list_meetings().iter().all(|m| m.id != "rec-second"),
+            "отклонённая запись не должна оставить встречу в базе"
+        );
+        // Идущая запись цела: хвост доезжает до диска обычной остановкой.
+        assert_eq!(core.stop_recording(), "");
+        assert_eq!(
+            core.manifest_chunk_count("rec-first".to_string()),
+            1,
+            "накопитель первой записи не потерян"
+        );
+        // И после остановки старт снова разрешён: отказ не запирает запись.
+        assert!(
+            core.start_recording("rec-third".to_string(), String::new())
+                .is_empty()
+        );
+        assert_eq!(core.stop_recording(), "");
 
         let _ = std::fs::remove_dir_all(&root);
     }
