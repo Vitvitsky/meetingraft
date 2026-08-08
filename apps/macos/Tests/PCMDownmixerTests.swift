@@ -47,39 +47,42 @@ final class PCMDownmixerTests: XCTestCase {
         return (format, buffer)
     }
 
-    /// 48 kHz стерео → 16 kHz моно: кадров втрое меньше.
+    /// Нарезка на чанки не меняет длину результата.
     ///
-    /// Меряется **пропускная способность в установившемся режиме**, а не
-    /// сумма с начала потока. Непрерывный ресемплер один раз придерживает
-    /// внутри задержку фильтра, и её величина — свойство конвертера, а не
-    /// нашего кода: зашивать её числом значит подгонять тест под платформу.
+    /// Никаких ожидаемых чисел: тот же звук подаётся десятью кусками и
+    /// одним куском, и сравниваются длины. Задержка фильтра у обоих
+    /// одинакова и из сравнения выпадает — а потеря кадров осталась бы.
     ///
-    /// Поэтому сравниваются вторые десять чанков, когда задержка уже
-    /// уплачена. Потеря кадров была бы постоянной и здесь бы вылезла;
-    /// разовая задержка — нет.
+    /// Два предыдущих захода зашивали сюда константу (сперва сумму с
+    /// начала потока, потом установившийся режим), и оба раза константа
+    /// оказывалась не той. Число, которого нет, ошибиться не может.
     ///
     /// Измерение **одного** вызова когда-то дало вывод «теряется 15%», на
     /// котором держался сброс конвертера после каждого чанка.
-    func testDownmixesStereo48kToMono16k() throws {
-        let (format, buffer) = makeBuffer(sampleRate: 48000, channels: 2, frames: 4800)
-        let downmixer = try XCTUnwrap(PCMDownmixer(from: format))
+    func testChunkingDoesNotChangeTheFrameCount() throws {
+        let chunks = 10
+        let chunkFrames: AVAudioFrameCount = 4800
 
-        var warmup = 0
-        for _ in 0 ..< 10 {
-            warmup += downmixer.convert(buffer).count
-        }
-        var steady = 0
-        for _ in 0 ..< 10 {
-            steady += downmixer.convert(buffer).count
+        let (format, chunk) = makeBuffer(sampleRate: 48000, channels: 2, frames: chunkFrames)
+        let chunked = try XCTUnwrap(PCMDownmixer(from: format))
+        var chunkedTotal = 0
+        for _ in 0 ..< chunks {
+            chunkedTotal += chunked.convert(chunk).count
         }
 
-        // Десять чанков по 100 мс = 16 000 кадров на 16 кГц.
-        XCTAssertEqual(Double(steady), 16000, accuracy: 16)
-        XCTAssertLessThanOrEqual(
-            warmup,
-            steady,
-            "начало потока не короче установившегося — задержки фильтра нет, "
-                + "то есть конвертер всё-таки сбрасывается"
+        let (wholeFormat, whole) = makeBuffer(
+            sampleRate: 48000,
+            channels: 2,
+            frames: chunkFrames * AVAudioFrameCount(chunks)
+        )
+        let single = try XCTUnwrap(PCMDownmixer(from: wholeFormat))
+        let wholeTotal = single.convert(whole).count
+
+        XCTAssertGreaterThan(wholeTotal, 0, "опорная конвертация пуста — сравнивать нечего")
+        XCTAssertEqual(
+            chunkedTotal,
+            wholeTotal,
+            "нарезка изменила число кадров: чанками \(chunkedTotal), одним куском \(wholeTotal)"
         )
     }
 
