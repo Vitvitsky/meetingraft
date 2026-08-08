@@ -40,8 +40,25 @@ final class PCMDownmixer {
             return []
         }
 
-        // Один входной буфер + endOfStream, иначе ресемплер не отдаёт хвост
-        // (на 48→16 kHz теряется ~15% кадров при noDataNow).
+        // Конвертер живёт между вызовами: запись — один непрерывный поток,
+        // а 100 мс — размер кадра живого пути, не граница звука.
+        //
+        // Отсюда `noDataNow`, а не `endOfStream`. `endOfStream` заставляет
+        // ресемплер дожать хвост, добив вход нулями, и после него состояние
+        // фильтра приходится сбрасывать — то есть на каждой границе чанка
+        // возникал разрыв. Слышно его не было, но пакетный проход по записи
+        // (ADR-011) считает именно по этим сэмплам, а там точность и есть
+        // цель.
+        //
+        // Кадры при этом не теряются, а **отстают**: ресемплер придерживает
+        // несколько сэмплов внутри и отдаёт их со следующим чанком. Отсюда
+        // старое наблюдение «на 48→16 kHz теряется ~15%» — оно верно для
+        // одного вызова и неверно для потока. Мерить надо накопительно.
+        //
+        // Цена: последние несколько миллисекунд записи остаются в
+        // конвертере навсегда, потому что `endOfStream` не приходит уже
+        // никогда. Это лучше разрыва каждые 100 мс, и если хвост
+        // понадобится — это отдельная работа со своим `drain()`.
         var consumed = false
         var error: NSError?
         var samples: [Float] = []
@@ -49,7 +66,7 @@ final class PCMDownmixer {
         while true {
             let status = converter.convert(to: out, error: &error) { _, status in
                 if consumed {
-                    status.pointee = .endOfStream
+                    status.pointee = .noDataNow
                     return nil
                 }
                 consumed = true
@@ -65,16 +82,13 @@ final class PCMDownmixer {
                     contentsOf: UnsafeBufferPointer(start: channel, count: Int(out.frameLength))
                 )
             }
-            if status == .endOfStream || status == .error {
-                break
-            }
-            if status == .haveData, out.frameLength == 0 {
+            // `inputRanDry` — обычное завершение вызова: вход кончился, а
+            // состояние осталось для следующего чанка.
+            if status != .haveData || out.frameLength == 0 {
                 break
             }
         }
 
-        // После endOfStream конвертер нужно сбросить для следующего чанка.
-        converter.reset()
         return samples
     }
 }
