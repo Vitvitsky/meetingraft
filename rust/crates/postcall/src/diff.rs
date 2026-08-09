@@ -43,9 +43,13 @@ const MAX_LCS_WORDS: usize = 1200;
 /// Сравнить два текста по словам.
 ///
 /// Инвариант для потребителей: результат никогда не содержит три и более
-/// чередующихся несовпадающих участков подряд (т.е. Removed, Added, Removed, Added
-/// и т.д.). На этот инвариант опирается code `term_from_edit`, которая пропускает
-/// сразу на индекс+2 при нахождении пары (Removed, Added) или (Added, Removed).
+/// чередующихся несовпадающих участков подряд (`Removed, Added, Removed` и
+/// так далее). На него опирается `term_from_edit`: найдя пару, она прыгает
+/// сразу через два участка, и третий проглотила бы молча.
+///
+/// Инвариант держится перебором коротких пар —
+/// `diff_never_emits_three_alternating_spans`. Меняешь разбор — гоняй его:
+/// простая «пара на каждое несовпадение» ломает инвариант на `а а` → `б`.
 pub fn diff_words(live: &str, final_text: &str) -> Vec<DiffSpan> {
     let left: Vec<&str> = live.split_whitespace().collect();
     let right: Vec<&str> = final_text.split_whitespace().collect();
@@ -275,6 +279,94 @@ mod tests {
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].op, DiffOp::Removed);
         assert_eq!(spans[1].op, DiffOp::Added);
+    }
+
+    /// Первый участок из трёх подряд несовпадающих, или `None`.
+    ///
+    /// Прибор для инварианта, на который опирается `term_from_edit`.
+    fn first_alternating_triple(spans: &[DiffSpan]) -> Option<usize> {
+        (0..spans.len().saturating_sub(2))
+            .find(|&i| spans[i..i + 3].iter().all(|span| span.op != DiffOp::Equal))
+    }
+
+    /// Проверка прибора: на заведомо плохом наборе он обязан сработать.
+    ///
+    /// Без этого «ни одной тройки не найдено» ниже значило бы только то,
+    /// что искать не умеют.
+    #[test]
+    fn triple_detector_fires_on_a_known_bad_sequence() {
+        let bad = vec![
+            word_span(DiffOp::Equal, "начало"),
+            word_span(DiffOp::Removed, "а"),
+            word_span(DiffOp::Added, "б"),
+            word_span(DiffOp::Removed, "в"),
+            word_span(DiffOp::Equal, "конец"),
+        ];
+
+        assert_eq!(first_alternating_triple(&bad), Some(1));
+    }
+
+    /// Инвариант для `term_from_edit`: трёх несовпадающих подряд не бывает.
+    ///
+    /// Потребитель прыгает через два участка, найдя пару, — и если дифф
+    /// когда-нибудь выдаст `Removed, Added, Removed`, он молча проглотит
+    /// третий и заведёт термин из половины правки. Перебором, а не
+    /// примерами: тройки, если они есть, живут в коротких текстах с
+    /// перестановками, а такие в примеры руками не попадают.
+    ///
+    /// Алфавита из трёх слов и длины до четырёх хватает: LCS смотрит на
+    /// равенство слов, а не на их вид, и все формы чередования
+    /// укладываются в такие пары (14641 пара, около секунды).
+    #[test]
+    fn diff_never_emits_three_alternating_spans() {
+        let alphabet = ["а", "б", "в"];
+        let texts = all_texts(&alphabet, 4);
+        let mut with_pair = 0usize;
+
+        for live in &texts {
+            for final_text in &texts {
+                let spans = diff_words(live, final_text);
+                assert_eq!(
+                    first_alternating_triple(&spans),
+                    None,
+                    "три несовпадающих подряд: {live:?} → {final_text:?} дало {spans:?}"
+                );
+                if spans
+                    .windows(2)
+                    .any(|pair| pair.iter().all(|span| span.op != DiffOp::Equal))
+                {
+                    with_pair += 1;
+                }
+            }
+        }
+
+        // Инвариант о том, чего не бывает, выполняется сам собой, если
+        // не бывает и пар. Непустоту материала утверждаем отдельно.
+        assert!(
+            with_pair > 100,
+            "пар (Removed, Added) нашлось всего {with_pair} — перебор проходит мимо проверяемого"
+        );
+    }
+
+    /// Все тексты длиной от нуля до `max_words` из данных слов.
+    fn all_texts(alphabet: &[&str], max_words: usize) -> Vec<String> {
+        let mut texts = vec![String::new()];
+        let mut current = vec![String::new()];
+        for _ in 0..max_words {
+            let mut next = Vec::new();
+            for text in &current {
+                for word in alphabet {
+                    next.push(if text.is_empty() {
+                        (*word).to_string()
+                    } else {
+                        format!("{text} {word}")
+                    });
+                }
+            }
+            texts.extend(next.iter().cloned());
+            current = next;
+        }
+        texts
     }
 
     /// Общие края отрезаются до LCS, поэтому длинный, но почти одинаковый
