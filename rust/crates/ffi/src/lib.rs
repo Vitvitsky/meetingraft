@@ -1798,6 +1798,13 @@ impl MeetingCore {
         {
             return error.to_string();
         }
+        // Строго после записи термина: сорвись всё между двумя шагами —
+        // останется лишняя строка, а не пустое место вместо пары.
+        for id in outcome.obsolete_term_ids {
+            if let Err(error) = store.delete_glossary_term(&id) {
+                return error.to_string();
+            }
+        }
         // Тело markdown производно от сегментов — после правки его надо
         // пересобрать, как это делает назначение спикера.
         rerender_final_bodies(&mut store, &meeting_id)
@@ -3235,6 +3242,59 @@ mod tests {
                 .is_empty(),
             "отменённая правка уходит из журнала"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Повышение до глобальной уносит с собой копию встречи (Epic 19).
+    ///
+    /// Строку встречи повышение оставляло на месте, и в словаре копились
+    /// пары «встреча + глобальная» на один термин: обе дают ровно одну
+    /// подсказку, а человеку показывались как два разных правила.
+    #[test]
+    fn promotion_to_global_removes_the_meeting_twin() {
+        let root = edits_root("term-twin");
+        let meeting_id = "m-term-twin".to_string();
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 0, 1_000, "зашли на интра ру")]);
+
+        let mut store = AudioManifestStore::open(&root).expect("store");
+        for (id, scope) in [
+            ("global", domain::GlossaryScope::Global),
+            (
+                "twin",
+                domain::GlossaryScope::Meeting {
+                    meeting_id: meeting_id.clone(),
+                },
+            ),
+        ] {
+            store
+                .upsert_glossary_term(
+                    &domain::GlossaryTerm {
+                        id: id.to_owned(),
+                        surface: "интра ру".into(),
+                        canonical: "intra.ru".into(),
+                        language: SpeechLanguage::Ru,
+                        scope,
+                        kind: domain::GlossaryKind::Hint,
+                    },
+                    1,
+                )
+                .expect("термин");
+        }
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        // Обе строки должны лежать в базе до правки — иначе проверка ниже
+        // сойдётся сама собой, ничего не проверив.
+        assert_eq!(core.list_glossary_terms().len(), 2, "засеяны обе строки");
+
+        assert!(
+            core.edit_segment_text(meeting_id.clone(), 1, 0, "зашли на intra.ru".into())
+                .is_empty()
+        );
+
+        let terms = core.list_glossary_terms();
+        assert_eq!(terms.len(), 1, "копия встречи осталась: {terms:?}");
+        assert_eq!(terms[0].id, "global");
+        assert!(matches!(terms[0].scope, FfiGlossaryScope::Global));
         let _ = std::fs::remove_dir_all(&root);
     }
 

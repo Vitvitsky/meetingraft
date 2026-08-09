@@ -17,6 +17,21 @@ pub struct EditOutcome {
     pub edit: Option<SegmentEdit>,
     /// Термин к записи. `None` — правка не словарная.
     pub term: Option<GlossaryTerm>,
+    /// Подсказки, которые накрыл глобальный термин и которые надо снести.
+    ///
+    /// Появляются, когда `term` получился глобальным: та же пара, лежащая
+    /// в области встречи, после этого не значит уже ничего — глобальная
+    /// покрывает все встречи, включая эту. Раньше такие строки оставались,
+    /// и в словаре копились пары «встреча + глобальная» на один термин.
+    ///
+    /// Сюда попадают только подсказки. Замена области встречи переживает
+    /// повышение: её поставил человек явным жестом, и снести её молча —
+    /// ровно та потеря ручной работы, которой не должно быть.
+    ///
+    /// Порядок записи важен: сперва глобальный термин, потом удаление.
+    /// Обрыв между ними оставит лишнюю строку, обратный порядок — потерю
+    /// пары целиком.
+    pub obsolete_term_ids: Vec<String>,
 }
 
 /// Разобрать правку: журнал плюс, возможно, подсказка в глоссарий.
@@ -41,6 +56,7 @@ pub fn plan_edit(
         return EditOutcome {
             edit: None,
             term: None,
+            obsolete_term_ids: Vec::new(),
         };
     }
 
@@ -56,6 +72,7 @@ pub fn plan_edit(
         applied_version: Some(version),
     };
 
+    let mut obsolete_term_ids: Vec<String> = Vec::new();
     let term = term_from_edit(&segment.text, edited).map(|(surface, canonical)| {
         let same_pair = |term: &&GlossaryTerm| {
             term.language == language
@@ -101,8 +118,28 @@ pub fn plan_edit(
             _ => GlossaryScope::Meeting { meeting_id: meeting_id.to_owned() },
         };
 
+        let id = current.map_or_else(|| term_id.to_owned(), |term| term.id.clone());
+
+        // Глобальный термин накрывает ту же пару в области встречи, и
+        // держать обе строки незачем: они дают одну и ту же подсказку.
+        // Пишем сюда только подсказки и только чужие id — свою строку
+        // хранилище перезапишет само.
+        if scope == GlossaryScope::Global {
+            obsolete_term_ids.extend(
+                existing_terms
+                    .iter()
+                    .filter(same_pair)
+                    .filter(|term| {
+                        term.kind == GlossaryKind::Hint
+                            && term.scope != GlossaryScope::Global
+                            && term.id != id
+                    })
+                    .map(|term| term.id.clone()),
+            );
+        }
+
         GlossaryTerm {
-            id: current.map_or_else(|| term_id.to_owned(), |term| term.id.clone()),
+            id,
             surface,
             canonical,
             language,
@@ -114,6 +151,7 @@ pub fn plan_edit(
     EditOutcome {
         edit: Some(edit),
         term,
+        obsolete_term_ids,
     }
 }
 
@@ -267,6 +305,134 @@ mod tests {
             GlossaryKind::Hint,
             "вид не меняется — поднимается только область"
         );
+    }
+
+    fn hint(id: &str, scope: GlossaryScope) -> GlossaryTerm {
+        GlossaryTerm {
+            id: id.into(),
+            surface: "интра ру".into(),
+            canonical: "intra.ru".into(),
+            language: SpeechLanguage::Ru,
+            scope,
+            kind: GlossaryKind::Hint,
+        }
+    }
+
+    fn edit_in_m1(existing: &[GlossaryTerm]) -> super::EditOutcome {
+        plan_edit(
+            "m1",
+            1,
+            &segment(),
+            "зашли на intra.ru",
+            SpeechLanguage::Ru,
+            existing,
+            "edit-1",
+            "term-1",
+            42,
+        )
+    }
+
+    /// Глобальная подсказка накрывает свою же копию в области встречи.
+    ///
+    /// Раньше строка встречи оставалась, и в словаре копились пары
+    /// «встреча + глобальная» на один термин: обе дают одну подсказку, и
+    /// разобраться, зачем их две, человеку было нечем.
+    #[test]
+    fn global_scope_makes_the_meeting_twin_obsolete() {
+        let existing = vec![
+            hint("global", GlossaryScope::Global),
+            hint(
+                "twin",
+                GlossaryScope::Meeting {
+                    meeting_id: "m1".into(),
+                },
+            ),
+        ];
+
+        let outcome = edit_in_m1(&existing);
+
+        let term = outcome.term.expect("термин");
+        assert_eq!(term.scope, GlossaryScope::Global);
+        assert_eq!(term.id, "global", "переиспользуется действующая строка");
+        assert_eq!(outcome.obsolete_term_ids, vec!["twin".to_string()]);
+    }
+
+    /// Замену области встречи повышение не сносит.
+    ///
+    /// Её поставил человек явным жестом; глобальная подсказка переписывать
+    /// готовый текст не станет и потому заменой не является.
+    #[test]
+    fn meeting_replacement_survives_promotion() {
+        let mut replacement = hint(
+            "mine",
+            GlossaryScope::Meeting {
+                meeting_id: "m1".into(),
+            },
+        );
+        replacement.kind = GlossaryKind::Replacement;
+        let existing = vec![hint("global", GlossaryScope::Global), replacement];
+
+        let outcome = edit_in_m1(&existing);
+
+        assert_eq!(
+            outcome.term.expect("термин").scope,
+            GlossaryScope::Global,
+            "область всё же глобальная — иначе тест проверяет не тот случай"
+        );
+        assert!(
+            outcome.obsolete_term_ids.is_empty(),
+            "снесли замену: {:?}",
+            outcome.obsolete_term_ids
+        );
+    }
+
+    /// Первая правка: сносить нечего, и списка быть не должно.
+    #[test]
+    fn meeting_scope_makes_nothing_obsolete() {
+        let outcome = edit_in_m1(&[]);
+
+        assert_eq!(
+            outcome.term.expect("термин").scope,
+            GlossaryScope::Meeting {
+                meeting_id: "m1".into()
+            }
+        );
+        assert!(outcome.obsolete_term_ids.is_empty());
+    }
+
+    /// Своя же строка в список на снос не попадает.
+    ///
+    /// Повышаемая подсказка встречи переезжает в глобальную область под
+    /// тем же id, и хранилище перепишет её само. Попади она в список —
+    /// удаление после записи стёрло бы только что заведённый термин.
+    #[test]
+    fn promoted_term_does_not_delete_itself() {
+        let existing = vec![
+            hint(
+                "elsewhere",
+                GlossaryScope::Meeting {
+                    meeting_id: "m0".into(),
+                },
+            ),
+            hint(
+                "mine",
+                GlossaryScope::Meeting {
+                    meeting_id: "m1".into(),
+                },
+            ),
+        ];
+
+        let outcome = edit_in_m1(&existing);
+
+        let term = outcome.term.expect("термин");
+        assert_eq!(term.scope, GlossaryScope::Global);
+        assert_eq!(term.id, "mine", "переезжает строка этой встречи");
+        assert!(
+            !outcome.obsolete_term_ids.contains(&term.id),
+            "термин сносит сам себя: {:?}",
+            outcome.obsolete_term_ids
+        );
+        assert_eq!(outcome.obsolete_term_ids, vec!["elsewhere".to_string()]);
     }
 
     #[test]
