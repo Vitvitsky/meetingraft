@@ -17,7 +17,7 @@ use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
     LlmClient, LlmError, OllamaNativeClient, OpenAiCompatLlmClient, assemble_final, brief_prompts,
     follow_up_prompts, make_artifact, occurrences_to_edit, plan_edit, promotable_term,
-    render_brief, render_follow_up,
+    reattach_edits, render_brief, render_follow_up,
 };
 mod rebuild;
 
@@ -837,6 +837,22 @@ fn write_store<T>(
     }
 }
 
+/// Собрать Final из live-captions и записать новой версией.
+///
+/// Сегментов эта версия не создаёт — их даёт только пересбор (ADR-011):
+/// captions приходят кусками по мере согласия гипотез (ADR-010), а не по
+/// репликам, и нарезать из них сегменты значило бы выдать догадку за
+/// разметку.
+///
+/// Отсюда следствие для журнала правок: держаться правкам в новой версии
+/// не за что. Оставь их с прежним номером — они пропадут из виду совсем:
+/// в сегментах их не покажут (сегментов нет), в списке неприменившихся
+/// тоже (там ищут `NULL`). Поэтому правки отвязываются тем же правилом,
+/// что и при пересборе, — `reattach_edits` с пустой нарезкой. Раздел
+/// неприменившихся для того и заведён.
+///
+/// Пропасть ручная работа при этом не может: следующий пересбор берёт
+/// **весь** журнал, включая отвязанные, и сажает их на новые сегменты.
 fn assemble_and_store_final(
     store: &mut AudioManifestStore,
     meeting_id: &str,
@@ -853,6 +869,17 @@ fn assemble_and_store_final(
         version,
     );
     store.upsert_final_transcript(&transcript)?;
+
+    // Только те, что сейчас к версии привязаны: остальные уже лежат в
+    // разделе неприменившихся, и переписывать их незачем.
+    let attached: Vec<_> = store
+        .list_segment_edits(meeting_id)?
+        .into_iter()
+        .filter(|edit| edit.applied_version.is_some())
+        .collect();
+    for edit in reattach_edits(&attached, &[], version) {
+        store.upsert_segment_edit(&edit)?;
+    }
     Ok(transcript)
 }
 
@@ -4075,6 +4102,39 @@ mod tests {
         assert!(core.assemble_final_now("m-empty".into()).is_empty());
 
         assert!(core.search_meetings("   ".into(), 10).is_empty());
+    }
+
+    /// Сборка из captions уводит правки в раздел неприменившихся.
+    ///
+    /// Новая версия сегментов не создаёт, держаться правке не за что. С
+    /// прежним номером версии она пропадала из виду совсем: в сегментах
+    /// не показать (их нет), в списке неприменившихся не найти (там ищут
+    /// `NULL`). Тихо — а значит недопустимо.
+    #[test]
+    fn assemble_from_captions_detaches_edits_of_older_versions() {
+        let root = edits_root("assemble-detach");
+        let meeting_id = "m-assemble-detach".to_string();
+        seed_segment_version(&root, &meeting_id, 1, &[(0, 0, 1_000, "зашли на интра ру")]);
+        seed_final_captions(&root, &meeting_id);
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(
+            core.edit_segment_text(meeting_id.clone(), 1, 0, "зашли на intra.ru".into())
+                .is_empty()
+        );
+        // Правка должна быть именно применённой — иначе проверка ниже
+        // сойдётся на правке, которая и так лежала в разделе.
+        assert!(
+            core.list_unapplied_edits(meeting_id.clone()).is_empty(),
+            "правка ещё не применена — проверять нечего"
+        );
+
+        assert!(core.assemble_final_now(meeting_id.clone()).is_empty());
+
+        let unapplied = core.list_unapplied_edits(meeting_id.clone());
+        assert_eq!(unapplied.len(), 1, "правка пропала из виду: {unapplied:?}");
+        assert_eq!(unapplied[0].edited_text, "зашли на intra.ru");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
