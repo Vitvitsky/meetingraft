@@ -139,6 +139,12 @@ impl FinalSegment {
 ///
 /// Правка привязана к месту, а не к порядковому номеру: пересбор режет
 /// запись заново и номера меняются, а место остаётся тем же.
+///
+/// В базе этот ключ ничем не закреплён — ни уникальным индексом, ни
+/// внешним ключом, и это осознанно (комментарий к шагу 8 в
+/// `storage::migrations` объясняет, почему иначе нельзя). Значит,
+/// согласованность держится только на том, что все считают место через
+/// [`edits_by_position`], а не заводят свой расчёт.
 pub type EditPosition = (AudioChannel, u64, u64);
 
 /// Ручная правка текста сегмента.
@@ -277,7 +283,7 @@ pub fn body_fingerprint(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArtifactKind, SegmentEdit, body_fingerprint, edits_by_position};
+    use super::{ArtifactKind, FinalSegment, SegmentEdit, body_fingerprint, edits_by_position};
     use crate::AudioChannel;
 
     #[test]
@@ -340,6 +346,39 @@ mod tests {
         let edits = vec![edit("e1", None, 10)];
 
         assert!(edits_by_position(&edits, 1).is_empty());
+    }
+
+    /// Сегмент и правка на одних координатах дают одно место.
+    ///
+    /// Ключ места — договорённость трёх слоёв, а не ограничение схемы:
+    /// уникального индекса на `segment_edits` нет и быть не может
+    /// (см. комментарий к шагу 8 в `storage::migrations`). Держится он на
+    /// том, что обе `position()` считают одно и то же, а impl'ы у них
+    /// разные. Разъедутся — правки перестанут находить свои сегменты
+    /// молча: не ошибка, а пустой результат.
+    #[test]
+    fn segment_and_edit_agree_on_the_position() {
+        let segment = FinalSegment {
+            index: 7,
+            start_ms: 1000,
+            end_ms: 2000,
+            channel: AudioChannel::Mic,
+            speaker_id: String::new(),
+            speaker_pinned: false,
+            text: "интра ру".into(),
+            text_edited: false,
+            original_text: String::new(),
+        };
+        let edit = edit("e1", Some(1), 10);
+
+        // Проверять равенство мест имеет смысл, только если координаты
+        // и правда совпадают: разойдись они, тест сравнивал бы мимо.
+        assert_eq!(
+            (segment.channel, segment.start_ms, segment.end_ms),
+            (edit.channel, edit.start_ms, edit.end_ms),
+            "данные теста разъехались по координатам"
+        );
+        assert_eq!(segment.position(), edit.position());
     }
 
     /// Две правки на одном месте: побеждает последнее решение человека,
