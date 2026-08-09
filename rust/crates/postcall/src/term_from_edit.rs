@@ -25,11 +25,12 @@ pub fn term_from_edit(original: &str, edited: &str) -> Option<(String, String)> 
     // берётся из Removed — это то, что распознала модель.
     let mut pair: Option<(String, String)> = None;
     let mut index = 0;
-    // Цикл опирается на инвариант diff_words: никогда не выдаёт три и более
-    // чередующихся несовпадающих участка подряд (т.е. Removed, Added, Removed,
-    // Added и т.д.). Это позволяет пропускать сразу на индекс+2 при нахождении
-    // пары (Removed, Added) или (Added, Removed). Если diff_words будет изменена,
-    // это правило может сломаться тихо (см. зависимость в diff.rs).
+    // Цикл опирается на инвариант diff_words: три и более чередующихся
+    // несовпадающих участка подряд (Removed, Added, Removed, ...) не
+    // выдаются никогда. Поэтому, найдя пару, можно прыгать на индекс+2.
+    // Инвариант закреплён перебором в diff.rs
+    // (`diff_never_emits_three_alternating_spans`); без него правка
+    // «а а» → «б» дала бы термин из половины замены, и молча.
     while index + 1 < spans.len() {
         let (left, right) = (&spans[index], &spans[index + 1]);
         let found = match (left.op, right.op) {
