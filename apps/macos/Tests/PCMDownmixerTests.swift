@@ -47,42 +47,59 @@ final class PCMDownmixerTests: XCTestCase {
         return (format, buffer)
     }
 
-    /// Нарезка на чанки не меняет длину результата.
+    /// На длинном потоке отставание не растёт и не превышает чанка.
     ///
-    /// Никаких ожидаемых чисел: тот же звук подаётся десятью кусками и
-    /// одним куском, и сравниваются длины. Задержка фильтра у обоих
-    /// одинакова и из сравнения выпадает — а потеря кадров осталась бы.
+    /// Меряется не длина результата, а **отставание**: сколько кадров из
+    /// поданных ещё не вышло. Ожидаемая длина считается из входа (4800
+    /// кадров на 48 кГц — это 1600 на 16 кГц), константа тут одна —
+    /// граница в один чанк, и она взята из требования к задержке: больше
+    /// 100 мс внутри конвертера живой путь не терпит.
     ///
-    /// Два предыдущих захода зашивали сюда константу (сперва сумму с
-    /// начала потока, потом установившийся режим), и оба раза константа
-    /// оказывалась не той. Число, которого нет, ошибиться не может.
+    /// Отставание не обязано быть нулевым и не обязано быть постоянным:
+    /// конвертер отдаёт блоками (замер на Маке 2026-08-08: по 4096
+    /// входных кадров), поэтому в любом фиксированном окне сумма гуляет
+    /// в обе стороны. Существенно, что **накопленное** отставание не
+    /// уходит в рост: сброс состояния на каждой границе, ради которого
+    /// тест и существует, дал бы потерю на каждом чанке, и на сотне
+    /// чанков граница была бы снесена с запасом.
     ///
-    /// Измерение **одного** вызова когда-то дало вывод «теряется 15%», на
-    /// котором держался сброс конвертера после каждого чанка.
-    func testChunkingDoesNotChangeTheFrameCount() throws {
-        let chunks = 10
+    /// Прошлые заходы: три упавших теста подряд, каждый утверждал число,
+    /// которого автор измерить не мог, — сумму с допуском на глаз, потом
+    /// установившийся режим с допуском 16, потом равенство нарезки
+    /// одному куску (посылка «задержка одинакова» оказалась ложной:
+    /// 15738 против 15013).
+    func testLongStreamHoldsBackLessThanOneChunk() throws {
         let chunkFrames: AVAudioFrameCount = 4800
-
+        let chunks = 100
         let (format, chunk) = makeBuffer(sampleRate: 48000, channels: 2, frames: chunkFrames)
-        let chunked = try XCTUnwrap(PCMDownmixer(from: format))
-        var chunkedTotal = 0
-        for _ in 0 ..< chunks {
-            chunkedTotal += chunked.convert(chunk).count
+        let perChunkExpected = Int(
+            Double(chunkFrames) * AudioChunkPipeline.targetSampleRate / 48000
+        )
+        let downmixer = try XCTUnwrap(PCMDownmixer(from: format))
+
+        var total = 0
+        var worst = 0
+        var worstAt = 0
+        for index in 1 ... chunks {
+            total += downmixer.convert(chunk).count
+            let behind = index * perChunkExpected - total
+            XCTAssertGreaterThanOrEqual(
+                behind,
+                0,
+                "кадров вышло больше, чем было подано, на чанке \(index): \(total)"
+            )
+            if behind > worst {
+                worst = behind
+                worstAt = index
+            }
         }
 
-        let (wholeFormat, whole) = makeBuffer(
-            sampleRate: 48000,
-            channels: 2,
-            frames: chunkFrames * AVAudioFrameCount(chunks)
-        )
-        let single = try XCTUnwrap(PCMDownmixer(from: wholeFormat))
-        let wholeTotal = single.convert(whole).count
-
-        XCTAssertGreaterThan(wholeTotal, 0, "опорная конвертация пуста — сравнивать нечего")
-        XCTAssertEqual(
-            chunkedTotal,
-            wholeTotal,
-            "нарезка изменила число кадров: чанками \(chunkedTotal), одним куском \(wholeTotal)"
+        XCTAssertGreaterThan(total, 0, "поток пуст — мерить нечего")
+        XCTAssertLessThan(
+            worst,
+            perChunkExpected,
+            "конвертер придерживает больше чанка: \(worst) кадров на чанке \(worstAt) "
+                + "из \(chunks); всего вышло \(total) из \(chunks * perChunkExpected)"
         )
     }
 

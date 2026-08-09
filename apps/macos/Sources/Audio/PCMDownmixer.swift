@@ -35,6 +35,17 @@ final class PCMDownmixer {
         guard buffer.frameLength > 0 else { return [] }
 
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
+        // Запас в 64 кадра — не округление, а слив отставания.
+        //
+        // Конвертер придерживает часть входа между вызовами и отдаёт её
+        // со следующим чанком. Потолок буфера выше входной доли ровно на
+        // эти 64 кадра, и на столько же за вызов рассасывается отставание.
+        //
+        // Больший запас делает **хуже**, и это замерено на Маке
+        // 2026-08-08: с запасом в целый чанк конвертер переходит на
+        // выдачу целыми блоками по 4096 входных кадров и после 48000
+        // кадров держит внутри 987 вместо 262. Прежде чем увеличивать —
+        // мерить, а не рассуждать.
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
         guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
             return []
