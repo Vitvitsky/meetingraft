@@ -1,0 +1,14 @@
+[package]
+name = "meetingraft-gate-probe"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gate-probe"
+path = "src/main.rs"
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+meetingraft-session = { path = "../session" }
+meetingraft-storage = { path = "../storage" }
+meetingraft-stt = { path = "../stt" }

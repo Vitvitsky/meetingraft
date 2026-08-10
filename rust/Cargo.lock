@@ -928,6 +928,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "meetingraft-gate-probe"
+version = "0.1.0"
+dependencies = [
+ "meetingraft-domain",
+ "meetingraft-session",
+ "meetingraft-storage",
+ "meetingraft-stt",
+]
+
+[[package]]
 name = "meetingraft-glossary"
 version = "0.1.0"
 dependencies = [
