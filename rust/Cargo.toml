@@ -11,6 +11,7 @@ members = [
     "crates/translate",
     "crates/ffi",
     "crates/uniffi-bindgen",
+    "crates/echo-probe",
 ]
 
 [workspace.package]
