@@ -1,0 +1,13 @@
+[package]
+name = "meetingraft-echo-probe"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "echo-probe"
+path = "src/main.rs"
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+meetingraft-storage = { path = "../storage" }
+meetingraft-stt = { path = "../stt" }
