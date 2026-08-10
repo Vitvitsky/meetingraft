@@ -459,6 +459,7 @@ xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft \
 | [architecture.md](architecture.md) | Принципы, latency, privacy |
 | [roadmap.md](roadmap.md) | Фазы 0–7 |
 | [backlog.md](backlog.md) | Эпики |
+| [mac-verification.md](mac-verification.md) | Сценарии проверок за Маком |
 | [adr/](adr/) | ADR-001…008 |
 | [../AGENTS.md](../AGENTS.md) | Команды агентов / границы слоёв |
 | [../README.md](../README.md) | Короткий обзор репо |
