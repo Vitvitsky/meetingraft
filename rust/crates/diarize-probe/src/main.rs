@@ -89,13 +89,16 @@ fn main() -> ExitCode {
 
     // Каталог данных нужен раньше самопроверки: и модели, и контрольные
     // записи лежат в нём же, рядом с базой.
-    let (root, session) = match args.as_slice() {
+    let (root, session, sweep) = match args.as_slice() {
         [] => {
             println!("\n{USAGE}");
             return ExitCode::SUCCESS;
         }
-        [root] => (Path::new(root), None),
-        [root, session] => (Path::new(root), Some(session.as_str())),
+        [root] => (Path::new(root), None, false),
+        [root, session] => (Path::new(root), Some(session.as_str()), false),
+        [root, session, flag] if flag == "--sweep" => {
+            (Path::new(root), Some(session.as_str()), true)
+        }
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::FAILURE;
@@ -125,9 +128,10 @@ fn main() -> ExitCode {
         );
     }
 
-    let result = match session {
-        None => list_sessions(root),
-        Some(id) => probe(root, id, engine.as_mut()),
+    let result = match (session, sweep) {
+        (None, _) => list_sessions(root),
+        (Some(id), false) => probe(root, id, engine.as_mut()),
+        (Some(id), true) => sweep_thresholds(root, id, engine.as_mut()),
     };
 
     match result {
@@ -143,10 +147,21 @@ const USAGE: &str = "\
 Использование:
   diarize-probe <каталог-данных>             — список сессий
   diarize-probe <каталог-данных> <сессия>    — разделить голоса по сессии
+  diarize-probe <каталог-данных> <сессия> --sweep
+                                            — перебрать пороги и сверить
+                                              каждый с разметкой человека
 
 Каталог данных — тот, где лежит meetingraft.sqlite3. Модели и контрольные
 записи кладёт туда scripts/fetch-diarize-models.sh; движок включается
 сборкой с --features model.
+
+Прогон идёт минутами и печатает много; сохранять вывод стоит целиком, а
+не переписывать глазами:
+
+  ... -- \"$ROOT\" <сессия> --sweep 2>&1 | tee ~/diarize-sweep.txt
+
+`2>&1` обязателен: отказы движка и его собственные сообщения идут в
+stderr, и без него в файл попадёт только половина разговора.
 
 Мерить надо две записи, и они отвечают на разные вопросы: очную (двое
 говорят в один микрофон ноутбука) и созвон. Первая — тот случай, который
@@ -426,6 +441,203 @@ fn probe(root: &Path, session_id: &str, engine: &mut dyn Diarizer) -> Result<(),
         print_against_labels(&store, session_id, channel, &report.turns);
     }
     Ok(())
+}
+
+/// Пороги для развёртки.
+///
+/// Снизу — то, что стоит в движке; сверху — заведомо слишком много.
+/// Шаг крупный намеренно: проход по получасовой дорожке идёт минутами, и
+/// мелкая сетка превращает замер в вечер.
+const SWEEP: &[f32] = &[0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00];
+
+/// Верхний конец здесь не для красоты. Если даже на 1.00 голосов остаётся
+/// много, дело не в пороге вовсе, и крутить дальше бессмысленно: следующий
+/// подозреваемый — `MIN_DURATION_ON`, отрезок в 0.3 с для слепка голоса
+/// короток, и десятки коротких реплик дают десятки плохих векторов.
+const _: () = ();
+
+/// Перебрать пороги и сверить каждый с разметкой человека.
+///
+/// Ради чего: порог по умолчанию подобран на чужих записях по минуте, и
+/// на настоящей встрече он оказался не тот — шестеро людей разошлись по
+/// десяткам голосов. Гадать о новом значении незачем, когда есть
+/// разметка: она и говорит, какой порог сходится **с нашей речью**.
+///
+/// Строки печатаются по мере счёта, а не в конце: прогон идёт минутами на
+/// каждый порог, и молчащий прибор неотличим от повисшего.
+fn sweep_thresholds(
+    root: &Path,
+    session_id: &str,
+    engine: &mut dyn Diarizer,
+) -> Result<(), String> {
+    if !engine.set_cluster_threshold(SWEEP[0]) {
+        return Err(
+            "у этого движка порога нет — перебирать нечего (собрано без --features model?)"
+                .to_string(),
+        );
+    }
+
+    let store = AudioManifestStore::open(root).map_err(|error| error.to_string())?;
+    let tracks = tracks(&store, session_id)?;
+
+    let mut done = 0usize;
+    for (channel, pcm) in tracks {
+        let labels = human_labels(&store, session_id, channel).unwrap_or_default();
+        if labels.is_empty() {
+            println!(
+                "\n  Дорожка {} — разметки человека нет, перебирать не с чем",
+                channel.code()
+            );
+            continue;
+        }
+        done += 1;
+
+        let labelled_ms: u64 = labels.iter().map(compare::Labelled::duration_ms).sum();
+        println!(
+            "\n  Дорожка {} — {} реплик разметки, {:.1} с",
+            channel.code(),
+            labels.len(),
+            labelled_ms as f64 / 1_000.0
+        );
+        println!("   порог  голосов  накрыто  в свой голос  худшая цельность  худшая чистота");
+
+        let mut rows: Vec<(f32, u32, f64)> = Vec::new();
+        for threshold in SWEEP {
+            engine.set_cluster_threshold(*threshold);
+            let report = engine.diarize(&pcm, RATE);
+            if let Some(reason) = report.refused {
+                println!("   {threshold:.2}  отказ: {reason}");
+                continue;
+            }
+            let seen = compare::compare(&labels, &report.turns);
+            let worst = |values: Vec<f64>| values.into_iter().fold(1.0f64, f64::min);
+            println!(
+                "   {threshold:.2} {:>8} {:>8.0}% {:>12.0}% {:>16.0}% {:>14.0}%",
+                report.speakers_found,
+                seen.coverage() * 100.0,
+                seen.accuracy() * 100.0,
+                worst(
+                    seen.per_speaker_wholeness()
+                        .into_iter()
+                        .map(|(_, whole, _)| whole)
+                        .collect()
+                ) * 100.0,
+                worst(
+                    seen.per_cluster_purity()
+                        .into_iter()
+                        .map(|(_, purity, _)| purity)
+                        .collect()
+                ) * 100.0,
+            );
+            rows.push((*threshold, report.speakers_found, seen.accuracy()));
+        }
+
+        summarise(&rows);
+    }
+
+    if done == 0 {
+        return Err(
+            "ни на одной дорожке нет разметки человека — перебирать пороги не с чем".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Назвать лучший порог — и сперва проверить, что перебор вообще что-то
+/// перебирал.
+///
+/// Одинаковое число голосов на всех порогах означает, что `set_config`
+/// молча ничего не сделал, и таблица выше — семь раз одна и та же строка
+/// под разными заголовками. Прибор, печатающий такое как результат, врёт
+/// убедительнее любого пропуска.
+fn summarise(rows: &[(f32, u32, f64)]) -> Sweep {
+    let verdict = judge_sweep(rows);
+    match &verdict {
+        Sweep::TooShort => {}
+        Sweep::Stuck(found) => println!(
+            "    ! на всех порогах ровно {found} голосов — порог не переставляется, и\n\
+             \x20     строки выше это одна и та же строка. Верить им нельзя"
+        ),
+        Sweep::Best {
+            thresholds,
+            found,
+            accuracy,
+        } => {
+            let middle = thresholds[thresholds.len() / 2];
+            if thresholds.len() == 1 {
+                println!(
+                    "    Лучше всего сходится порог {middle:.2}: {found} голосов, {:.0}%\n\
+                     \x20   попало в свой.",
+                    accuracy * 100.0
+                );
+            } else {
+                println!(
+                    "    Одинаково хорошо сходятся пороги {:.2}…{:.2} ({:.0}% попало в свой).\n\
+                     \x20   Брать надо середину — {middle:.2}, {found} голосов, — а не край:\n\
+                     \x20   на краю плато соседняя запись съедет с него первой же.",
+                    thresholds[0],
+                    thresholds[thresholds.len() - 1],
+                    accuracy * 100.0
+                );
+            }
+            println!(
+                "    Это **эта** запись, а не общий ответ; на другой встрече проверять\n\
+                 \x20   заново."
+            );
+        }
+    }
+    verdict
+}
+
+/// Чем кончился перебор.
+#[derive(Debug, PartialEq)]
+pub enum Sweep {
+    /// Строк меньше двух — сравнивать нечего.
+    TooShort,
+    /// Число голосов не сдвинулось ни на одном пороге.
+    Stuck(u32),
+    /// Пороги, сошедшиеся лучше всех.
+    ///
+    /// Их бывает несколько, и это не мелочь: при равном результате взять
+    /// верхний или нижний значит сесть на **край** плато, откуда соседняя
+    /// запись съедет первой же. Поэтому список, а не одно число, — и
+    /// берётся из него середина.
+    Best {
+        thresholds: Vec<f32>,
+        found: u32,
+        accuracy: f64,
+    },
+}
+
+/// Насколько два результата считаются одинаковыми.
+///
+/// Полпроцента: доли считаются из целых миллисекунд, и точное равенство
+/// поплыло бы от одного лишнего отсчёта на границе отрезка.
+const SAME_ACCURACY: f64 = 0.005;
+
+/// Вердикт отдельно от печати: ветка, видимая только на экране, тестом не
+/// проверяется и снимается потом незамеченной.
+fn judge_sweep(rows: &[(f32, u32, f64)]) -> Sweep {
+    if rows.len() < 2 {
+        return Sweep::TooShort;
+    }
+    if rows.iter().all(|(_, found, _)| *found == rows[0].1) {
+        return Sweep::Stuck(rows[0].1);
+    }
+    let best = rows
+        .iter()
+        .max_by(|a, b| a.2.total_cmp(&b.2))
+        .expect("строки есть");
+    let plateau: Vec<&(f32, u32, f64)> = rows
+        .iter()
+        .filter(|(_, _, accuracy)| best.2 - accuracy <= SAME_ACCURACY)
+        .collect();
+    let middle = plateau[plateau.len() / 2];
+    Sweep::Best {
+        thresholds: plateau.iter().map(|(threshold, ..)| *threshold).collect(),
+        found: middle.1,
+        accuracy: best.2,
+    }
 }
 
 /// Сверить найденные голоса с тем, что человек разметил в Final.
@@ -1261,6 +1473,75 @@ mod tests {
 
         assert!(error.contains("Final"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Порог, который ничего не переставляет, обязан быть назван.
+    ///
+    /// Самая опасная поломка перебора: таблица из семи одинаковых строк
+    /// под разными заголовками выглядит как результат, и «лучший порог»
+    /// из неё был бы взят с потолка.
+    #[test]
+    fn a_threshold_that_does_nothing_is_caught() {
+        let stuck = vec![(0.65, 82, 0.61), (0.75, 82, 0.61), (0.85, 82, 0.61)];
+
+        assert_eq!(judge_sweep(&stuck), Sweep::Stuck(82));
+    }
+
+    /// Лучшим считается порог с наибольшей долей попавших в свой голос,
+    /// а не с наименьшим числом голосов: мало голосов бывает и от того,
+    /// что движок слил всех в одного.
+    #[test]
+    fn the_best_row_is_the_one_that_agrees_most() {
+        let rows = vec![(0.65, 82, 0.61), (0.85, 6, 0.88), (0.95, 1, 0.30)];
+
+        assert_eq!(
+            judge_sweep(&rows),
+            Sweep::Best {
+                thresholds: vec![0.85],
+                found: 6,
+                accuracy: 0.88
+            }
+        );
+    }
+
+    /// Равные результаты — плато, и берётся его середина, а не край.
+    ///
+    /// Край выглядит так же хорошо на **этой** записи и съезжает на
+    /// следующей. Ровно та же ошибка, что была бы с порогом 0.60 на
+    /// контрольных записях: он тоже сходился, но стоял у самого обрыва.
+    #[test]
+    fn equal_results_are_a_plateau_and_the_middle_is_taken() {
+        let rows = vec![
+            (0.65, 6, 0.90),
+            (0.70, 6, 0.90),
+            (0.75, 6, 0.90),
+            (0.90, 1, 0.40),
+        ];
+
+        let Sweep::Best {
+            thresholds, found, ..
+        } = judge_sweep(&rows)
+        else {
+            panic!("плато не найдено");
+        };
+
+        assert_eq!(thresholds, vec![0.65, 0.70, 0.75], "плато обрезано");
+        assert_eq!(found, 6, "число голосов взято не из середины");
+    }
+
+    /// Одна строка — не перебор, и вердикта по ней нет.
+    #[test]
+    fn a_single_row_is_not_a_sweep() {
+        assert_eq!(judge_sweep(&[(0.65, 82, 0.61)]), Sweep::TooShort);
+        assert_eq!(judge_sweep(&[]), Sweep::TooShort);
+    }
+
+    /// Заглушка порога не имеет, и говорит об этом честно: `true` от неё
+    /// заставил бы перебор печатать одно и то же под семью заголовками.
+    #[test]
+    fn an_engine_without_a_threshold_says_so() {
+        assert!(!MockDiarizer::new().set_cluster_threshold(0.8));
+        assert!(!NeverSplits.set_cluster_threshold(0.8));
     }
 
     /// Пустая сессия — отказ, а не отчёт с нулями.

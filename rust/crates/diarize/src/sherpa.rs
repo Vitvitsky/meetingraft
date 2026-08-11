@@ -60,6 +60,11 @@ const NUM_THREADS: i32 = 2;
 /// Движок sherpa-onnx поверх пары моделей.
 pub struct SherpaDiarizer {
     inner: OfflineSpeakerDiarization,
+    /// Копия конфигурации: `set_config` принимает её целиком, а поменять
+    /// нужно одно поле. Хранить её дешевле, чем собирать заново, и
+    /// главное — так исключено, что вместе с порогом молча уедет
+    /// что-нибудь ещё.
+    config: OfflineSpeakerDiarizationConfig,
 }
 
 impl SherpaDiarizer {
@@ -93,7 +98,10 @@ impl SherpaDiarizer {
         };
 
         OfflineSpeakerDiarization::create(&config)
-            .map(|inner| Self { inner })
+            .map(|inner| Self {
+                inner,
+                config: config.clone(),
+            })
             .ok_or_else(|| {
                 format!(
                     "sherpa-onnx не поднялся на моделях {} и {} (причина — в stderr выше)",
@@ -105,6 +113,12 @@ impl SherpaDiarizer {
 }
 
 impl Diarizer for SherpaDiarizer {
+    fn set_cluster_threshold(&mut self, threshold: f32) -> bool {
+        self.config.clustering.threshold = threshold;
+        self.inner.set_config(&self.config);
+        true
+    }
+
     fn diarize(&mut self, pcm: &[i16], sample_rate: u32) -> DiarizeReport {
         // Частоту спрашиваем у самого движка, а не берём из головы.
         // Модели обучены на своей частоте, и подача 48 кГц под видом 16
