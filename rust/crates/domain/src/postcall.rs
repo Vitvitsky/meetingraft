@@ -147,6 +147,45 @@ impl FinalSegment {
 /// [`edits_by_position`], а не заводят свой расчёт.
 pub type EditPosition = (AudioChannel, u64, u64);
 
+/// Откуда взялась правка в журнале.
+///
+/// Различие не косметическое: правка, набранная человеком, — последнее
+/// слово по этому месту, и переписывать её нельзя ничем. Замена всюду
+/// (`occurrences_to_edit`) — производная от термина, и её собственный
+/// результат следующая замена вправе пересчитать.
+///
+/// Пока признака не было, обе выглядели одинаково: одно нажатие
+/// «заменять всюду» навсегда закрывало свои позиции от будущих замен, и
+/// человек об этом не узнавал.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditOrigin {
+    /// Набрана человеком в поле правки.
+    Human,
+    /// Поставлена массовой заменой по термину.
+    Bulk,
+}
+
+impl EditOrigin {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Bulk => "bulk",
+        }
+    }
+
+    /// Неизвестный код читается как ручная правка.
+    ///
+    /// Ошибиться можно в две стороны, и они не равны: принять ручную за
+    /// массовую значит позволить её переписать молча, принять массовую
+    /// за ручную — всего лишь не тронуть лишнего.
+    pub fn from_code(code: &str) -> Self {
+        match code {
+            "bulk" => Self::Bulk,
+            _ => Self::Human,
+        }
+    }
+}
+
 /// Ручная правка текста сегмента.
 ///
 /// Живёт отдельно от сегментов: сегменты производны от распознавания, а
@@ -166,6 +205,8 @@ pub struct SegmentEdit {
     pub created_at_ms: u64,
     /// Версия, в которой правка сейчас применена. `None` — не применилась.
     pub applied_version: Option<u32>,
+    /// Кто её поставил: человек или замена всюду.
+    pub origin: EditOrigin,
 }
 
 impl SegmentEdit {
@@ -290,7 +331,9 @@ pub fn body_fingerprint(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArtifactKind, FinalSegment, SegmentEdit, body_fingerprint, edits_by_position};
+    use super::{
+        ArtifactKind, EditOrigin, FinalSegment, SegmentEdit, body_fingerprint, edits_by_position,
+    };
     use crate::AudioChannel;
 
     #[test]
@@ -330,6 +373,7 @@ mod tests {
             edited_text: id.into(),
             created_at_ms,
             applied_version: version,
+            origin: EditOrigin::Human,
         }
     }
 

@@ -4,8 +4,8 @@
 //! тестируется без базы, а слой FFI остаётся тонким (`AGENTS.md`).
 
 use domain::{
-    FinalSegment, GlossaryKind, GlossaryScope, GlossaryTerm, SegmentEdit, SpeechLanguage,
-    edits_by_position,
+    EditOrigin, FinalSegment, GlossaryKind, GlossaryScope, GlossaryTerm, SegmentEdit,
+    SpeechLanguage, edits_by_position,
 };
 use glossary::GlossaryEngine;
 
@@ -70,6 +70,8 @@ pub fn plan_edit(
         edited_text: edited.to_owned(),
         created_at_ms: now_ms,
         applied_version: Some(version),
+        // Набрано человеком: следующая массовая замена это место обойдёт.
+        origin: EditOrigin::Human,
     };
 
     let mut obsolete_term_ids: Vec<String> = Vec::new();
@@ -161,11 +163,22 @@ pub fn plan_edit(
 /// Идём через журнал, а не переписыванием таблицы сегментов: распознанное
 /// должно остаться распознанным, иначе сравнить версии будет не с чем.
 ///
-/// Места, уже правленные вручную **в этой версии**, не трогаются —
+/// Места, уже правленные **вручную** и **в этой версии**, не трогаются —
 /// точечное решение человека сильнее массовой замены, ровно как у
 /// `speaker_pinned`. Правка другой версии не в счёт: пересбор при
 /// неизменной модели даёт ту же нарезку, и без фильтра по версии старая
 /// правка беспричинно блокировала бы замену в текущей.
+///
+/// А вот собственный след прошлой замены (`EditOrigin::Bulk`) замену не
+/// останавливает: он такая же производная от словаря, и следующий термин
+/// вправе его пересчитать. Раньше признака не было, любая правка
+/// считалась ручной, и одно нажатие «заменять всюду» навсегда закрывало
+/// свои позиции — второй термин на тех же репликах молча не применялся.
+///
+/// Перезапись идёт **в ту же запись журнала**: берётся её id и её
+/// `original_text`. Завести вторую значило бы записать исходным текстом
+/// уже заменённый, и «вернуть исходное» после двух замен привело бы к
+/// результату первой, а не к распознанному.
 ///
 /// Поиск и замена идут через `GlossaryEngine::normalize_caption` — тот же
 /// сопоставитель, что применяется к тексту при распознавании. Он не
@@ -195,22 +208,152 @@ pub fn occurrences_to_edit(
             let replaced = engine.normalize_caption(&segment.text);
             (replaced != segment.text).then_some((segment, replaced))
         })
-        .filter(|(segment, _)| !edited_places.contains_key(&segment.position()))
         .filter_map(|(segment, replaced)| {
-            let id = ids.next()?;
-            Some(SegmentEdit {
-                id,
-                meeting_id: meeting_id.to_owned(),
-                channel: segment.channel,
-                start_ms: segment.start_ms,
-                end_ms: segment.end_ms,
-                original_text: segment.text.clone(),
-                edited_text: replaced,
-                created_at_ms: now_ms,
-                applied_version: Some(version),
-            })
+            let previous = edited_places.get(&segment.position());
+            match previous {
+                Some(edit) if edit.origin == EditOrigin::Human => None,
+                Some(edit) => Some(SegmentEdit {
+                    edited_text: replaced,
+                    applied_version: Some(version),
+                    ..(*edit).clone()
+                }),
+                None => Some(SegmentEdit {
+                    id: ids.next()?,
+                    meeting_id: meeting_id.to_owned(),
+                    channel: segment.channel,
+                    start_ms: segment.start_ms,
+                    end_ms: segment.end_ms,
+                    original_text: segment.text.clone(),
+                    edited_text: replaced,
+                    created_at_ms: now_ms,
+                    applied_version: Some(version),
+                    origin: EditOrigin::Bulk,
+                }),
+            }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod bulk_origin_tests {
+    use domain::{
+        AudioChannel, EditOrigin, FinalSegment, GlossaryKind, GlossaryScope, GlossaryTerm,
+        SegmentEdit, SpeechLanguage,
+    };
+
+    use super::{occurrences_to_edit, plan_edit};
+
+    fn replacement(surface: &str, canonical: &str, id: &str) -> GlossaryTerm {
+        GlossaryTerm {
+            id: id.into(),
+            surface: surface.into(),
+            canonical: canonical.into(),
+            language: SpeechLanguage::Ru,
+            scope: GlossaryScope::Meeting {
+                meeting_id: "m1".into(),
+            },
+            kind: GlossaryKind::Replacement,
+        }
+    }
+
+    fn segment(text: &str) -> FinalSegment {
+        FinalSegment {
+            index: 0,
+            start_ms: 0,
+            end_ms: 100,
+            channel: AudioChannel::Mic,
+            speaker_id: String::new(),
+            speaker_pinned: false,
+            text: text.into(),
+            text_edited: false,
+            original_text: String::new(),
+        }
+    }
+
+    fn edit_at(text: &str, edited: &str, origin: EditOrigin) -> SegmentEdit {
+        SegmentEdit {
+            id: "e0".into(),
+            meeting_id: "m1".into(),
+            channel: AudioChannel::Mic,
+            start_ms: 0,
+            end_ms: 100,
+            original_text: text.into(),
+            edited_text: edited.into(),
+            created_at_ms: 1,
+            applied_version: Some(1),
+            origin,
+        }
+    }
+
+    /// Правка человека — последнее слово по месту.
+    #[test]
+    fn a_hand_edit_still_stops_the_bulk_replacement() {
+        let term = replacement("интра ру", "intra.ru", "t1");
+        let segments = vec![segment("открой интра ру")];
+        let existing = vec![edit_at(
+            "открой интра ру",
+            "открой портал",
+            EditOrigin::Human,
+        )];
+        let mut ids = ["n1".to_string()].into_iter();
+
+        let created = occurrences_to_edit(&term, "m1", 1, &segments, &existing, 7, &mut ids);
+
+        assert!(created.is_empty(), "ручную правку переписали: {created:?}");
+    }
+
+    /// След прошлой замены замену не останавливает: иначе первый термин
+    /// навсегда закрывал бы свои реплики от всех следующих.
+    #[test]
+    fn a_second_term_reaches_a_place_the_first_bulk_pass_took() {
+        let first = replacement("интра ру", "intra.ru", "t1");
+        let second = replacement("жира", "Jira", "t2");
+        let recognised = "открой интра ру и жира";
+        let after_first = "открой intra.ru и жира";
+
+        // Материал обязан содержать оба термина: разойдись они по разным
+        // репликам, тест прошёл бы, ничего не проверив.
+        assert!(
+            recognised.contains(&first.surface) && recognised.contains(&second.surface),
+            "оба термина должны попадать в одну реплику"
+        );
+
+        let segments = vec![segment(after_first)];
+        let existing = vec![edit_at(recognised, after_first, EditOrigin::Bulk)];
+        let mut ids = ["n1".to_string()].into_iter();
+
+        let created = occurrences_to_edit(&second, "m1", 1, &segments, &existing, 7, &mut ids);
+
+        assert_eq!(created.len(), 1, "вторая замена не дошла до места");
+        assert_eq!(created[0].edited_text, "открой intra.ru и Jira");
+        assert_eq!(
+            created[0].id, "e0",
+            "перезаписывать надо ту же запись журнала, а не заводить вторую"
+        );
+        assert_eq!(
+            created[0].original_text, recognised,
+            "исходным текстом записали уже заменённый — «вернуть исходное» сломано"
+        );
+        assert_eq!(created[0].origin, EditOrigin::Bulk);
+    }
+
+    /// Набранное человеком помечается сразу: на этом стоит вся защита.
+    #[test]
+    fn a_typed_edit_is_marked_as_human() {
+        let outcome = plan_edit(
+            "m1",
+            1,
+            &segment("зашли на интра ру"),
+            "зашли на intra.ru",
+            SpeechLanguage::Ru,
+            &[],
+            "e1",
+            "t1",
+            10,
+        );
+
+        assert_eq!(outcome.edit.expect("правка есть").origin, EditOrigin::Human);
+    }
 }
 
 #[cfg(test)]
@@ -682,6 +825,7 @@ mod tests {
             edited_text: "открой портал".into(),
             created_at_ms: 0,
             applied_version: Some(1),
+            origin: domain::EditOrigin::Human,
         }];
         let mut ids = ["n1".to_string()].into_iter();
 
@@ -732,6 +876,7 @@ mod tests {
             edited_text: "открой портал".into(),
             created_at_ms: 0,
             applied_version: Some(1),
+            origin: domain::EditOrigin::Human,
         }];
         let mut ids = ["n1".to_string()].into_iter();
 

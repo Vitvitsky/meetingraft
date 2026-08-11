@@ -3,7 +3,7 @@
 //! Отдельный модуль, потому что `audio_manifest.rs` уже за две тысячи
 //! строк, а правки — самостоятельная сущность со своим жизненным циклом.
 
-use domain::{AudioChannel, SegmentEdit};
+use domain::{AudioChannel, EditOrigin, SegmentEdit};
 use rusqlite::{Row, params};
 
 use crate::{AudioManifestError, AudioManifestStore};
@@ -14,7 +14,7 @@ use crate::{AudioManifestError, AudioManifestStore};
 /// SELECT не поймал бы ни компилятор, ни тест — типы совпадают, и правка
 /// просто прочиталась бы с перепутанными полями.
 const EDIT_COLUMNS: &str = "id, meeting_id, channel, start_ms, end_ms, original_text,
-                            edited_text, created_at_ms, applied_version";
+                            edited_text, created_at_ms, applied_version, origin";
 
 fn row_to_edit(row: &Row<'_>) -> rusqlite::Result<SegmentEdit> {
     let channel: String = row.get(2)?;
@@ -28,6 +28,7 @@ fn row_to_edit(row: &Row<'_>) -> rusqlite::Result<SegmentEdit> {
         edited_text: row.get(6)?,
         created_at_ms: row.get::<_, i64>(7)? as u64,
         applied_version: row.get::<_, Option<i64>>(8)?.map(|v| v as u32),
+        origin: EditOrigin::from_code(&row.get::<_, String>(9)?),
     })
 }
 
@@ -39,6 +40,10 @@ impl AudioManifestStore {
     /// координаты старые, а наложение при чтении ищет по ключу «канал,
     /// начало, конец» и такую правку не найдёт никогда.
     ///
+    /// `origin` идёт за последним, кто писал: человек, поправивший место
+    /// после массовой замены, делает правку ручной, и следующая замена её
+    /// уже не тронет. Обратно — только тем же человеком.
+    ///
     /// `original_text`, `channel` и `created_at_ms` не трогаются.
     /// `original_text` — то, что распознала модель при первой записи; если
     /// бы вторая правка того же места её перезаписывала, после двух правок
@@ -48,13 +53,14 @@ impl AudioManifestStore {
         self.connection().execute(
             "INSERT INTO segment_edits
              (id, meeting_id, channel, start_ms, end_ms, original_text,
-              edited_text, created_at_ms, applied_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+              edited_text, created_at_ms, applied_version, origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                edited_text = excluded.edited_text,
                start_ms = excluded.start_ms,
                end_ms = excluded.end_ms,
-               applied_version = excluded.applied_version",
+               applied_version = excluded.applied_version,
+               origin = excluded.origin",
             params![
                 edit.id,
                 edit.meeting_id,
@@ -64,7 +70,8 @@ impl AudioManifestStore {
                 edit.original_text,
                 edit.edited_text,
                 edit.created_at_ms as i64,
-                edit.applied_version.map(|v| v as i64)
+                edit.applied_version.map(|v| v as i64),
+                edit.origin.code()
             ],
         )?;
         Ok(())
@@ -138,7 +145,7 @@ impl AudioManifestStore {
 
 #[cfg(test)]
 mod tests {
-    use domain::{AudioChannel, SegmentEdit};
+    use domain::{AudioChannel, EditOrigin, SegmentEdit};
 
     use crate::AudioManifestStore;
     use crate::audio_manifest::tests::tmp_root;
@@ -154,6 +161,7 @@ mod tests {
             edited_text: "intra.ru".into(),
             created_at_ms: 5,
             applied_version: applied,
+            origin: EditOrigin::Human,
         }
     }
 
@@ -177,6 +185,52 @@ mod tests {
 
         store.delete_segment_edit("e1").expect("delete");
         assert_eq!(store.list_segment_edits("m1").expect("list").len(), 1);
+    }
+
+    /// Признак источника обязан пережить запись и чтение: на нём стоит
+    /// решение, тронет ли эту правку следующая массовая замена.
+    #[test]
+    fn origin_survives_a_round_trip() {
+        let mut store = AudioManifestStore::open(tmp_root()).expect("store");
+        let bulk = SegmentEdit {
+            origin: EditOrigin::Bulk,
+            ..edit("e1", Some(1))
+        };
+        store.upsert_segment_edit(&bulk).expect("upsert");
+
+        let stored = store.list_segment_edits("m1").expect("list");
+
+        assert_eq!(stored.len(), 1, "правки нет — проверять нечего");
+        assert_eq!(stored[0].origin, EditOrigin::Bulk);
+    }
+
+    /// Человек, поправивший место после массовой замены, закрывает его от
+    /// следующих замен — значит, признак должен смениться при перезаписи.
+    #[test]
+    fn a_human_rewrite_takes_the_place_from_bulk() {
+        let mut store = AudioManifestStore::open(tmp_root()).expect("store");
+        store
+            .upsert_segment_edit(&SegmentEdit {
+                origin: EditOrigin::Bulk,
+                ..edit("e1", Some(1))
+            })
+            .expect("upsert");
+
+        store
+            .upsert_segment_edit(&SegmentEdit {
+                edited_text: "intra.ru вручную".into(),
+                origin: EditOrigin::Human,
+                ..edit("e1", Some(1))
+            })
+            .expect("upsert");
+
+        let stored = store.list_segment_edits("m1").expect("list");
+        assert_eq!(
+            stored.len(),
+            1,
+            "правка должна была перезаписаться, а не удвоиться"
+        );
+        assert_eq!(stored[0].origin, EditOrigin::Human);
     }
 
     #[test]

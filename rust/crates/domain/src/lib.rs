@@ -15,8 +15,9 @@ pub use diagnostics::{SttDiagnostic, SttDiagnosticKind};
 pub use glossary::{GlossaryKind, GlossaryScope, GlossaryTerm};
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use postcall::{
-    Artifact, ArtifactKind, EditPosition, FinalSegment, FinalTranscript, MeetingSummary, SearchHit,
-    SearchHitKind, SegmentEdit, TranscriptSegment, body_fingerprint, edits_by_position,
+    Artifact, ArtifactKind, EditOrigin, EditPosition, FinalSegment, FinalTranscript,
+    MeetingSummary, SearchHit, SearchHitKind, SegmentEdit, TranscriptSegment, body_fingerprint,
+    edits_by_position,
 };
 pub use session::SessionState;
 pub use speaker::Speaker;

@@ -101,7 +101,7 @@ fn overlap_ms(edit: &SegmentEdit, segment: &FinalSegment) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use domain::{AudioChannel, FinalSegment, SegmentEdit, edits_by_position};
+    use domain::{AudioChannel, EditOrigin, FinalSegment, SegmentEdit, edits_by_position};
 
     use super::reattach_edits;
 
@@ -130,6 +130,7 @@ mod tests {
             edited_text: "intra.ru".into(),
             created_at_ms: 0,
             applied_version: Some(1),
+            origin: EditOrigin::Human,
         }
     }
 

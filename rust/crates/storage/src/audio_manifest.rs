@@ -2690,6 +2690,7 @@ pub(crate) mod tests {
                     edited_text: "упирается в UniFFI".to_string(),
                     created_at_ms: 10,
                     applied_version: Some(1),
+                    origin: domain::EditOrigin::Human,
                 })
                 .unwrap();
 
@@ -2755,6 +2756,7 @@ pub(crate) mod tests {
                     edited_text: "правленый текст".into(),
                     created_at_ms: 5,
                     applied_version: Some(1),
+                    origin: domain::EditOrigin::Human,
                 })
                 .unwrap();
             store.end_session(10).unwrap();
@@ -3085,6 +3087,7 @@ pub(crate) mod tests {
                 edited_text: "правленый текст".into(),
                 created_at_ms: 5,
                 applied_version: Some(1),
+                origin: domain::EditOrigin::Human,
             })
             .unwrap();
         store

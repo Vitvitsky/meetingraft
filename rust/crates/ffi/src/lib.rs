@@ -3012,6 +3012,7 @@ mod tests {
                     edited_text: format!("поправлено {id}"),
                     created_at_ms: 10,
                     applied_version: None,
+                    origin: domain::EditOrigin::Human,
                 })
                 .expect("правка");
         }
