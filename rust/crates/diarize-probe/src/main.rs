@@ -1,69 +1,95 @@
 //! Прибор для разделения голосов внутри дорожки.
 //!
 //! Третий рядом с `echo-probe` и `gate-probe`, с той же дисциплиной:
-//! **сперва заведомо положительный и заведомо отрицательный случай, потом
-//! настоящие данные**. Правило писано кровью — `count-audio-taps.swift`
-//! показал ноль tap'ов, ноль прочли как «утечки нет», а скрипт был слеп
-//! (`CLAUDE.md`).
+//! **сперва случай с известным ответом, потом настоящие данные**. Правило
+//! писано кровью — `count-audio-taps.swift` показал ноль tap'ов, ноль
+//! прочли как «утечки нет», а скрипт был слеп (`CLAUDE.md`).
 //!
 //! Здесь оно жёстче, чем у соседей, потому что ошибиться легче. У гейта
 //! ноль пропущенных кадров хотя бы выглядит подозрительно; у диаризации
 //! **«нашёлся один голос» — законный ответ**: монолог, запись одного
 //! человека, встреча, где второй молчал. Отличить его от сломанного
-//! движка по самому числу нельзя вовсе. Отсюда два случая:
+//! движка по самому числу нельзя вовсе.
 //!
-//! - **заведомо положительный** — два разных синтетических голоса,
-//!   склеенных подряд: смену обязан найти;
-//! - **заведомо отрицательный** — один голос той же длины: смены быть не
-//!   должно.
+//! ## Почему контроль — записи, а не синтетика
 //!
-//! Не разошлись — до настоящих данных дело не доходит.
+//! Первая версия проверяла движок двумя синтетическими голосами: тон
+//! 110 Гц с гармониками, следом 210 Гц. Логику прибора это проверяет
+//! (тестовые двойники на ней и живут), а вот **движок — нет**, и
+//! обнаружилось это в первый же прогон настоящей связки: sherpa-onnx
+//! нашёл в двух тонах речь, но счёл их одним голосом.
 //!
-//! Сегодня прибор до них и не доходит: модель не выбрана, и
-//! `diarize_backend()` отдаёт заглушку, которая честно отказывает. Это не
-//! поломка прибора, а его первый настоящий ответ: измерять нечем. Выбор
-//! модели — задача 3 плана `2026-08-11-voice-clustering`, и делается он
-//! замером на Маке.
+//! Дело было не в движке. На записи с двумя заведомо разными людьми он
+//! находит двоих. Тоны просто не речь, и модель голосов на них не
+//! работает — а прибор при этом печатал «смены движок не видит» **про
+//! работающий движок**. То самое враньё прибора, ради которого вся эта
+//! дисциплина и заведена.
+//!
+//! Поэтому контроль — записи с известным ответом, число людей в имени
+//! файла. Кладёт их `scripts/fetch-diarize-models.sh` рядом с моделями.
+//! Нет записей — прибор не судит движок вовсе и говорит, чего не хватает:
+//! судить по негодному материалу хуже, чем не судить.
+//!
+//! ## Что вердикт считает поломкой, а что — неточностью
+//!
+//! Разделение не случайно. Прибор отвечает на один вопрос — **видит ли
+//! движок смену голоса вообще**, — и только на него имеет право отвечать
+//! отказом:
+//!
+//! - движок отказался считать, либо нашёл голосов **меньше**, чем в
+//!   записи заведомо есть, — прибор слеп, дальше не идём;
+//! - нашёл **больше**, либо число растёт от количества материала — это
+//!   неточность настройки, а не слепота. Печатается громко, с числами, и
+//!   работать не мешает: выбор порога и есть задача 3, а спрятать числа,
+//!   по которым он делается, значит сделать её невыполнимой.
+
+mod wav;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use diarize::{DiarizeReport, Diarizer, diarize_backend};
+use diarize::{DiarizeReport, Diarizer, diarize_backend, diarize_models_dir};
 use domain::AudioChannel;
 use storage::AudioManifestStore;
 
 /// Частота живого пути; ею же пишутся чанки на диск (ADR-005).
 const RATE: u32 = 16_000;
-/// Длительность каждого голоса в синтетике.
-const CASE_MS: u64 = 3_000;
-/// Насколько граница, найденная прибором, может разойтись со склейкой.
-///
-/// Полсекунды — не подгонка под выход, а то, чем такой промах обходится:
-/// граница внутри реплики отдаёт чужой голос на пол-фразы, и на
-/// прослушивании фрагмента (задача 6 плана) это слышно сразу.
-const BORDER_TOLERANCE_MS: u64 = 500;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let mut engine = diarize_backend();
-    if !self_check(engine.as_mut()).is_empty() {
-        eprintln!("\nПрибор слеп: до настоящих данных дело не дошло.");
-        return ExitCode::FAILURE;
-    }
-
-    let result = match args.as_slice() {
+    // Каталог данных нужен раньше самопроверки: и модели, и контрольные
+    // записи лежат в нём же, рядом с базой.
+    let (root, session) = match args.as_slice() {
         [] => {
             println!("\n{USAGE}");
             return ExitCode::SUCCESS;
         }
-        [root] => list_sessions(Path::new(root)),
-        [root, session] => probe(Path::new(root), session, engine.as_mut()),
+        [root] => (Path::new(root), None),
+        [root, session] => (Path::new(root), Some(session.as_str())),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::FAILURE;
         }
+    };
+
+    let mut engine = diarize_backend(root);
+    let controls = match load_controls(root) {
+        Ok(controls) => controls,
+        Err(error) => {
+            eprintln!("контрольные записи не прочлись: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !self_check(engine.as_mut(), &controls).is_empty() {
+        eprintln!("\nПрибор слеп: до настоящих данных дело не дошло.");
+        return ExitCode::FAILURE;
+    }
+
+    let result = match session {
+        None => list_sessions(root),
+        Some(id) => probe(root, id, engine.as_mut()),
     };
 
     match result {
@@ -80,75 +106,161 @@ const USAGE: &str = "\
   diarize-probe <каталог-данных>             — список сессий
   diarize-probe <каталог-данных> <сессия>    — разделить голоса по сессии
 
-Каталог данных — тот, где лежит meetingraft.sqlite3.
+Каталог данных — тот, где лежит meetingraft.sqlite3. Модели и контрольные
+записи кладёт туда scripts/fetch-diarize-models.sh; движок включается
+сборкой с --features model.
 
 Мерить надо две записи, и они отвечают на разные вопросы: очную (двое
 говорят в один микрофон ноутбука) и созвон. Первая — тот случай, который
 атрибуция по каналам не берёт по построению; вторая показывает, что
 диаризация даёт сверх канала там, где канал уже отвечает.";
 
-/// Заведомо положительный и заведомо отрицательный случай.
+/// Запись, о которой заранее известно, сколько в ней людей.
+#[derive(Debug)]
+pub struct Control {
+    name: String,
+    /// Сколько человек в записи на самом деле — из имени файла.
+    speakers: u32,
+    pcm: Vec<i16>,
+}
+
+/// Каталог контрольных записей: `<data_root>/models/diarize/check/`.
+fn controls_dir(data_root: &Path) -> PathBuf {
+    diarize_models_dir(data_root).join("check")
+}
+
+/// Прочитать контроли. Имя файла начинается с числа людей: `2-...wav`.
 ///
-/// Пусто — прибору можно верить. Иначе — по строке на каждое расхождение,
-/// и строка называет **своё**: вердикт «прибор слеп» без причины под ним
-/// нечем ни проверить, ни починить. Числа печатаются всегда, до вердикта.
-fn self_check(engine: &mut dyn Diarizer) -> Vec<String> {
-    println!("Проверка прибора на синтетике");
+/// Отсутствие каталога — не ошибка: без движка контроли и не нужны, а
+/// решает, что с этим делать, сам вердикт. Ошибка — только испорченный
+/// файл: молча пропустить его значило бы судить движок по неполному
+/// набору и не сказать об этом.
+fn load_controls(data_root: &Path) -> Result<Vec<Control>, String> {
+    let dir = controls_dir(data_root);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(Vec::new());
+    };
 
-    let two_voices = [voice(110.0, CASE_MS), voice(210.0, CASE_MS)].concat();
-    let one_voice = voice(110.0, CASE_MS * 2);
-    // Материал обязан быть, и это утверждается до утверждений о
-    // результате: «ноль голосов» на пустом входе выполняется само собой
-    // (Epic 16, детектор эха).
-    let expected_len = (RATE as u64 * CASE_MS * 2 / 1_000) as usize;
-    if two_voices.len() != expected_len || one_voice.len() != expected_len {
-        return report(vec![
-            "синтетика не сгенерировалась — проверять было нечего".to_string(),
-        ]);
+    let mut out = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let speakers: u32 = name
+            .split('-')
+            .next()
+            .and_then(|head| head.parse().ok())
+            .ok_or_else(|| {
+                format!("{name}: имя обязано начинаться с числа людей, например 2-...")
+            })?;
+        if speakers == 0 {
+            return Err(format!("{name}: ноль людей в контроле проверять нечего"));
+        }
+        let wav = wav::read(&path)?;
+        if wav.sample_rate != RATE {
+            return Err(format!(
+                "{name}: частота {} Гц, а живой путь пишет {RATE} Гц — \
+                 контроль в чужой частоте проверял бы не тот звук",
+                wav.sample_rate
+            ));
+        }
+        out.push(Control {
+            name,
+            speakers,
+            pcm: wav.pcm,
+        });
     }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
 
-    let positive = engine.diarize(&two_voices, RATE);
-    let negative = engine.diarize(&one_voice, RATE);
+/// Проверка движка по записям с известным ответом.
+///
+/// Пусто — можно верить числам ниже. Иначе — по строке на каждую беду, и
+/// строка называет **свою**: вердикт «прибор слеп» без причины под ним
+/// нечем ни проверить, ни починить.
+fn self_check(engine: &mut dyn Diarizer, controls: &[Control]) -> Vec<String> {
+    println!("Проверка движка на записях с известным ответом");
 
-    describe("  два голоса подряд", &positive);
-    describe("  один голос      ", &negative);
-
-    if let Some(reason) = positive.refused.as_ref().or(negative.refused.as_ref()) {
-        // Отказ — не то же самое, что неверный ответ, и разбирать его
-        // дальше нечего: отрезков нет ни у одного случая, и все проверки
-        // ниже сработали бы на пустоте, назвав движок сломанным вместо
-        // отсутствующего.
-        return report(vec![format!("движок отказался считать — {reason}")]);
+    if controls.is_empty() {
+        // Движок мог не подняться вовсе — тогда его отказ и есть ответ, и
+        // отсутствие контролей ни при чём.
+        let probe = engine.diarize(&vec![0i16; RATE as usize], RATE);
+        return match probe.refused {
+            Some(reason) => report(vec![format!("движок отказался считать — {reason}")]),
+            None => report(vec![
+                "движок отвечает, а проверить его нечем: контрольных записей нет \
+                 (скачать — scripts/fetch-diarize-models.sh)"
+                    .to_string(),
+            ]),
+        };
     }
 
     let mut problems = Vec::new();
-    if positive.turns.is_empty() {
-        problems.push("на двух голосах не нашлось ни одного отрезка речи".to_string());
-    }
-    if positive.speakers_found < 2 {
-        problems.push(format!(
-            "два заведомо разных голоса слились в {} — смены движок не видит",
-            positive.speakers_found
-        ));
-    }
-    if negative.speakers_found > 1 {
-        problems.push(format!(
-            "один голос разорван на {} — движок делит на пустом месте",
-            negative.speakers_found
-        ));
-    }
-    // Число голосов может сойтись при границе, поставленной мимо: два
-    // кластера, оба вперемешку. Тогда фрагмент на прослушивании окажется
-    // чужим, а число в отчёте — верным.
-    if problems.is_empty() {
-        match border_error_ms(&positive, CASE_MS) {
-            Some(error) if error > BORDER_TOLERANCE_MS => problems.push(format!(
-                "смена найдена, но не там — граница разошлась со склейкой на {error} мс"
-            )),
-            Some(error) => println!("  граница разошлась со склейкой на {error} мс"),
-            None => {
-                problems.push("смены метки внутри отрезков нет — делить было нечем".to_string())
+    for control in controls {
+        let seconds = control.pcm.len() as f64 / f64::from(RATE);
+        let once = engine.diarize(&control.pcm, RATE);
+        if let Some(reason) = once.refused {
+            problems.push(format!(
+                "{}: движок отказался считать — {reason}",
+                control.name
+            ));
+            continue;
+        }
+
+        // Тот же материал дважды подряд. Люди в нём по построению те же,
+        // поэтому рост числа голосов означает, что движок делит человека,
+        // а не что в записи кто-то появился. Контроль не требует второго
+        // файла и не зависит от того, верна ли подпись на первом.
+        let doubled: Vec<i16> = control
+            .pcm
+            .iter()
+            .chain(control.pcm.iter())
+            .copied()
+            .collect();
+        let twice = engine.diarize(&doubled, RATE);
+        let twice_found = twice.refused.is_none().then_some(twice.speakers_found);
+
+        println!(
+            "  {:26} {:.1} с: в записи {} человек, движок нашёл {}{}",
+            control.name,
+            seconds,
+            control.speakers,
+            once.speakers_found,
+            match twice_found {
+                Some(found) => format!(", на удвоенной записи — {found}"),
+                None => ", удвоенную посчитать не удалось".to_string(),
             }
+        );
+
+        if once.speakers_found < control.speakers {
+            problems.push(format!(
+                "{}: заведомо разные голоса слились в {} из {} — движок смены не видит",
+                control.name, once.speakers_found, control.speakers
+            ));
+        }
+        if once.speakers_found > control.speakers {
+            println!(
+                "    ! разорвал {} человек на {} — порог кластеризации не настроен под этот\n\
+                 \x20     материал. Числа ниже читать с этим в уме; выбор порога — задача 3",
+                control.speakers, once.speakers_found
+            );
+        }
+        if let Some(found) = twice_found
+            && found > once.speakers_found
+        {
+            println!(
+                "    ! та же запись дважды дала {found} голосов вместо {} — число зависит от\n\
+                 \x20     количества материала, а не только от того, кто говорит. Для встречи\n\
+                 \x20     на час это значит больше дробления, чем на десяти минутах",
+                once.speakers_found
+            );
         }
     }
     report(problems)
@@ -157,38 +269,12 @@ fn self_check(engine: &mut dyn Diarizer) -> Vec<String> {
 /// Напечатать вердикт и вернуть его же вызывающему.
 fn report(problems: Vec<String>) -> Vec<String> {
     if problems.is_empty() {
-        println!(
-            "  ВЕРДИКТ: прибор различает два голоса и не делит один, числам ниже можно верить"
-        );
+        println!("  ВЕРДИКТ: движок видит смену голоса, числам ниже можно верить");
     }
     for problem in &problems {
         println!("  ВЕРДИКТ: {problem}");
     }
     problems
-}
-
-fn describe(label: &str, report: &DiarizeReport) {
-    match report.refused.as_ref() {
-        Some(reason) => println!("{label}: отказ — {reason}"),
-        None => println!(
-            "{label}: голосов {}, отрезков {}, речи {:.1} с",
-            report.speakers_found,
-            report.turns.len(),
-            report.speech_ms() as f64 / 1_000.0
-        ),
-    }
-}
-
-/// Насколько ближайшая смена метки разошлась с ожидаемым временем.
-///
-/// `None` — смены нет вовсе: отрезки есть, но метка на всех одна.
-fn border_error_ms(report: &DiarizeReport, expected_ms: u64) -> Option<u64> {
-    report
-        .turns
-        .windows(2)
-        .filter(|pair| pair[0].cluster != pair[1].cluster)
-        .map(|pair| pair[1].start_ms.abs_diff(expected_ms))
-        .min()
 }
 
 fn list_sessions(root: &Path) -> Result<(), String> {
@@ -265,6 +351,21 @@ fn print_report(report: &DiarizeReport, track_ms: u64) {
             percent(*ms, track_ms)
         );
     }
+    // Метки движка идут с пропусками: два голоса могут получить номера 0 и
+    // 3. Число выше при этом верное — оно считается по разным меткам, а не
+    // по наибольшей, — но читается «два голоса, а номер третий» как потеря.
+    // Переименовывать метки прибор не станет: он показывает то, что отдал
+    // движок. Списку голосов в интерфейсе (задача 6) плотная нумерация
+    // понадобится, и делать её надо там, а не прятать здесь.
+    if let Some(highest) = by_cluster.keys().next_back()
+        && *highest as usize + 1 != by_cluster.len()
+    {
+        println!(
+            "    (номера меток идут с пропусками — так их раздаёт движок; голосов\n\
+             \x20    всё равно {})",
+            by_cluster.len()
+        );
+    }
 
     // Доля тишины считается вычитанием из длины дорожки, а не суммой
     // промежутков: отрезки могут перекрываться, и сумма промежутков
@@ -329,23 +430,6 @@ fn tracks(
 /// «разделяет» что угодно, включая прибор, сравнивающий частоты. Огибающая
 /// не доходит до нуля: провал в тишину дал бы движку паузу там, где её в
 /// речи нет, и смена нашлась бы по паузе, а не по голосу.
-fn voice(f0: f32, ms: u64) -> Vec<i16> {
-    let samples = (u64::from(RATE) * ms / 1_000) as usize;
-    (0..samples)
-        .map(|index| {
-            let t = index as f32 / RATE as f32;
-            let envelope = 0.7 + 0.3 * (2.0 * std::f32::consts::PI * 4.0 * t).sin();
-            let tone: f32 = (1..=12)
-                .map(|harmonic| {
-                    let amplitude = 1.0 / harmonic as f32;
-                    amplitude * (2.0 * std::f32::consts::PI * f0 * harmonic as f32 * t).sin()
-                })
-                .sum();
-            (tone * envelope * 3_000.0).clamp(-32_000.0, 32_000.0) as i16
-        })
-        .collect()
-}
-
 fn percent(part: u64, whole: u64) -> f64 {
     if whole == 0 {
         return 0.0;
@@ -359,28 +443,74 @@ mod tests {
 
     use diarize::{MockDiarizer, VoiceTurn};
 
-    fn tmp_root(name: &str) -> std::path::PathBuf {
+    /// Длительность каждого голоса в тестовой синтетике.
+    const CASE_MS: u64 = 3_000;
+
+    fn tmp_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "mr-diarize-probe-{name}-{:?}",
             std::thread::current().id()
         ))
     }
 
-    /// Заведомо рабочий движок: контроль, а не модель.
+    /// Синтетический голос: основной тон с гармониками и слоговой
+    /// огибающей.
+    ///
+    /// **Материал для двойников, а не для движка.** Настоящая модель
+    /// голосов на тонах не работает — проверено первым же прогоном
+    /// sherpa-onnx, счёвшего два разных тона одним голосом. Здесь тоны
+    /// годятся ровно потому, что двойники ниже такие же игрушечные:
+    /// проверяется логика вердикта, а не чьё-то умение различать людей.
+    fn voice(f0: f32, ms: u64) -> Vec<i16> {
+        let samples = (u64::from(RATE) * ms / 1_000) as usize;
+        (0..samples)
+            .map(|index| {
+                let t = index as f32 / RATE as f32;
+                let envelope = 0.7 + 0.3 * (2.0 * std::f32::consts::PI * 4.0 * t).sin();
+                let tone: f32 = (1..=12)
+                    .map(|harmonic| {
+                        let amplitude = 1.0 / harmonic as f32;
+                        amplitude * (2.0 * std::f32::consts::PI * f0 * harmonic as f32 * t).sin()
+                    })
+                    .sum();
+                (tone * envelope * 3_000.0).clamp(-32_000.0, 32_000.0) as i16
+            })
+            .collect()
+    }
+
+    fn control(name: &str, speakers: u32, pcm: Vec<i16>) -> Control {
+        Control {
+            name: name.to_string(),
+            speakers,
+            pcm,
+        }
+    }
+
+    /// Контроль с двумя заведомо разными тонами.
+    fn two_voices() -> Control {
+        control(
+            "2-tones.wav",
+            2,
+            [voice(110.0, CASE_MS), voice(210.0, CASE_MS)].concat(),
+        )
+    }
+
+    /// Контроль с одним тоном.
+    fn one_voice() -> Control {
+        control("1-tone.wav", 1, voice(110.0, CASE_MS * 2))
+    }
+
+    /// Заведомо рабочий двойник: контроль, а не модель.
     ///
     /// Считает частоту переходов через ноль по окнам и делит дорожку
-    /// надвое, только если разброс достаточно велик. На настоящем звуке
-    /// это не работает и работать не должно — вход у контроля один:
-    /// синтетика из `self_check`. Он существует, чтобы доказать, что
-    /// прибор **видит** разделение, когда оно есть. Без такого контроля
-    /// красный вердикт прибора неотличим от вердикта прибора сломанного.
+    /// надвое, только если разброс достаточно велик. Существует, чтобы
+    /// доказать, что вердикт **бывает зелёным**: вердикт, который красен
+    /// всегда, не проверяет ничего.
     #[derive(Default)]
     struct PitchControl;
 
     impl PitchControl {
         const WINDOW_MS: u64 = 250;
-        /// Во сколько раз самое высокое окно должно превосходить самое
-        /// низкое, чтобы считать голоса разными.
         const SPREAD: f32 = 1.5;
     }
 
@@ -394,11 +524,10 @@ mod tests {
                 .chunks(window)
                 .filter(|chunk| chunk.len() == window)
                 .map(|chunk| {
-                    let crossings = chunk
+                    chunk
                         .windows(2)
                         .filter(|pair| (pair[0] < 0) != (pair[1] < 0))
-                        .count();
-                    crossings as f32
+                        .count() as f32
                 })
                 .collect();
             let low = rates.iter().copied().fold(f32::MAX, f32::min);
@@ -425,8 +554,7 @@ mod tests {
         }
     }
 
-    /// Движок, для которого всё — один голос. Ловится положительным
-    /// случаем.
+    /// Двойник, для которого всё — один голос.
     struct NeverSplits;
 
     impl Diarizer for NeverSplits {
@@ -436,8 +564,7 @@ mod tests {
         }
     }
 
-    /// Движок, который делит всё пополам. Ловится отрицательным случаем —
-    /// и это самая опасная поломка: «нашлось двое» звучит как результат.
+    /// Двойник, который делит всё пополам независимо от материала.
     struct AlwaysSplits;
 
     impl Diarizer for AlwaysSplits {
@@ -450,77 +577,94 @@ mod tests {
         }
     }
 
-    /// Движок, находящий смену не там, где она есть.
-    ///
-    /// Число голосов у него верное **в обоих случаях**: один голос он не
-    /// делит, два разделяет. Ошибается он только местом склейки — и это
-    /// единственное, чем он отличается от рабочего. Иначе тест на границу
-    /// проходил бы по ветке отрицательного случая и о самой границе не
-    /// говорил бы ничего (проверено снятием ветки).
-    struct SplitsInTheWrongPlace;
+    /// Двойник, у которого число голосов растёт от количества материала:
+    /// по голосу на каждые три секунды.
+    struct MultipliesWithLength;
 
-    impl Diarizer for SplitsInTheWrongPlace {
+    impl Diarizer for MultipliesWithLength {
         fn diarize(&mut self, pcm: &[i16], sample_rate: u32) -> DiarizeReport {
-            let honest = PitchControl.diarize(pcm, sample_rate);
-            if honest.speakers_found < 2 {
-                return honest;
-            }
             let ms = pcm.len() as u64 * 1_000 / u64::from(sample_rate);
-            DiarizeReport::from_turns(vec![
-                VoiceTurn::new(0, ms / 6, 0),
-                VoiceTurn::new(ms / 6, ms, 1),
-            ])
+            let count = (ms / 3_000).max(1);
+            let turns = (0..count)
+                .map(|index| VoiceTurn::new(index * 3_000, (index + 1) * 3_000, index as u32))
+                .collect();
+            DiarizeReport::from_turns(turns)
         }
     }
 
-    /// Каждый тест ниже утверждает **свою** строку вердикта, а не просто
-    /// «прибор красный». Красным он бывает по нескольким причинам сразу, и
-    /// проверка одного лишь цвета проходила бы по чужой ветке — так и
-    /// вышло на первой версии: отказ движка ловился проверкой «отрезков
-    /// нет», и своя ветка снималась незамеченной.
-    fn problem(engine: &mut dyn Diarizer, needle: &str) {
-        let problems = self_check(engine);
+    fn problem(engine: &mut dyn Diarizer, controls: &[Control], needle: &str) {
+        let problems = self_check(engine, controls);
         assert!(
             problems.iter().any(|line| line.contains(needle)),
             "вердикт не назвал «{needle}»: {problems:?}"
         );
     }
 
-    /// Прибор обязан пропустить движок, который действительно разделяет.
-    ///
-    /// Заведомо положительный случай для самого вердикта: без него
-    /// «прибор красный» ничего не значит — он мог бы быть красным всегда.
+    /// Вердикт бывает зелёным. Без этого «прибор красный» ничего не
+    /// значит — он мог бы быть красным всегда.
     #[test]
     fn the_self_check_passes_a_working_diarizer() {
-        assert!(self_check(&mut PitchControl).is_empty());
+        assert!(self_check(&mut PitchControl, &[two_voices(), one_voice()]).is_empty());
     }
 
-    /// Сегодняшнее состояние: модели нет, заглушка отказывает, прибор до
-    /// настоящих данных не доходит. Это ответ, а не поломка.
+    /// Движок, не видящий смены, — единственная настоящая слепота, и
+    /// только она останавливает прибор.
     #[test]
-    fn the_stub_does_not_reach_real_data() {
-        problem(&mut MockDiarizer::new(), "отказался считать");
+    fn a_diarizer_that_never_splits_is_blind() {
+        problem(&mut NeverSplits, &[two_voices()], "слились");
     }
 
+    /// Заглушка отказывает, и её причина доезжает до вердикта.
     #[test]
-    fn a_diarizer_that_never_splits_fails_the_positive_case() {
-        problem(&mut NeverSplits, "слились");
+    fn a_refusing_engine_stops_the_probe() {
+        problem(
+            &mut MockDiarizer::new(),
+            &[two_voices()],
+            "отказался считать",
+        );
     }
 
+    /// Контролей нет, а движок отвечает — судить его нечем, и прибор
+    /// говорит именно это, а не «движок сломан».
+    ///
+    /// Ровно тот случай, из-за которого прибор переписан: синтетика
+    /// объявляла работающий движок слепым.
     #[test]
-    fn a_diarizer_that_always_splits_fails_the_negative_case() {
-        problem(&mut AlwaysSplits, "делит на пустом месте");
+    fn without_controls_a_working_engine_is_not_judged_blind() {
+        let problems = self_check(&mut PitchControl, &[]);
+
+        assert!(
+            problems
+                .iter()
+                .any(|line| line.contains("проверить его нечем")),
+            "{problems:?}"
+        );
+        assert!(
+            !problems.iter().any(|line| line.contains("слились")),
+            "движок объявлен слепым без материала: {problems:?}"
+        );
     }
 
-    /// Число голосов сходится, а граница — нет. Проверка на границу
-    /// заводилась ровно против этого случая.
+    /// Контролей нет и движка нет — ответ про движок, а не про контроли.
     #[test]
-    fn a_border_in_the_wrong_place_is_caught() {
-        problem(&mut SplitsInTheWrongPlace, "граница разошлась");
+    fn without_controls_a_missing_engine_is_named_first() {
+        problem(&mut MockDiarizer::new(), &[], "отказался считать");
     }
 
-    /// Синтетика обязана быть разной: если бы два «голоса» звучали
-    /// одинаково, положительный случай проверял бы сам себя.
+    /// Дробление — неточность настройки, а не слепота: прибор говорит о
+    /// нём громко, но работать не мешает.
+    ///
+    /// Решение осознанное. Порог кластеризации и выбирается замером
+    /// (задача 3), а отказ прибора при неверном пороге спрятал бы ровно те
+    /// числа, по которым его выбирают.
+    #[test]
+    fn over_splitting_is_loud_but_not_fatal() {
+        assert!(self_check(&mut AlwaysSplits, &[one_voice()]).is_empty());
+        assert!(self_check(&mut MultipliesWithLength, &[two_voices()]).is_empty());
+    }
+
+    /// Синтетика для двойников обязана быть разной: если бы два «голоса»
+    /// звучали одинаково, положительный случай проверял бы сам себя.
     #[test]
     fn the_two_synthetic_voices_are_actually_different() {
         let crossings = |pcm: &[i16]| {
@@ -540,12 +684,96 @@ mod tests {
         );
     }
 
+    /// Собрать WAV 16 кГц моно — материал для проверок загрузки контролей.
+    fn wav_bytes(rate: u32, samples: &[i16]) -> Vec<u8> {
+        let data: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        let mut out = Vec::new();
+        out.extend(b"RIFF");
+        out.extend(((36 + data.len()) as u32).to_le_bytes());
+        out.extend(b"WAVEfmt ");
+        out.extend(16u32.to_le_bytes());
+        out.extend(1u16.to_le_bytes());
+        out.extend(1u16.to_le_bytes());
+        out.extend(rate.to_le_bytes());
+        out.extend((rate * 2).to_le_bytes());
+        out.extend(2u16.to_le_bytes());
+        out.extend(16u16.to_le_bytes());
+        out.extend(b"data");
+        out.extend((data.len() as u32).to_le_bytes());
+        out.extend(data);
+        out
+    }
+
+    fn put_control(root: &Path, name: &str, rate: u32, samples: &[i16]) {
+        let dir = controls_dir(root);
+        std::fs::create_dir_all(&dir).expect("каталог");
+        std::fs::write(dir.join(name), wav_bytes(rate, samples)).expect("файл");
+    }
+
+    /// Число людей читается из имени файла, а не угадывается по звуку.
+    #[test]
+    fn the_expected_count_comes_from_the_file_name() {
+        let root = tmp_root("names");
+        let _ = std::fs::remove_dir_all(&root);
+        put_control(&root, "2-two-speakers.wav", RATE, &[1, 2, 3, 4]);
+        put_control(&root, "4-four-speakers.wav", RATE, &[5, 6]);
+
+        let controls = load_controls(&root).expect("контроли");
+
+        assert_eq!(controls.len(), 2, "прочлись не все");
+        assert_eq!(controls[0].speakers, 2);
+        assert_eq!(controls[1].speakers, 4);
+        assert_eq!(controls[0].pcm, vec![1, 2, 3, 4], "звук прочёлся не весь");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Файл без числа в имени — отказ, а не тихий пропуск: судить движок
+    /// по неполному набору и не сказать об этом хуже, чем не судить.
+    #[test]
+    fn a_control_without_a_count_is_refused() {
+        let root = tmp_root("noname");
+        let _ = std::fs::remove_dir_all(&root);
+        put_control(&root, "какая-то-запись.wav", RATE, &[1, 2]);
+
+        let error = load_controls(&root).expect_err("имя без числа");
+
+        assert!(error.contains("числа людей"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Чужая частота — отказ. Контроль в 48 кГц проверял бы не тот звук,
+    /// которым записан живой путь.
+    #[test]
+    fn a_control_at_the_wrong_rate_is_refused() {
+        let root = tmp_root("rate");
+        let _ = std::fs::remove_dir_all(&root);
+        put_control(&root, "2-wrong-rate.wav", 48_000, &[1, 2]);
+
+        let error = load_controls(&root).expect_err("чужая частота");
+
+        assert!(error.contains("48000"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Каталога нет — пустой список, а не ошибка: без движка контроли и
+    /// не нужны, решает это вердикт.
+    #[test]
+    fn a_missing_control_dir_is_not_an_error() {
+        let root = tmp_root("nodir");
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(load_controls(&root).expect("не ошибка").is_empty());
+    }
+
     fn bytes_of(pcm: &[i16]) -> Vec<u8> {
         pcm.iter().flat_map(|sample| sample.to_le_bytes()).collect()
     }
 
     /// Сессия с записанной дорожкой: чанки по 100 мс, как в живом пути.
-    fn seed(root: &std::path::Path, session_id: &str, pcm: &[i16]) {
+    fn seed(root: &Path, session_id: &str, pcm: &[i16]) {
         let mut store = AudioManifestStore::open(root).expect("store");
         store
             .begin_session(session_id, 0, "проба")

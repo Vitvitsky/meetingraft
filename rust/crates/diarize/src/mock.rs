@@ -17,18 +17,38 @@ const NO_MODEL: &str = "модель разделения голосов не в
      (решение принимается замером, задача 3 плана 2026-08-11-voice-clustering)";
 
 /// Движок, которого нет.
-#[derive(Debug, Default)]
-pub struct MockDiarizer;
+///
+/// Причину носит с собой: «модели нет» и «модель есть, но не поднялась на
+/// этих файлах» — разные беды с разными действиями человека, и свести их
+/// к одному тексту значило бы отправить его чинить не то.
+#[derive(Debug)]
+pub struct MockDiarizer {
+    reason: String,
+}
+
+impl Default for MockDiarizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MockDiarizer {
+    /// Сборка без движка вовсе.
     pub fn new() -> Self {
-        Self
+        Self::because(NO_MODEL)
+    }
+
+    /// Движок есть, но не поднялся: причина уже известна вызывающему.
+    pub fn because(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
     }
 }
 
 impl Diarizer for MockDiarizer {
     fn diarize(&mut self, _pcm: &[i16], _sample_rate: u32) -> DiarizeReport {
-        DiarizeReport::refused(NO_MODEL)
+        DiarizeReport::refused(self.reason.clone())
     }
 }
 
@@ -65,5 +85,19 @@ mod tests {
             reason.contains("model"),
             "причина не называет фичу: {reason}"
         );
+    }
+
+    /// Своя причина доезжает целиком: «модели нет» и «модель не поднялась»
+    /// человек чинит по-разному.
+    #[test]
+    fn a_given_reason_is_carried_through() {
+        let mut engine = MockDiarizer::because("в каталоге нет embedding.onnx");
+
+        let reason = engine
+            .diarize(&[], 16_000)
+            .refused
+            .expect("заглушка обязана отказать");
+
+        assert_eq!(reason, "в каталоге нет embedding.onnx");
     }
 }

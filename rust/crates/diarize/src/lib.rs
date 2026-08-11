@@ -15,18 +15,20 @@
 //! (задача 6 плана) либо слепок, включённый осознанно (задача 7).
 
 mod mock;
+mod model_path;
+
+#[cfg(feature = "model")]
+mod sherpa;
 
 pub use mock::MockDiarizer;
+pub use model_path::{
+    DiarizeModels, EMBEDDING_FILE, SEGMENTATION_FILE, diarize_models_dir, resolve_diarize_models,
+};
 
-// Фича существует, но модель за ней не выбрана. Включение собирает
-// ошибку намеренно: заглушка под именем работающей модели — ровно та
-// «убедительная неправда», против которой написана спека, и найти её
-// пришлось бы по неверным числам, а не по отказу сборки.
 #[cfg(feature = "model")]
-compile_error!(
-    "фича `model` включена, но модель ещё не выбрана: это решает задача 3 плана \
-     2026-08-11-voice-clustering (замер на Маке)"
-);
+pub use sherpa::SherpaDiarizer;
+
+use std::path::Path;
 
 /// Отрезок речи с меткой голоса.
 ///
@@ -118,23 +120,54 @@ pub trait Diarizer {
     fn diarize(&mut self, pcm: &[i16], sample_rate: u32) -> DiarizeReport;
 }
 
-/// Движок по сборке: заглушка, пока модель не выбрана.
+/// Движок по сборке и по тому, что лежит на диске.
 ///
-/// Устроено как `stt_backend()`: выбор делает крейт, а не вызывающий, —
-/// иначе каждый потребитель заводил бы свою ветку и свою ошибку.
-pub fn diarize_backend() -> Box<dyn Diarizer> {
-    Box::new(MockDiarizer::new())
+/// Устроено как `LiveCaptionPipeline::from_data_root`: выбор делает крейт,
+/// а не вызывающий, — иначе каждый потребитель заводил бы свою ветку и
+/// свою ошибку. Отличие одно, и оно намеренное: там отсутствие модели
+/// молча подменяется мокой с текстом-подделкой, здесь — заглушкой, которая
+/// **отказывает и говорит почему**. Подделка под текст безобидна, подделка
+/// под разделение голосов неотличима от правды.
+///
+/// Ни одна ветка не паникует и не возвращает `Result`: причина уезжает
+/// внутри отчёта, туда же, куда уедет отказ самого движка.
+pub fn diarize_backend(data_root: impl AsRef<Path>) -> Box<dyn Diarizer> {
+    let _ = data_root.as_ref();
+
+    #[cfg(feature = "model")]
+    {
+        match resolve_diarize_models(data_root.as_ref()) {
+            Ok(models) => match SherpaDiarizer::open(&models) {
+                Ok(engine) => Box::new(engine),
+                Err(error) => Box::new(MockDiarizer::because(error)),
+            },
+            Err(error) => Box::new(MockDiarizer::because(error)),
+        }
+    }
+    #[cfg(not(feature = "model"))]
+    {
+        Box::new(MockDiarizer::new())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Без фичи движка нет, и прибор обязан узнать об этом из отчёта, а
-    /// не из пустого списка отрезков.
+    /// Движка нет — ни без фичи, ни с фичей и без моделей на диске, — и
+    /// прибор обязан узнать об этом из отчёта, а не из пустого списка
+    /// отрезков.
+    ///
+    /// Каталог заведомо пустой: с фичей это ветка «моделей нет», без
+    /// фичи — «сборка без движка». Обе обязаны отказать с причиной.
     #[test]
-    fn without_the_feature_the_backend_refuses_with_a_reason() {
-        let mut engine = diarize_backend();
+    fn a_backend_without_an_engine_refuses_with_a_reason() {
+        let empty = std::env::temp_dir().join(format!(
+            "mr-diarize-no-models-{:?}",
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&empty);
+        let mut engine = diarize_backend(&empty);
 
         let report = engine.diarize(&vec![0i16; 16_000], 16_000);
 

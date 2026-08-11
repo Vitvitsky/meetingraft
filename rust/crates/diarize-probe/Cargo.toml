@@ -7,6 +7,12 @@ edition.workspace = true
 name = "diarize-probe"
 path = "src/main.rs"
 
+[features]
+default = []
+# Прогон с настоящим движком. Без неё прибор отказывает на самопроверке —
+# и это его честный ответ, а не поломка.
+model = ["meetingraft-diarize/model"]
+
 [dependencies]
 meetingraft-diarize = { path = "../diarize" }
 meetingraft-domain = { path = "../domain" }
