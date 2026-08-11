@@ -242,9 +242,9 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
     // должен: прежняя строка печатала «где никто не говорит» на любой
     // записи, включая двадцатиминутную встречу.
     println!(
-        "  Говорили ли на этой записи, прибор не знает. На молчащей комнате
-           число должно быть близко к нулю; на встрече оно и есть работа
-           живого пути, и сравнивать его надо с колонкой постоянного порога."
+        "  Говорили ли на этой записи, прибор не знает. На молчащей комнате\n\
+         \x20 число должно быть близко к нулю; на встрече оно и есть работа\n\
+         \x20 живого пути, и сравнивать его надо с колонкой постоянного порога."
     );
     if quiet_path.skipped > 0 {
         println!(
@@ -259,6 +259,28 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
             (quiet_path.total() + quiet_path.skipped) as f64 * 60.0 / seconds.max(1.0),
         );
     }
+    if let Ok(raw) = raw_frames(&store, session_id)
+        && raw.len() > 1
+    {
+        println!("\n  Откуда берётся фон (микс против сырых дорожек):");
+        for (channel, frames) in &raw {
+            let (floor, runs) = floor_and_runs(frames);
+            println!(
+                "    только {:<7} фон медиана {:>5.0}, запусков {}",
+                channel.code(),
+                floor,
+                runs
+            );
+        }
+        let (floor, runs) = floor_and_runs(&pcm);
+        println!("    микс          фон медиана {floor:>5.0}, запусков {runs}");
+        println!(
+            "    Микс — то, что видит движок. Фон на нём заметно выше, чем на\n\
+             \x20   дорожках, — значит поднял его микшер: тихое он тянет к цели\n\
+             \x20   с усилением до пятикратного, а гейт по тихому и считает фон."
+        );
+    }
+
     println!(
         "  Доля кадров запуском не является: движок копит речь до порога и\n\
          \x20 держит темп. Зато конец каждой реплики стоит отдельного прохода,\n\
@@ -308,6 +330,46 @@ impl Inferences {
     fn total(&self) -> usize {
         self.partials + self.flushes
     }
+}
+
+/// Медиана оценки фона и число запусков модели по одному входу.
+///
+/// Нужно, чтобы разделить два подозреваемых: сама комната и **микшер**.
+/// Тот подтягивает тихий канал к цели (`TARGET_RMS`, ADR-009) с
+/// усилением до пятикратного, а подтягивает он ровно то, по чему гейт
+/// считает фон, — тихие места. Если на миксе фон заметно выше, чем на
+/// сырых дорожках, растёт он не в комнате.
+fn floor_and_runs(frames: &[Vec<i16>]) -> (f32, usize) {
+    let mut gate = NoiseGate::new();
+    let mut floors: Vec<f32> = Vec::with_capacity(frames.len());
+    for frame in frames {
+        gate.accepts(rms(frame));
+        floors.push(gate.noise_floor());
+    }
+    (median(floors.into_iter()), inferences(frames, 0).total())
+}
+
+/// Дорожка, нарезанная на кадры живого пути, но **без** микшера.
+type RawTrack = (AudioChannel, Vec<Vec<i16>>);
+
+/// Дорожки сессии в кадрах живого пути, без микшера.
+fn raw_frames(store: &AudioManifestStore, session_id: &str) -> Result<Vec<RawTrack>, String> {
+    let frame_len = RATE as usize * FRAME_MS / 1_000;
+    let mut out = Vec::new();
+    for channel in [AudioChannel::Mic, AudioChannel::System] {
+        let track = store
+            .read_session_pcm(session_id, channel)
+            .map_err(|error| error.to_string())?;
+        if track.is_empty() {
+            continue;
+        }
+        let frames = track
+            .chunks(frame_len)
+            .map(<[i16]>::to_vec)
+            .collect::<Vec<_>>();
+        out.push((channel, frames));
+    }
+    Ok(out)
 }
 
 /// Прогнать кадры через гейт ровно так, как это делает живой путь:
@@ -742,6 +804,36 @@ mod tests {
         assert!(
             runs.partials < passed.accepted / 5,
             "проходов почти столько же, сколько кадров — темп не работает"
+        );
+    }
+
+    /// Усиление тихого канала микшером поднимает и оценку фона: гейт
+    /// считает фон именно по тихому.
+    ///
+    /// Проверяется на заведомом случае — тихая дорожка, которую микшер
+    /// обязан подтянуть (уровень между `GAIN_NOISE_FLOOR_RMS` и
+    /// `QUIET_CEILING_RMS`).
+    #[test]
+    fn the_mixer_lifts_the_floor_the_gate_reads() {
+        let quiet: Vec<Vec<i16>> = (0..200).map(|_| frame_at(200.0)).collect();
+        let (raw_floor, _) = floor_and_runs(&quiet);
+
+        // Уровень заведомо в окне усиления: ниже — микшер не тронет,
+        // выше — тоже, и тест проверял бы пустоту.
+        assert!(
+            (150.0..700.0).contains(&raw_floor),
+            "материал вне окна усиления микшера: фон {raw_floor}"
+        );
+
+        let boosted: Vec<Vec<i16>> = quiet
+            .iter()
+            .map(|frame| frame.iter().map(|s| s.saturating_mul(5)).collect())
+            .collect();
+        let (boosted_floor, _) = floor_and_runs(&boosted);
+
+        assert!(
+            boosted_floor > raw_floor * 3.0,
+            "подъём дорожки не поднял фон: {raw_floor} -> {boosted_floor}"
         );
     }
 
