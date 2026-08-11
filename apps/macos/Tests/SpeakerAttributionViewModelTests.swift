@@ -218,6 +218,42 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         XCTAssertNil(row.nameToCommit(draft: "  Пётр  "), "разница только в пробелах")
     }
 
+    /// Кнопка прослушивания показывается по признаку встречи, а не
+    /// реплики: чтение фрагмента — поход на диск, а список
+    /// перерисовывается на каждое нажатие клавиши.
+    func testAudioAvailabilityFollowsTheMeeting() {
+        let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
+        core.audioBytes = 4_096
+        let viewModel = SpeakerAttributionViewModel(core: core)
+
+        viewModel.load(meetingId: "m1", version: nil)
+
+        XCTAssertTrue(viewModel.audioAvailable)
+    }
+
+    /// Запись удалена — прослушивать нечего, и кнопки быть не должно.
+    func testDeletedAudioLeavesNothingToPlay() {
+        let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
+        core.audioBytes = 0
+        let viewModel = SpeakerAttributionViewModel(core: core)
+
+        viewModel.load(meetingId: "m1", version: nil)
+
+        XCTAssertFalse(viewModel.audioAvailable, "у встречи без записи кнопка была бы заглушкой")
+    }
+
+    /// Отсутствие звука за конкретный кусок называется вслух: кнопка была
+    /// показана, человек нажал, и молчание он прочтёт как поломку.
+    func testMissingFragmentIsReportedOutLoud() {
+        let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: nil)
+
+        viewModel.reportMissingFragment()
+
+        XCTAssertNotNil(viewModel.errorMessage)
+    }
+
     func testRemoveSurfacesCoreError() {
         let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
         core.deleteError = "занят"
@@ -491,6 +527,9 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
 }
 
 private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
+    /// Размер записи встречи; ноль — записи нет (удалена, Epic 22).
+    var audioBytes: UInt64 = 1_024
+
     struct ChannelAssignment: Equatable {
         let version: UInt32
         let channelCode: String
@@ -631,5 +670,9 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
         endMs _: UInt64
     ) -> FfiAudioFragment {
         FfiAudioFragment(pcm: Data(), sampleRate: 0, durationMs: 0)
+    }
+
+    func meetingAudioBytes(meetingId _: String) -> UInt64 {
+        audioBytes
     }
 }

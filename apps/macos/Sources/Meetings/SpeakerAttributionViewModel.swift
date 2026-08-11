@@ -31,6 +31,7 @@ protocol SpeakerAttributionCoreProviding: AnyObject {
         startMs: UInt64,
         endMs: UInt64
     ) -> FfiAudioFragment
+    func meetingAudioBytes(meetingId: String) -> UInt64
 }
 
 extension MeetingCore: SpeakerAttributionCoreProviding {}
@@ -88,6 +89,13 @@ final class SpeakerAttributionViewModel {
     var draftText = ""
     /// Правки, не легшие ни на одну версию после пересбора.
     private(set) var unappliedEdits: [FfiSegmentEdit] = []
+    /// Есть ли у встречи запись вообще.
+    ///
+    /// Один вопрос на встречу, а не на реплику: чтение фрагмента — это
+    /// поход на диск, а список перерисовывается на каждое нажатие
+    /// клавиши. Кнопка прослушивания при удалённой записи (Epic 22) не
+    /// показывается вовсе: нерабочая кнопка — это заглушка в интерфейсе.
+    private(set) var audioAvailable = false
 
     private let core: any SpeakerAttributionCoreProviding
     private var meetingId = ""
@@ -205,6 +213,17 @@ final class SpeakerAttributionViewModel {
         errorMessage = nil
     }
 
+    /// Записи за диапазон реплики не оказалось.
+    ///
+    /// Говорится вслух: у встречи запись есть, кнопка была показана, а
+    /// звука за этот кусок нет. Молча погасить кнопку значило бы оставить
+    /// человека гадать, нажал он или нет.
+    func reportMissingFragment() {
+        errorMessage = String(
+            localized: "Записи за этот фрагмент нет — прослушать нечего."
+        )
+    }
+
     /// Предлагать ли «заменять всюду» для этой реплики.
     ///
     /// Решает ядро: непустой `promotableTermId` означает, что подсказка
@@ -302,6 +321,7 @@ final class SpeakerAttributionViewModel {
 
     private func reload() {
         speakers = core.listSpeakers(meetingId: meetingId)
+        audioAvailable = core.meetingAudioBytes(meetingId: meetingId) > 0
         // Именно здесь, а не под `guard let version`: правка без версии —
         // как раз та, которую надо показать.
         unappliedEdits = core.listUnappliedEdits(meetingId: meetingId)
