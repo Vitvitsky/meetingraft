@@ -387,7 +387,23 @@ impl SttEngine for WhisperSttEngine {
             self.silence_frames += pcm.len();
             self.buffer.extend_from_slice(pcm);
             if self.silence_frames >= SILENCE_FRAMES {
-                out.extend(self.flush());
+                if self.speech_frames < MIN_SPEECH_FRAMES {
+                    // Речи в реплике меньше порога, по которому движок
+                    // вообще запускается: partial здесь не гонялся ни
+                    // разу, и гонять конец незачем — в буфере доли
+                    // секунды шума. Замер 2026-08-11 (`gate-probe`):
+                    // 22 таких прохода из 48 на двух минутах комнаты,
+                    // где никто не говорил.
+                    //
+                    // Вместе с проходом уходит и шанс распознать очень
+                    // короткое «да», поэтому пропуск идёт в журнал
+                    // диагностики: потеря должна быть видимой.
+                    let buffer_ms = (self.buffer.len() / 16) as u64;
+                    self.note(SttDiagnosticKind::SkippedShortSegment, "", buffer_ms);
+                    self.reset_segment();
+                } else {
+                    out.extend(self.flush());
+                }
             }
         }
         out
