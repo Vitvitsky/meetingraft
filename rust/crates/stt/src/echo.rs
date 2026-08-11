@@ -102,6 +102,20 @@ impl EchoReport {
         }
     }
 
+    /// Сдвиг не опознан, но искали: сюда кладётся лучшее, что нашлось.
+    ///
+    /// Ноль в этом поле раньше означал две разные вещи — «не искали» и
+    /// «искали, совпадения нет», — и различить их снаружи было нечем.
+    /// Между тем это ровно разница между отказом прибора и ответом
+    /// «эха не видно».
+    fn refused(best_correlation: f32) -> Self {
+        Self {
+            delay_ms: 0,
+            delay_correlation: best_correlation,
+            windows: Vec::new(),
+        }
+    }
+
     pub fn echo_windows(&self) -> usize {
         self.windows.iter().filter(|window| window.is_echo).count()
     }
@@ -117,8 +131,10 @@ pub fn detect_echo(mic: &[i16], system: &[i16], sample_rate: u32) -> EchoReport 
     }
 
     let max_lag = frames_for(MAX_DELAY_MS, sample_rate);
-    let Some((delay, correlation)) = estimate_delay(mic, system, max_lag, sample_rate) else {
-        return EchoReport::empty();
+    let best = estimate_delay(mic, system, max_lag, sample_rate);
+    let Some((delay, correlation)) = best.filter(|(_, value)| *value >= MIN_DELAY_CORRELATION)
+    else {
+        return EchoReport::refused(best.map_or(0.0, |(_, value)| value));
     };
 
     let window = frames_for(WINDOW_MS, sample_rate).max(1);
@@ -251,7 +267,9 @@ fn estimate_delay(
         }
     }
 
-    best.filter(|(_, value)| *value >= MIN_DELAY_CORRELATION)
+    // Порог применяет вызывающий: ему нужно и то, что нашлось ниже
+    // порога, иначе «не найдено» и «нечего сравнивать» сливаются в ноль.
+    best
 }
 
 /// Начала нескольких самых громких кусков длиной `window`, без перекрытия.
@@ -456,6 +474,34 @@ mod tests {
     /// Своя речь помечаться не должна — **при найденной задержке**.
     ///
     /// Главный тест работы: ложная пометка кончится выброшенной репликой
+    /// «Искали и не нашли» и «искать было нечем» — разные ответы, и
+    /// различает их только само число корреляции.
+    ///
+    /// Ноль в обоих случаях означал бы, что прибор молчит одинаково там,
+    /// где эха нет, и там, где он не смог посмотреть.
+    #[test]
+    fn a_refusal_carries_the_correlation_it_measured() {
+        let rate = 16_000u32;
+        let system = speechlike(rate as usize * 4, 1);
+        // Своя речь, к системному звуку отношения не имеющая: совпадения
+        // быть не должно, но материал на обеих дорожках есть.
+        let mic = speechlike(rate as usize * 4, 9);
+
+        let report = detect_echo(&mic, &system, rate);
+
+        assert!(report.windows.is_empty(), "эха тут нет");
+        assert!(
+            report.delay_correlation > 0.0,
+            "корреляция не измерена вовсе: {}",
+            report.delay_correlation
+        );
+        assert!(
+            report.delay_correlation < 0.3,
+            "случайное совпадение выше порога: {}",
+            report.delay_correlation
+        );
+    }
+
     /// человека, и человек об этом не узнает.
     ///
     /// Первая половина записи — чистое эхо, чтобы задержка нашлась; иначе
