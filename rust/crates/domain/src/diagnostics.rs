@@ -15,6 +15,17 @@ pub enum SttDiagnosticKind {
     ReleasedHeld,
     /// Сегмент отброшен по вероятности «здесь нет речи».
     DroppedNoSpeech,
+    /// Реплика не набрала порога речи — модель по ней не гонялась.
+    ///
+    /// Гейт пропустил всплеск, но речи в нём меньше `MIN_SPEECH_FRAMES`,
+    /// и partial по такому куску движок не гонял никогда. Раньше конец
+    /// такой «реплики» всё равно стоил полного прохода: замер 2026-08-11
+    /// дал 22 таких прохода из 48 на двух минутах молчащей комнаты.
+    ///
+    /// Запись в журнале обязательна: вместе с проходом пропадает и
+    /// возможность распознать очень короткое «да». Потеря должна быть
+    /// видимой — молчаливая здесь хуже.
+    SkippedShortSegment,
 }
 
 impl SttDiagnosticKind {
@@ -24,6 +35,7 @@ impl SttDiagnosticKind {
             Self::HeldPrefix => "held_prefix",
             Self::ReleasedHeld => "released_held",
             Self::DroppedNoSpeech => "dropped_no_speech",
+            Self::SkippedShortSegment => "skipped_short_segment",
         }
     }
 }
@@ -59,6 +71,7 @@ mod tests {
             SttDiagnosticKind::HeldPrefix.code(),
             SttDiagnosticKind::ReleasedHeld.code(),
             SttDiagnosticKind::DroppedNoSpeech.code(),
+            SttDiagnosticKind::SkippedShortSegment.code(),
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(unique.len(), codes.len());

@@ -238,18 +238,17 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
         "  Это {:.1} запуска в минуту на записи, где никто не говорит.",
         quiet_path.total() as f64 * 60.0 / seconds.max(1.0)
     );
-    if quiet_path.short_flushes > 0 {
+    if quiet_path.skipped > 0 {
         println!(
-            "\n  Из них {} — концы реплик, не набравших порога речи ({} мс).\n\
-             \x20 Разбирать там нечего: движок уже решил, что это не речь, и\n\
-             \x20 partial по такому куску не гонял. Не гоняй он и конец —\n\
-             \x20 осталось бы {} запусков вместо {}, то есть {:.1} в минуту.\n\
-             \x20 Это оценка правки, а не сама правка: движок не тронут.",
-            quiet_path.short_flushes,
+            "\n  Пропущено {} концов реплик короче {} мс — движок по ним не\n\
+             \x20 запускается (правка 2026-08-11). Без неё было бы {} запусков,\n\
+             \x20 то есть {:.1} в минуту.\n\
+             \x20 Плата за это — очень короткое «да» распознано не будет. Каждый\n\
+             \x20 пропуск пишется в журнал диагностики: потеря видима.",
+            quiet_path.skipped,
             MIN_SPEECH_FRAMES * 1_000 / RATE as usize,
-            quiet_path.total() - quiet_path.short_flushes,
-            quiet_path.total(),
-            (quiet_path.total() - quiet_path.short_flushes) as f64 * 60.0 / seconds.max(1.0),
+            quiet_path.total() + quiet_path.skipped,
+            (quiet_path.total() + quiet_path.skipped) as f64 * 60.0 / seconds.max(1.0),
         );
     }
     println!(
@@ -285,17 +284,16 @@ struct Gated {
 struct Inferences {
     partials: usize,
     flushes: usize,
-    /// Проходы по концам реплик, которые до порога речи так и не дотянули.
+    /// Концы реплик, не набравших порога речи: движок их **пропускает**.
     ///
-    /// Считаются отдельно, потому что это кандидат на правку: движок уже
-    /// решил, что меньше `MIN_SPEECH_FRAMES` — не речь, и partial по
-    /// такому куску не гоняет. Конец реплики гоняет всё равно, хотя
-    /// разбирать там нечего: 0.1–0.2 с шума. На таком куске Whisper и
-    /// выдаёт титры (Epic 16).
+    /// В `total` не входят — прохода по ним нет. Считаются и печатаются
+    /// потому, что правка от 2026-08-11 стоила отказа от распознавания
+    /// очень коротких реплик, и величина этой платы должна оставаться на
+    /// виду, а не превращаться в тишину.
     ///
-    /// Прибор считает это **до** правки движка: сперва цена, потом
-    /// решение.
-    short_flushes: usize,
+    /// Замер, по которому правка сделана: 22 таких конца из 48 проходов
+    /// на двух минутах молчащей комнаты.
+    skipped: usize,
 }
 
 impl Inferences {
@@ -354,10 +352,11 @@ fn inferences(frames: &[Vec<i16>], committed_words: usize) -> Inferences {
         } else if in_speech {
             silence += frame_len;
             if silence >= SILENCE_FRAMES {
-                // Конец реплики: принудительный проход по буферу.
-                out.flushes += 1;
+                // Конец реплики: проход по буферу, если речь в ней была.
                 if speech < MIN_SPEECH_FRAMES {
-                    out.short_flushes += 1;
+                    out.skipped += 1;
+                } else {
+                    out.flushes += 1;
                 }
                 in_speech = false;
                 speech = 0;
@@ -369,9 +368,10 @@ fn inferences(frames: &[Vec<i16>], committed_words: usize) -> Inferences {
     }
     // Запись кончилась посреди реплики — остановка тоже фиксирует остаток.
     if in_speech {
-        out.flushes += 1;
         if speech < MIN_SPEECH_FRAMES {
-            out.short_flushes += 1;
+            out.skipped += 1;
+        } else {
+            out.flushes += 1;
         }
     }
     out
@@ -649,12 +649,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Одиночный всплеск до порога речи не дотягивает, partial не
-    /// запускает — но реплику открывает, и её конец стоит прохода.
+    /// Одиночный всплеск до порога речи не дотягивает: модель по нему не
+    /// запускается вовсе, но пропуск обязан быть посчитан.
     ///
     /// По доле кадров этого не видно вовсе: один кадр из ста.
     #[test]
-    fn a_single_blip_still_costs_one_pass() {
+    fn a_single_blip_no_longer_costs_a_pass() {
         let mut frames: Vec<Vec<i16>> = (0..50).map(|_| frame_at(100.0)).collect();
         frames.push(frame_at(3_000.0));
         frames.extend((0..50).map(|_| frame_at(100.0)));
@@ -670,10 +670,18 @@ mod tests {
         let runs = inferences(&frames, 0);
 
         assert_eq!(runs.partials, 0, "0.1 с речи до порога не дотягивает");
-        assert_eq!(runs.flushes, 1, "конец реплики обязан стоить прохода");
         assert_eq!(
-            runs.short_flushes, 1,
-            "этот проход и есть кандидат на отмену: речи в нём нет"
+            runs.flushes, 0,
+            "прохода быть не должно: речи в реплике нет"
+        );
+        assert_eq!(
+            runs.skipped, 1,
+            "пропуск обязан быть посчитан, а не потерян"
+        );
+        assert_eq!(
+            runs.total(),
+            0,
+            "модель по этому куску не запускается вовсе"
         );
     }
 
@@ -697,7 +705,7 @@ mod tests {
 
         assert_eq!(runs.flushes, 1, "реплика кончилась — фиксировать надо");
         assert_eq!(
-            runs.short_flushes, 0,
+            runs.skipped, 0,
             "секунда речи посчиталась недостаточной — правка съела бы реплику"
         );
     }
