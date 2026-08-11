@@ -263,34 +263,40 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
         && raw.len() > 1
     {
         println!("\n  Откуда берётся фон (микс против сырых дорожек):");
-        let mut highest_track = 0.0f32;
+        println!("                  медиана  последняя треть  максимум  запусков");
+        let mut highest_tail = 0.0f32;
         for (channel, frames) in &raw {
-            let (floor, runs) = floor_and_runs(frames);
-            highest_track = highest_track.max(floor);
+            let seen = floor_and_runs(frames);
+            highest_tail = highest_tail.max(seen.tail_median);
             println!(
-                "    только {:<7} фон медиана {:>5.0}, запусков {}",
+                "    только {:<7} {:>7.0} {:>16.0} {:>9.0} {:>9}",
                 channel.code(),
-                floor,
-                runs
+                seen.median,
+                seen.tail_median,
+                seen.peak,
+                seen.runs
             );
         }
-        let (mixed_floor, runs) = floor_and_runs(&pcm);
-        println!("    микс          фон медиана {mixed_floor:>5.0}, запусков {runs}");
+        let mixed = floor_and_runs(&pcm);
+        println!(
+            "    микс          {:>7.0} {:>16.0} {:>9.0} {:>9}",
+            mixed.median, mixed.tail_median, mixed.peak, mixed.runs
+        );
 
-        // Вывод считается, а не печатается заранее: прежняя версия
-        // утверждала «фон выше, значит поднял микшер» при любых числах,
-        // то есть отвечала на вопрос до того, как его задали.
-        if mixed_floor > highest_track * 1.5 {
+        // Вывод считается, а не печатается заранее, и считается по той
+        // же величине, о которой спрашивали: фон рос к концу записи.
+        if mixed.tail_median > highest_tail * 1.5 {
             println!(
-                "    Фон на миксе выше самой шумной дорожки в {:.1} раза — поднял его\n\
-                 \x20   микшер: тихое он тянет к цели с усилением до пятикратного\n\
-                 \x20   (ADR-009), а гейт по тихому и считает фон.",
-                mixed_floor / highest_track.max(1.0)
+                "    В последней трети фон на миксе выше самой шумной дорожки в {:.1}\n\
+                 \x20   раза — поднял его микшер: тихое он тянет к цели с усилением\n\
+                 \x20   до пятикратного (ADR-009), а гейт по тихому и считает фон.",
+                mixed.tail_median / highest_tail.max(1.0)
             );
         } else {
             println!(
-                "    Фон на миксе не выше, чем на дорожках, — микшер ни при чём.\n\
-                 \x20   Высокий фон пришёл со звука, а не из обработки."
+                "    Микшер фон не поднимал: на миксе он не выше, чем на дорожках.\n\
+                 \x20   Значит рос он в самом звуке — смотреть надо, что звучало\n\
+                 \x20   в тихих местах последней трети."
             );
         }
     }
@@ -353,14 +359,32 @@ impl Inferences {
 /// усилением до пятикратного, а подтягивает он ровно то, по чему гейт
 /// считает фон, — тихие места. Если на миксе фон заметно выше, чем на
 /// сырых дорожках, растёт он не в комнате.
-fn floor_and_runs(frames: &[Vec<i16>]) -> (f32, usize) {
+fn floor_and_runs(frames: &[Vec<i16>]) -> FloorRun {
     let mut gate = NoiseGate::new();
     let mut floors: Vec<f32> = Vec::with_capacity(frames.len());
     for frame in frames {
         gate.accepts(rms(frame));
         floors.push(gate.noise_floor());
     }
-    (median(floors.into_iter()), inferences(frames, 0).total())
+    // Медиана по всей записи прячет то, ради чего замер и заводился:
+    // фон рос к концу встречи, а первые две трети держали его низким.
+    // Статистика обязана смотреть туда же, куда смотрит вопрос.
+    let tail_from = floors.len() * 2 / 3;
+    FloorRun {
+        median: median(floors.iter().copied()),
+        tail_median: median(floors[tail_from..].iter().copied()),
+        peak: floors.iter().copied().fold(0.0, f32::max),
+        runs: inferences(frames, 0).total(),
+    }
+}
+
+/// Как вёл себя фон на одном входе.
+struct FloorRun {
+    median: f32,
+    /// Медиана по последней трети — там, где фон и рос.
+    tail_median: f32,
+    peak: f32,
+    runs: usize,
 }
 
 /// Дорожка, нарезанная на кадры живого пути, но **без** микшера.
@@ -830,7 +854,7 @@ mod tests {
     #[test]
     fn the_mixer_lifts_the_floor_the_gate_reads() {
         let quiet: Vec<Vec<i16>> = (0..200).map(|_| frame_at(200.0)).collect();
-        let (raw_floor, _) = floor_and_runs(&quiet);
+        let raw_floor = floor_and_runs(&quiet).median;
 
         // Уровень заведомо в окне усиления: ниже — микшер не тронет,
         // выше — тоже, и тест проверял бы пустоту.
@@ -843,7 +867,7 @@ mod tests {
             .iter()
             .map(|frame| frame.iter().map(|s| s.saturating_mul(5)).collect())
             .collect();
-        let (boosted_floor, _) = floor_and_runs(&boosted);
+        let boosted_floor = floor_and_runs(&boosted).median;
 
         assert!(
             boosted_floor > raw_floor * 3.0,
