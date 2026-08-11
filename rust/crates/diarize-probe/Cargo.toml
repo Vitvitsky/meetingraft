@@ -1,0 +1,13 @@
+[package]
+name = "meetingraft-diarize-probe"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "diarize-probe"
+path = "src/main.rs"
+
+[dependencies]
+meetingraft-diarize = { path = "../diarize" }
+meetingraft-domain = { path = "../domain" }
+meetingraft-storage = { path = "../storage" }

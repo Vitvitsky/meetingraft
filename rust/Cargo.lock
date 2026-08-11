@@ -896,6 +896,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 
 [[package]]
+name = "meetingraft-diarize"
+version = "0.1.0"
+
+[[package]]
+name = "meetingraft-diarize-probe"
+version = "0.1.0"
+dependencies = [
+ "meetingraft-diarize",
+ "meetingraft-domain",
+ "meetingraft-storage",
+]
+
+[[package]]
 name = "meetingraft-domain"
 version = "0.1.0"
 
