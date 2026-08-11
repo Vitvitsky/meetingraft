@@ -223,7 +223,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
     /// перерисовывается на каждое нажатие клавиши.
     func testAudioAvailabilityFollowsTheMeeting() {
         let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
-        core.audioBytes = 4_096
+        core.audioBytes = 4096
         let viewModel = SpeakerAttributionViewModel(core: core)
 
         viewModel.load(meetingId: "m1", version: nil)
@@ -528,7 +528,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
 
 private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
     /// Размер записи встречи; ноль — записи нет (удалена, Epic 22).
-    var audioBytes: UInt64 = 1_024
+    var audioBytes: UInt64 = 1024
 
     struct ChannelAssignment: Equatable {
         let version: UInt32
