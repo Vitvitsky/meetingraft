@@ -123,6 +123,8 @@ meetingraft/
 ├─ apps/macos/          SwiftUI + Generated UniFFI + Scripts/
 ├─ rust/crates/         domain, session, stt, glossary, postcall,
 │                       translate, sync, storage, ffi
+│                       + инструменты: uniffi-bindgen, echo-probe,
+│                         gate-probe (бинарники, в приложение не входят)
 ├─ backend/             FastAPI stub (uv + pytest)
 ├─ shared/openapi.yaml  контракт ADR-007
 ├─ docker-compose.yml   api:8080
