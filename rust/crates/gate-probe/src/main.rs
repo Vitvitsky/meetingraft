@@ -238,6 +238,20 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
         "  Это {:.1} запуска в минуту на записи, где никто не говорит.",
         quiet_path.total() as f64 * 60.0 / seconds.max(1.0)
     );
+    if quiet_path.short_flushes > 0 {
+        println!(
+            "\n  Из них {} — концы реплик, не набравших порога речи ({} мс).\n\
+             \x20 Разбирать там нечего: движок уже решил, что это не речь, и\n\
+             \x20 partial по такому куску не гонял. Не гоняй он и конец —\n\
+             \x20 осталось бы {} запусков вместо {}, то есть {:.1} в минуту.\n\
+             \x20 Это оценка правки, а не сама правка: движок не тронут.",
+            quiet_path.short_flushes,
+            MIN_SPEECH_FRAMES * 1_000 / RATE as usize,
+            quiet_path.total() - quiet_path.short_flushes,
+            quiet_path.total(),
+            (quiet_path.total() - quiet_path.short_flushes) as f64 * 60.0 / seconds.max(1.0),
+        );
+    }
     println!(
         "  Доля кадров запуском не является: движок копит речь до порога и\n\
          \x20 держит темп. Зато конец каждой реплики стоит отдельного прохода,\n\
@@ -271,6 +285,17 @@ struct Gated {
 struct Inferences {
     partials: usize,
     flushes: usize,
+    /// Проходы по концам реплик, которые до порога речи так и не дотянули.
+    ///
+    /// Считаются отдельно, потому что это кандидат на правку: движок уже
+    /// решил, что меньше `MIN_SPEECH_FRAMES` — не речь, и partial по
+    /// такому куску не гоняет. Конец реплики гоняет всё равно, хотя
+    /// разбирать там нечего: 0.1–0.2 с шума. На таком куске Whisper и
+    /// выдаёт титры (Epic 16).
+    ///
+    /// Прибор считает это **до** правки движка: сперва цена, потом
+    /// решение.
+    short_flushes: usize,
 }
 
 impl Inferences {
@@ -331,6 +356,9 @@ fn inferences(frames: &[Vec<i16>], committed_words: usize) -> Inferences {
             if silence >= SILENCE_FRAMES {
                 // Конец реплики: принудительный проход по буферу.
                 out.flushes += 1;
+                if speech < MIN_SPEECH_FRAMES {
+                    out.short_flushes += 1;
+                }
                 in_speech = false;
                 speech = 0;
                 since_partial = 0;
@@ -342,6 +370,9 @@ fn inferences(frames: &[Vec<i16>], committed_words: usize) -> Inferences {
     // Запись кончилась посреди реплики — остановка тоже фиксирует остаток.
     if in_speech {
         out.flushes += 1;
+        if speech < MIN_SPEECH_FRAMES {
+            out.short_flushes += 1;
+        }
     }
     out
 }
@@ -640,6 +671,35 @@ mod tests {
 
         assert_eq!(runs.partials, 0, "0.1 с речи до порога не дотягивает");
         assert_eq!(runs.flushes, 1, "конец реплики обязан стоить прохода");
+        assert_eq!(
+            runs.short_flushes, 1,
+            "этот проход и есть кандидат на отмену: речи в нём нет"
+        );
+    }
+
+    /// Настоящая реплика порога достигает, и её конец фиксировать надо:
+    /// кандидат на отмену не должен задевать речь.
+    #[test]
+    fn a_real_utterance_is_not_counted_as_short() {
+        let mut frames: Vec<Vec<i16>> = (0..20).map(|_| frame_at(100.0)).collect();
+        // Секунда речи — десять кадров, впятеро больше порога.
+        frames.extend((0..10).map(|_| frame_at(3_000.0)));
+        frames.extend((0..20).map(|_| frame_at(100.0)));
+
+        let passed = gated(&frames);
+        assert!(
+            passed.accepted >= 9,
+            "речь не прошла гейт: {}",
+            passed.accepted
+        );
+
+        let runs = inferences(&frames, 0);
+
+        assert_eq!(runs.flushes, 1, "реплика кончилась — фиксировать надо");
+        assert_eq!(
+            runs.short_flushes, 0,
+            "секунда речи посчиталась недостаточной — правка съела бы реплику"
+        );
     }
 
     /// Речь подряд: проходы идут по темпу, а не по кадрам.
