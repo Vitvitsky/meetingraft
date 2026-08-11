@@ -9,6 +9,8 @@ import SwiftUI
 struct FinalSegmentsView: View {
     @Bindable var viewModel: SpeakerAttributionViewModel
     @State private var player = SegmentAudioPlayer()
+    /// Какая реплика сейчас играет.
+    @State private var playingIndex: UInt32?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.sm) {
@@ -41,9 +43,20 @@ struct FinalSegmentsView: View {
                     canPromote: viewModel.canPromote(index: segment.index),
                     draft: $viewModel.draftText,
                     loadFragment: { viewModel.audioFragment(for: segment) },
-                    isPlaying: player.isPlaying,
-                    onPlay: { player.play(fragment: $0) },
-                    onStopPlayback: { player.stop() },
+                    audioAvailable: viewModel.audioAvailable,
+                    // Играет ли **эта** реплика, а не хоть какая-то:
+                    // кнопка теперь на каждой строке, и общий признак
+                    // проигрывателя показал бы «Стоп» сразу на всех.
+                    isPlaying: player.isPlaying && playingIndex == segment.index,
+                    onPlay: {
+                        playingIndex = segment.index
+                        player.play(fragment: $0)
+                    },
+                    onStopPlayback: {
+                        playingIndex = nil
+                        player.stop()
+                    },
+                    onFragmentMissing: { viewModel.reportMissingFragment() },
                     onAssign: { viewModel.assignSegment(index: segment.index, to: $0) },
                     onUnpin: { viewModel.unpinSegment(index: segment.index) },
                     onBeginEdit: { viewModel.beginEdit(index: segment.index) },
@@ -67,7 +80,8 @@ struct FinalSegmentsView: View {
 private struct EditHintBar: View {
     var body: some View {
         Label(
-            "Нажмите на реплику, чтобы поправить текст или прослушать её",
+            "Нажмите на реплику, чтобы поправить текст. ▶ рядом с именем "
+                + "проигрывает её, не открывая правку",
             systemImage: "hand.tap"
         )
         .font(Theme.Text.caption)
@@ -86,9 +100,13 @@ private struct FinalSegmentRow: View {
     /// чтение с диска, а список перерисовывается на каждое нажатие
     /// клавиши в поле.
     let loadFragment: () -> FfiAudioFragment
+    /// У встречи есть запись. Нет — кнопки прослушивания нет вовсе.
+    let audioAvailable: Bool
     let isPlaying: Bool
     let onPlay: (FfiAudioFragment) -> Void
     let onStopPlayback: () -> Void
+    /// Звука за этот кусок не оказалось — сказать об этом вслух.
+    let onFragmentMissing: () -> Void
     let onAssign: (String) -> Void
     let onUnpin: () -> Void
     let onBeginEdit: () -> Void
@@ -100,9 +118,10 @@ private struct FinalSegmentRow: View {
     @State private var isConfirmingPromote = false
     /// Курсор над репликой: показываем карандаш.
     @State private var isHovered = false
-    /// Звук этой реплики, если он есть. `nil` — записи за диапазон нет,
-    /// и кнопки воспроизведения не будет вовсе.
-    @State private var playableFragment: FfiAudioFragment?
+    /// Звука за этот диапазон не нашлось — кнопку убираем до следующего
+    /// чтения списка. Показывать её дальше значило бы держать в
+    /// интерфейсе заведомо нерабочее.
+    @State private var fragmentMissing = false
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Space.sm) {
@@ -112,7 +131,7 @@ private struct FinalSegmentRow: View {
                 .frame(width: 52, alignment: .leading)
 
             VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                speakerMenu
+                header
                 if isEditing {
                     TextField("", text: $draft, axis: .vertical)
                         .textFieldStyle(.plain)
@@ -128,12 +147,7 @@ private struct FinalSegmentRow: View {
                                 .stroke(Theme.accent, lineWidth: 1)
                         )
                         .focused($isFieldFocused)
-                        .onAppear {
-                            isFieldFocused = true
-                            let fragment = loadFragment()
-                            playableFragment =
-                                SegmentAudioPlayer.buffer(from: fragment) == nil ? nil : fragment
-                        }
+                        .onAppear { isFieldFocused = true }
                         // Enter сохраняет, Esc откатывает, уход фокуса
                         // сохраняет: набранное не должно теряться от
                         // клика мимо поля.
@@ -144,7 +158,9 @@ private struct FinalSegmentRow: View {
                                 onCommitEdit()
                             }
                         }
-                    editingBar
+                    if !segment.originalText.isEmpty || canPromote {
+                        editingBar
+                    }
                 } else {
                     // Карандаш по наведению: он и подсказывает, что
                     // реплика правится нажатием, и не шумит, пока курсор
@@ -181,15 +197,6 @@ private struct FinalSegmentRow: View {
     /// на каждой реплике превратил бы транскрипт в панель управления.
     private var editingBar: some View {
         HStack(spacing: Theme.Space.sm) {
-            // Записи за диапазон может не быть — тогда кнопки нет вовсе.
-            // Показать нерабочую значило бы поставить в интерфейс
-            // заглушку.
-            if let playableFragment {
-                Button(isPlaying ? "Стоп" : "▶ Прослушать") {
-                    isPlaying ? onStopPlayback() : onPlay(playableFragment)
-                }
-                .buttonStyle(.themedSecondary)
-            }
             if !segment.originalText.isEmpty {
                 Button("Вернуть исходное", action: onRevert)
                     .buttonStyle(.themedSecondary)
@@ -215,6 +222,40 @@ private struct FinalSegmentRow: View {
                     + "и отменить их можно будет только по одной."
             )
         }
+    }
+
+    /// Шапка реплики: кто говорит, кнопка прослушивания, пометки.
+    ///
+    /// Прослушивание живёт здесь, а не в панели правки, потому что это
+    /// разные задачи. Чтобы понять, кто говорит, реплику надо послушать —
+    /// и назначить спикера тут же, не входя в правку текста и не рискуя
+    /// задеть его.
+    private var header: some View {
+        HStack(spacing: Theme.Space.xs) {
+            speakerMenu
+            if audioAvailable, !fragmentMissing {
+                Button(isPlaying ? "⏹" : "▶") { togglePlayback() }
+                    .buttonStyle(.themedSecondary)
+                    .help(isPlaying ? "Остановить" : "Прослушать эту реплику")
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Звук читается с диска по нажатию, а не при отрисовке: список
+    /// перерисовывается на каждое нажатие клавиши в поле правки.
+    private func togglePlayback() {
+        if isPlaying {
+            onStopPlayback()
+            return
+        }
+        let fragment = loadFragment()
+        guard SegmentAudioPlayer.buffer(from: fragment) != nil else {
+            fragmentMissing = true
+            onFragmentMissing()
+            return
+        }
+        onPlay(fragment)
     }
 
     private var speakerMenu: some View {
