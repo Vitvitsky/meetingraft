@@ -109,6 +109,25 @@ fn self_check() -> bool {
         talking.accepted, talking.total, 50
     );
 
+    // Та же комната, но перед ней тишина: запись всегда начинается
+    // раньше, чем в ней появляется звук. Оценка фона берётся с первого
+    // кадра, а поднимать её во время «речи» гейт не станет — и комната,
+    // которая сама себя не пробивала, начинает пробивать.
+    let mut after_silence: Vec<Vec<i16>> = (0..10).map(|_| frame_at(0.0)).collect();
+    after_silence.extend((0..100).map(|_| frame_at(177.0)));
+    let restarted = gated(&after_silence);
+    println!(
+        "  комната после тишины: гейт пропустил {} кадров из {} (тот же уровень, что комната сама по себе)",
+        restarted.accepted, 100
+    );
+    if restarted.accepted * 2 > 100 {
+        println!(
+            "    ^ ловушка запуска: оценка фона осталась от тишины, и ровный шум\n\
+             \x20     читается как речь. Числа ниже смотреть с этим в уме — в первых\n\
+             \x20     строках таблицы колонка «фон» покажет, случилось ли это на записи"
+        );
+    }
+
     let mut ok = true;
     if quiet.total == 0 || talking.total == 0 {
         println!("  ВЕРДИКТ: кадров нет вовсе — проверять было нечего");
@@ -228,7 +247,11 @@ fn print_buckets(frames: &[MixedFrame]) {
     if frames.is_empty() {
         return;
     }
-    println!("\n  время, с      RMS медиана   гейт   порог {OLD_THRESHOLD:.0}");
+    // Оценка фона печатается рядом с решениями: без неё таблица
+    // показывает результат и молчит о причине. Гейт решает по
+    // превышению уровня над фоном, и «пропустил много» значит одно, когда
+    // фон высок, и совсем другое, когда фон прилип к нулю.
+    println!("\n  время, с      RMS медиана   фон   порог   гейт   порог {OLD_THRESHOLD:.0}");
 
     let mut gate = NoiseGate::new();
     let start = frames[0].timestamp_ms;
@@ -236,15 +259,23 @@ fn print_buckets(frames: &[MixedFrame]) {
     let mut levels: Vec<f32> = Vec::new();
     let (mut accepted, mut accepted_old, mut total) = (0usize, 0usize, 0usize);
 
-    let flush = |bucket: u64, levels: &mut Vec<f32>, accepted, accepted_old, total| {
+    let flush = |bucket: u64,
+                 levels: &mut Vec<f32>,
+                 floor: f32,
+                 threshold: f32,
+                 accepted,
+                 accepted_old,
+                 total| {
         if total == 0 {
             return;
         }
         println!(
-            "  {:>5.0}–{:<7.0} {:>10.0}   {:>3}/{:<3} {:>3}/{:<3}",
+            "  {:>5.0}–{:<7.0} {:>10.0} {:>5.0} {:>7.0}  {:>3}/{:<3} {:>3}/{:<3}",
             (bucket - start) as f64 / 1_000.0,
             (bucket - start + BUCKET_MS) as f64 / 1_000.0,
             median(levels.iter().copied()),
+            floor,
+            threshold,
             accepted,
             total,
             accepted_old,
@@ -255,7 +286,15 @@ fn print_buckets(frames: &[MixedFrame]) {
 
     for frame in frames {
         while frame.timestamp_ms >= bucket + BUCKET_MS {
-            flush(bucket, &mut levels, accepted, accepted_old, total);
+            flush(
+                bucket,
+                &mut levels,
+                gate.noise_floor(),
+                gate.threshold(),
+                accepted,
+                accepted_old,
+                total,
+            );
             bucket += BUCKET_MS;
             accepted = 0;
             accepted_old = 0;
@@ -271,7 +310,15 @@ fn print_buckets(frames: &[MixedFrame]) {
             accepted_old += 1;
         }
     }
-    flush(bucket, &mut levels, accepted, accepted_old, total);
+    flush(
+        bucket,
+        &mut levels,
+        gate.noise_floor(),
+        gate.threshold(),
+        accepted,
+        accepted_old,
+        total,
+    );
 }
 
 /// Кадры так, как их видит распознавание: через микшер каналов (ADR-009).
