@@ -1,0 +1,17 @@
+[package]
+name = "meetingraft-diarize"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+# Настоящая модель разделения голосов. Какая именно — решает замер на
+# Маке (план `2026-08-11-voice-clustering.md`, задача 3), и до тех пор
+# включение фичи не собирается: заглушка, притворяющаяся моделью, — та же
+# убедительная неправда, о которой предупреждает спека.
+model = []
+
+[dependencies]
+
+[lib]
+name = "diarize"

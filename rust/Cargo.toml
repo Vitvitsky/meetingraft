@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/diarize",
     "crates/domain",
     "crates/glossary",
     "crates/postcall",
@@ -13,6 +14,7 @@ members = [
     "crates/uniffi-bindgen",
     "crates/echo-probe",
     "crates/gate-probe",
+    "crates/diarize-probe",
 ]
 
 [workspace.package]
