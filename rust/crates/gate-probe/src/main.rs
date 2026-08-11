@@ -263,8 +263,10 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
         && raw.len() > 1
     {
         println!("\n  Откуда берётся фон (микс против сырых дорожек):");
+        let mut highest_track = 0.0f32;
         for (channel, frames) in &raw {
             let (floor, runs) = floor_and_runs(frames);
+            highest_track = highest_track.max(floor);
             println!(
                 "    только {:<7} фон медиана {:>5.0}, запусков {}",
                 channel.code(),
@@ -272,13 +274,25 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
                 runs
             );
         }
-        let (floor, runs) = floor_and_runs(&pcm);
-        println!("    микс          фон медиана {floor:>5.0}, запусков {runs}");
-        println!(
-            "    Микс — то, что видит движок. Фон на нём заметно выше, чем на\n\
-             \x20   дорожках, — значит поднял его микшер: тихое он тянет к цели\n\
-             \x20   с усилением до пятикратного, а гейт по тихому и считает фон."
-        );
+        let (mixed_floor, runs) = floor_and_runs(&pcm);
+        println!("    микс          фон медиана {mixed_floor:>5.0}, запусков {runs}");
+
+        // Вывод считается, а не печатается заранее: прежняя версия
+        // утверждала «фон выше, значит поднял микшер» при любых числах,
+        // то есть отвечала на вопрос до того, как его задали.
+        if mixed_floor > highest_track * 1.5 {
+            println!(
+                "    Фон на миксе выше самой шумной дорожки в {:.1} раза — поднял его\n\
+                 \x20   микшер: тихое он тянет к цели с усилением до пятикратного\n\
+                 \x20   (ADR-009), а гейт по тихому и считает фон.",
+                mixed_floor / highest_track.max(1.0)
+            );
+        } else {
+            println!(
+                "    Фон на миксе не выше, чем на дорожках, — микшер ни при чём.\n\
+                 \x20   Высокий фон пришёл со звука, а не из обработки."
+            );
+        }
     }
 
     println!(
