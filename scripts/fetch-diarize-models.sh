@@ -23,9 +23,13 @@ if [ -z "$ROOT" ]; then
 Использование: scripts/fetch-diarize-models.sh <каталог-данных>
 
 Каталог данных — тот, где лежит meetingraft.sqlite3. На Маке это
-  ~/Library/Application Support/MeetingRaft
+  ~/Library/Application Support/meetingraft
 
 Скачивается около 42 МБ моделей и 2.3 МБ контрольных записей.
+
+Кладётся всё в <каталог-данных>/models/diarize/ — рядом с базой, туда же,
+куда приложение кладёт модели Whisper. Ничего вне этого каталога скрипт
+не трогает.
 USAGE
     exit 1
 fi
