@@ -159,11 +159,34 @@ sqlite3 "$DB" "SELECT channel, sum(frame_count)*2/1024 FROM audio_manifest
 сколько работы достаётся Whisper, когда никто не говорит.
 
 Записать **2–3 минуты комнаты в её обычном состоянии** — открытое окно,
-улица, никакой речи, — и прогнать:
+улица, никакой речи.
+
+Дальше нужен идентификатор сессии, и его печатает сам прибор: запуск
+**без второго аргумента** — это список.
 
 ```bash
+ROOT=~/Library/Application\ Support/meetingraft
 cd rust
-cargo run --release -p meetingraft-gate-probe -- "$ROOT" <сессия>
+cargo run --release -p meetingraft-gate-probe -- "$ROOT"
+```
+
+Вывод — строки вида `+ <идентификатор> — mic 2880000, system 0`; «+»
+означает, что дорожки есть и мерить будет что. Свежая запись — последняя
+из встреч; если сомневаешься, какая именно, сверься со списком встреч в
+приложении, идентификатор там тот же.
+
+Он же лежит в базе, если удобнее так:
+
+```bash
+sqlite3 "$ROOT/meetingraft.sqlite3" \
+  'SELECT id, datetime(started_at_ms/1000, "unixepoch", "localtime"), title
+   FROM sessions ORDER BY started_at_ms DESC LIMIT 5'
+```
+
+И потом сам прогон:
+
+```bash
+cargo run --release -p meetingraft-gate-probe -- "$ROOT" <идентификатор>
 ```
 
 Прибор печатает по десятисекундным строкам, сколько кадров прошло гейт по
