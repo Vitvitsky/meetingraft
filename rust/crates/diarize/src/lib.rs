@@ -16,6 +16,7 @@
 
 mod mock;
 mod model_path;
+mod voiceprint;
 
 #[cfg(feature = "model")]
 mod sherpa;
@@ -24,9 +25,10 @@ pub use mock::MockDiarizer;
 pub use model_path::{
     DiarizeModels, EMBEDDING_FILE, SEGMENTATION_FILE, diarize_models_dir, resolve_diarize_models,
 };
+pub use voiceprint::{Match, VoiceEmbedder, VoicePrint, best_match, build_print, similarity};
 
 #[cfg(feature = "model")]
-pub use sherpa::SherpaDiarizer;
+pub use sherpa::{SherpaDiarizer, SherpaEmbedder, voice_embedder};
 
 use std::path::Path;
 
