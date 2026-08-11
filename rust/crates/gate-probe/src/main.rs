@@ -299,6 +299,18 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
                  \x20   в тихих местах последней трети."
             );
         }
+
+        if let Some((_, mic)) = raw
+            .iter()
+            .find(|(channel, _)| *channel == AudioChannel::Mic)
+            && let Some(gain) = gain_in_tail(&pcm, mic)
+        {
+            println!(
+                "    Микс громче дорожки mic в {gain:.1} раза (последняя треть).\n\
+                 \x20   Сложение каналов больше двух дать не может; всё сверх этого —\n\
+                 \x20   усиление микшера, а его потолок пятикратный."
+            );
+        }
     }
 
     println!(
@@ -376,6 +388,31 @@ fn floor_and_runs(frames: &[Vec<i16>]) -> FloorRun {
         peak: floors.iter().copied().fold(0.0, f32::max),
         runs: inferences(frames, 0).total(),
     }
+}
+
+/// Во сколько раз микс громче микрофонной дорожки в последней трети.
+///
+/// Решающая величина: сложение двух каналов дать больше чем вдвое не
+/// может, а усиление микшера — до пятикратного (`MAX_GAIN`, ADR-009).
+/// Отношение около пяти означает, что микшер упёрся в свой потолок,
+/// то есть тянул к цели то, что речью не было.
+///
+/// Кадры сопоставляются по номеру: обе дорожки нарезаны от начала своей
+/// записи одним и тем же шагом.
+fn gain_in_tail(mixed: &[Vec<i16>], mic: &[Vec<i16>]) -> Option<f32> {
+    let len = mixed.len().min(mic.len());
+    if len == 0 {
+        return None;
+    }
+    let ratios: Vec<f32> = (len * 2 / 3..len)
+        .filter_map(|index| {
+            let quiet = rms(&mic[index]);
+            // Делить на тишину бессмысленно: отношение улетит в небо и
+            // медиана перестанет описывать усиление.
+            (quiet >= 1.0).then(|| rms(&mixed[index]) / quiet)
+        })
+        .collect();
+    (!ratios.is_empty()).then(|| median(ratios.into_iter()))
 }
 
 /// Как вёл себя фон на одном входе.
@@ -873,6 +910,34 @@ mod tests {
             boosted_floor > raw_floor * 3.0,
             "подъём дорожки не поднял фон: {raw_floor} -> {boosted_floor}"
         );
+    }
+
+    /// Заведомое усиление: тихая дорожка в окне подъёма, микс — та же
+    /// дорожка, поднятая впятеро. Прибор обязан назвать пять.
+    #[test]
+    fn the_gain_is_measured_not_guessed() {
+        let mic: Vec<Vec<i16>> = (0..90).map(|_| frame_at(200.0)).collect();
+        let mixed: Vec<Vec<i16>> = mic
+            .iter()
+            .map(|frame| frame.iter().map(|s| s.saturating_mul(5)).collect())
+            .collect();
+
+        let gain = gain_in_tail(&mixed, &mic).expect("кадры есть");
+
+        assert!(
+            (4.5..5.5).contains(&gain),
+            "заведомо пятикратный подъём измерен как {gain}"
+        );
+    }
+
+    /// Тишина в знаменателе отношение не создаёт: иначе медиана
+    /// описывала бы деление на ноль, а не усиление.
+    #[test]
+    fn silence_does_not_invent_a_gain() {
+        let mic: Vec<Vec<i16>> = (0..90).map(|_| frame_at(0.0)).collect();
+        let mixed: Vec<Vec<i16>> = (0..90).map(|_| frame_at(1_000.0)).collect();
+
+        assert!(gain_in_tail(&mixed, &mic).is_none());
     }
 
     /// Пустая сессия — отказ, а не отчёт с нулями.
