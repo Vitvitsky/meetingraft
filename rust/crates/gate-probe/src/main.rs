@@ -6,13 +6,20 @@
 //! гейту нет, а прежние 7.8 Вт на «тишине» мерились ваттметром на Маке.
 //!
 //! Ватты меряются только там, но главная величина считается и здесь:
-//! **доля кадров, на которых запускается Whisper**. Она и есть то, ради
-//! чего гейт заводился, и её видно из сохранённых дорожек (ADR-006).
+//! **сколько раз запустится модель**. Её видно из сохранённых дорожек
+//! (ADR-006), и она же переводится в ватты.
 //!
-//! Рядом печатается та же доля для постоянного порога 450 — того самого,
-//! который городской шум пробивал. Одно число без второго ничего не
-//! говорит: «гейт пропустил 4% кадров» звучит хорошо ровно до вопроса,
-//! сколько пропускала константа на этой же записи.
+//! Доля пропущенных гейтом кадров — не она. Первая версия прибора
+//! печатала «пропущенный кадр — это запуск Whisper», и это было неверно:
+//! движок копит речь до `MIN_SPEECH_FRAMES` и держит темп
+//! (`InferencePacer`), зато конец каждой реплики стоит отдельного
+//! прохода. Одиночный всплеск, не дотянувший до порога речи, всё равно
+//! обходится в проход — по проценту кадров этого не увидеть.
+//!
+//! Доля тоже печатается, и рядом с ней та же доля для постоянного порога
+//! 450 — того самого, который городской шум пробивал. Одно число без
+//! второго ничего не говорит: «гейт пропустил 4% кадров» звучит хорошо
+//! ровно до вопроса, сколько пропускала константа на этой же записи.
 //!
 //! Каждый запуск начинается с заведомо шумного и заведомо речевого
 //! случая. Правило писано кровью: `scripts/count-audio-taps.swift`
@@ -26,7 +33,7 @@ use std::process::ExitCode;
 use domain::AudioChannel;
 use session::{ChannelMixer, MixedFrame};
 use storage::AudioManifestStore;
-use stt::NoiseGate;
+use stt::{InferencePacer, MIN_SPEECH_FRAMES, NoiseGate, PARTIAL_MIN_FRAMES, SILENCE_FRAMES};
 
 /// Частота живого пути; ею же пишутся чанки на диск (ADR-005).
 const RATE: u32 = 16_000;
@@ -78,7 +85,7 @@ const USAGE: &str = "\
 Каталог данных — тот, где лежит meetingraft.sqlite3.
 
 Мерить надо запись комнаты в её обычном состоянии: открытое окно, улица,
-никто не говорит. Доля пропущенных кадров на такой записи и есть то,
+никто не говорит. Число запусков модели на такой записи и есть то,
 сколько работы достаётся Whisper на пустом месте.";
 
 /// Заведомо шумный и заведомо речевой случай.
@@ -209,10 +216,32 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
         totals.accepted_old,
         percent(totals.accepted_old, totals.total),
     );
+
+    let pcm: Vec<Vec<i16>> = frames.iter().map(|frame| frame.pcm.clone()).collect();
+    let quiet_path = inferences(&pcm, 0);
+    let talking_path = inferences(&pcm, 1);
+    let seconds = (totals.total * FRAME_MS) as f64 / 1_000.0;
     println!(
-        "  Пропущенный кадр — это запуск Whisper. Разница колонок и есть то,\n\
-         \x20 что дал гейт по фону комнаты; на записи молчащей комнаты первая\n\
-         \x20 колонка должна быть близка к нулю."
+        "\n  Запусков модели за запись: {} (partial {}, по концам реплик {})",
+        quiet_path.total(),
+        quiet_path.partials,
+        quiet_path.flushes,
+    );
+    if talking_path.total() != quiet_path.total() {
+        println!(
+            "  При базовом темпе (модель фиксирует слова): {} — темп разжимается\n\
+             \x20 только тогда, когда фиксировать нечего",
+            talking_path.total()
+        );
+    }
+    println!(
+        "  Это {:.1} запуска в минуту на записи, где никто не говорит.",
+        quiet_path.total() as f64 * 60.0 / seconds.max(1.0)
+    );
+    println!(
+        "  Доля кадров запуском не является: движок копит речь до порога и\n\
+         \x20 держит темп. Зато конец каждой реплики стоит отдельного прохода,\n\
+         \x20 поэтому одиночные всплески дороже, чем выглядят по процентам."
     );
     Ok(())
 }
@@ -223,6 +252,31 @@ struct Gated {
     total: usize,
     accepted: usize,
     accepted_old: usize,
+}
+
+/// Во что пропущенные кадры обходятся на самом деле.
+///
+/// Пропущенный кадр — **не** запуск Whisper, и первая версия прибора
+/// утверждала обратное. Движок копит речь и запускается, когда её
+/// набралось `MIN_SPEECH_FRAMES`, но не чаще, чем разрешает темп
+/// (`InferencePacer`). Зато конец каждой реплики стоит отдельного
+/// прохода: после `SILENCE_FRAMES` тишины остаток фиксируется
+/// принудительно, ждать согласия больше не с чем.
+///
+/// Отсюда следствие, которого по доле кадров не видно: **одиночный
+/// всплеск дороже, чем кажется**. До порога речи он не дотягивает,
+/// partial не запускает, но реплику открывает — и через 0.3 с закрывает
+/// её проходом по буферу. Именно эта величина переводится в ватты.
+#[derive(Debug, Default)]
+struct Inferences {
+    partials: usize,
+    flushes: usize,
+}
+
+impl Inferences {
+    fn total(&self) -> usize {
+        self.partials + self.flushes
+    }
 }
 
 /// Прогнать кадры через гейт ровно так, как это делает живой путь:
@@ -239,6 +293,55 @@ fn gated(frames: &[Vec<i16>]) -> Gated {
         if level > OLD_THRESHOLD {
             out.accepted_old += 1;
         }
+    }
+    out
+}
+
+/// Повторить цепочку живого пути от гейта до запуска модели.
+///
+/// Правила и константы берутся из `stt`, а не переписываются здесь:
+/// копия разошлась бы с движком молча, и прибор мерил бы правило,
+/// которого уже нет.
+///
+/// `committed_words` — единственное, чего без Whisper не узнать: темп
+/// разжимается, когда слова перестают фиксироваться. Поэтому считается
+/// дважды, по обеим границам: 0 слов (на шуме модель ничего не отдаёт,
+/// темп разжимается до втрое реже) и 1 слово (речь идёт, темп базовый).
+fn inferences(frames: &[Vec<i16>], committed_words: usize) -> Inferences {
+    let frame_len = RATE as usize * FRAME_MS / 1_000;
+    let mut gate = NoiseGate::new();
+    let mut pacer = InferencePacer::new(PARTIAL_MIN_FRAMES);
+    let mut out = Inferences::default();
+
+    let (mut in_speech, mut speech, mut since_partial, mut silence) =
+        (false, 0usize, 0usize, 0usize);
+    for frame in frames {
+        if gate.accepts(rms(frame)) {
+            in_speech = true;
+            silence = 0;
+            speech += frame_len;
+            since_partial += frame_len;
+            if speech >= MIN_SPEECH_FRAMES && since_partial >= pacer.frames_until_next() {
+                out.partials += 1;
+                pacer.record(committed_words);
+                since_partial = 0;
+            }
+        } else if in_speech {
+            silence += frame_len;
+            if silence >= SILENCE_FRAMES {
+                // Конец реплики: принудительный проход по буферу.
+                out.flushes += 1;
+                in_speech = false;
+                speech = 0;
+                since_partial = 0;
+                silence = 0;
+                pacer.reset();
+            }
+        }
+    }
+    // Запись кончилась посреди реплики — остановка тоже фиксирует остаток.
+    if in_speech {
+        out.flushes += 1;
     }
     out
 }
@@ -513,6 +616,57 @@ mod tests {
             "постоянный порог этот шум пропускал целиком — иначе сравнение бессмысленно"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Одиночный всплеск до порога речи не дотягивает, partial не
+    /// запускает — но реплику открывает, и её конец стоит прохода.
+    ///
+    /// По доле кадров этого не видно вовсе: один кадр из ста.
+    #[test]
+    fn a_single_blip_still_costs_one_pass() {
+        let mut frames: Vec<Vec<i16>> = (0..50).map(|_| frame_at(100.0)).collect();
+        frames.push(frame_at(3_000.0));
+        frames.extend((0..50).map(|_| frame_at(100.0)));
+
+        // Материал обязан пробить гейт ровно один раз: не пробей он вовсе,
+        // тест утверждал бы ноль о пустоте.
+        let passed = gated(&frames);
+        assert_eq!(
+            passed.accepted, 1,
+            "всплеск не прошёл гейт — считать нечего"
+        );
+
+        let runs = inferences(&frames, 0);
+
+        assert_eq!(runs.partials, 0, "0.1 с речи до порога не дотягивает");
+        assert_eq!(runs.flushes, 1, "конец реплики обязан стоить прохода");
+    }
+
+    /// Речь подряд: проходы идут по темпу, а не по кадрам.
+    #[test]
+    fn continuous_speech_runs_on_the_pace_not_per_frame() {
+        let mut frames: Vec<Vec<i16>> = (0..20).map(|_| frame_at(100.0)).collect();
+        // 10 секунд речи — сто кадров.
+        frames.extend((0..100).map(|_| frame_at(3_000.0)));
+
+        let passed = gated(&frames);
+        assert!(
+            passed.accepted > 90,
+            "речь не прошла гейт: {}",
+            passed.accepted
+        );
+
+        let runs = inferences(&frames, 1);
+
+        assert!(
+            runs.partials >= 8 && runs.partials <= 10,
+            "при базовом темпе раз в секунду за 10 с ожидались ~9 проходов, вышло {}",
+            runs.partials
+        );
+        assert!(
+            runs.partials < passed.accepted / 5,
+            "проходов почти столько же, сколько кадров — темп не работает"
+        );
     }
 
     /// Пустая сессия — отказ, а не отчёт с нулями.
