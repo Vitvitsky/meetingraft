@@ -91,6 +91,46 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.finalTranscript?.version, 2)
     }
 
+    /// Показанный текст и версия, к которой он относится, не должны
+    /// расходиться: тело трактует `nil` как «последняя», и атрибуция
+    /// обязана трактовать так же — иначе на экране окажется текст без
+    /// сегментов, то есть без правки и прослушивания при живых данных.
+    func testEffectiveVersionFollowsTheBodyWhenNothingIsSelected() {
+        let v1 = FfiFinalTranscript(
+            meetingId: "meeting-1",
+            version: 1,
+            bodyMarkdown: "# v1",
+            createdAtMs: 100
+        )
+        let v2 = FfiFinalTranscript(
+            meetingId: "meeting-1",
+            version: 2,
+            bodyMarkdown: "# v2",
+            createdAtMs: 200
+        )
+        let core = MeetingsCoreSpy(finalTranscript: v2, finalVersions: [v2, v1])
+        let viewModel = MeetingsViewModel(core: core)
+        viewModel.reload(meetingId: "meeting-1")
+
+        viewModel.selectedFinalVersion = nil
+
+        XCTAssertFalse(viewModel.selectedFinalBody.isEmpty, "тело показано")
+        XCTAssertEqual(viewModel.effectiveFinalVersion, 2, "и версия у него есть")
+        XCTAssertEqual(viewModel.selectedFinalBody, "# v2")
+    }
+
+    /// Финала нет вовсе — версии нет тоже, и это не то же самое, что
+    /// «не выбрана».
+    func testEffectiveVersionIsNilWithoutAnyFinal() {
+        let core = MeetingsCoreSpy()
+        let viewModel = MeetingsViewModel(core: core)
+
+        viewModel.reload(meetingId: "meeting-1")
+
+        XCTAssertNil(viewModel.effectiveFinalVersion)
+        XCTAssertTrue(viewModel.selectedFinalBody.isEmpty)
+    }
+
     func testLiveFinalsTextJoinsFinalCaptions() {
         let captions = [
             FfiCaptionEvent(id: "1", text: "partial only", phase: .partial, channel: "mic"),

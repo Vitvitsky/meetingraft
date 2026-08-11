@@ -88,9 +88,21 @@ final class MeetingsViewModel {
     private let maxPollAttempts: Int
     private let pollDelayNanoseconds: UInt64
 
+    /// Версия, которую сейчас показывает экран Final.
+    ///
+    /// `nil` в `selectedFinalVersion` означает «последняя» — так его и
+    /// читает тело транскрипта. Толковать тот же `nil` как «версии нет»
+    /// нельзя: экран показал бы текст последней версии, а сегменты к
+    /// нему не подгрузились бы, и правка с прослушиванием выглядели бы
+    /// отключившимися при живых данных. Правило одно на оба чтения
+    /// именно поэтому.
+    var effectiveFinalVersion: UInt32? {
+        selectedFinalVersion ?? finalVersions.first?.version
+    }
+
     /// Тело выбранной версии Final (кэш списка или latest).
     var selectedFinalBody: String {
-        if let version = selectedFinalVersion,
+        if let version = effectiveFinalVersion,
            let match = finalVersions.first(where: { $0.version == version })
         {
             return match.bodyMarkdown
