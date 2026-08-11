@@ -51,6 +51,22 @@ struct SpeakerRowModel: Identifiable, Equatable {
     var label: String {
         displayName.isEmpty ? "Без имени" : displayName
     }
+
+    /// Что сохранять из набранного в поле имени. `nil` — сохранять нечего.
+    ///
+    /// Отдельно от экрана, чтобы правило проверялось тестом: сохранение
+    /// имени срабатывает и по уходу фокуса, и по исчезновению строки, и
+    /// без общего решения эти три пути разъехались бы.
+    ///
+    /// Пустое имя не сохраняется — участник остался бы без подписи, и это
+    /// выглядело бы как сбой атрибуции. Совпадение с прежним не пишется
+    /// тоже: `upsertSpeaker` пересобирает markdown всей встречи, и делать
+    /// это на каждый уход фокуса незачем.
+    func nameToCommit(draft: String) -> String? {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != displayName else { return nil }
+        return trimmed
+    }
 }
 
 /// Presentation model атрибуции говорящих: экраны Speakers и Final.
