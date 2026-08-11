@@ -181,6 +181,43 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         XCTAssertEqual(core.lastUpsertDisplayName, "Пётр Иванов")
     }
 
+    /// Набранное имя сохраняется не только по Enter: экран зовёт то же
+    /// правило по уходу фокуса и по исчезновению строки.
+    ///
+    /// До этого сохранял один Enter, и имя, набранное и оставленное
+    /// переключением вкладки, пропадало молча — возврат показывал
+    /// прежнее «Спикер 3».
+    func testDraftNameIsCommittedWhenItDiffers() {
+        let row = SpeakerRowModel(
+            id: "s1",
+            displayName: "Спикер 3",
+            channelCode: "mic",
+            segmentCount: 2,
+            speakingMs: 4000,
+            share: 0.5
+        )
+
+        XCTAssertEqual(row.nameToCommit(draft: "  Пётр Иванов "), "Пётр Иванов")
+    }
+
+    /// Пустое поле сохранять нечего: участник остался бы без подписи, а
+    /// это неотличимо от сбоя атрибуции.
+    func testBlankAndUnchangedDraftsAreNotCommitted() {
+        let row = SpeakerRowModel(
+            id: "s1",
+            displayName: "Пётр",
+            channelCode: "mic",
+            segmentCount: 1,
+            speakingMs: 1000,
+            share: 1
+        )
+
+        XCTAssertNil(row.nameToCommit(draft: "   "))
+        XCTAssertNil(row.nameToCommit(draft: ""))
+        XCTAssertNil(row.nameToCommit(draft: "Пётр"), "то же имя — лишняя пересборка markdown")
+        XCTAssertNil(row.nameToCommit(draft: "  Пётр  "), "разница только в пробелах")
+    }
+
     func testRemoveSurfacesCoreError() {
         let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
         core.deleteError = "занят"

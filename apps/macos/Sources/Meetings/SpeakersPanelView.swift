@@ -91,6 +91,7 @@ private struct SpeakerStatRow: View {
     let onDelete: () -> Void
 
     @State private var displayName: String
+    @FocusState private var isFieldFocused: Bool
 
     init(
         row: SpeakerRowModel,
@@ -111,7 +112,20 @@ private struct SpeakerStatRow: View {
                 TextField("Имя участника", text: $displayName)
                     .textFieldStyle(.plain)
                     .font(Theme.Text.body)
-                    .onSubmit { onRename(displayName) }
+                    .focused($isFieldFocused)
+                    // Enter сохраняет, уход фокуса — тоже, как и при
+                    // правке реплики. Без второго набранное имя не
+                    // сохранялось вовсе: переключение вкладки уносило его
+                    // молча, и возврат показывал прежнее «Спикер 3».
+                    .onSubmit(commit)
+                    .onChange(of: isFieldFocused) { _, focused in
+                        if !focused {
+                            commit()
+                        }
+                    }
+                    // Вкладку могут переключить, не трогая фокус: строка
+                    // тогда исчезает без onChange, и сохранить надо здесь.
+                    .onDisappear(perform: commit)
                 HStack(spacing: Theme.Space.xs) {
                     if !row.channelCode.isEmpty {
                         Chip(text: SpeakerFormat.channelLabel(row.channelCode))
@@ -141,6 +155,18 @@ private struct SpeakerStatRow: View {
         .onChange(of: row.displayName) { _, newValue in
             displayName = newValue
         }
+    }
+
+    /// Сохранить набранное, если есть что сохранять.
+    ///
+    /// Пустое поле возвращается к прежнему имени: строка без подписи при
+    /// живом участнике выглядела бы как сбой атрибуции.
+    private func commit() {
+        guard let name = row.nameToCommit(draft: displayName) else {
+            displayName = row.displayName
+            return
+        }
+        onRename(name)
     }
 
     private var avatar: some View {
