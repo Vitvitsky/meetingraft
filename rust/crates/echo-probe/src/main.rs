@@ -177,6 +177,14 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
         seconds(analysis.mic_frames, analysis.rate),
         seconds(analysis.system_frames, analysis.rate)
     );
+    if analysis.offset_ms != 0 {
+        println!(
+            "  системная дорожка началась на {} мс позже микрофонной — выровнено\n\
+             \x20 перед поиском сдвига: детектор ищет в пределах 250 мс, а старт\n\
+             \x20 каналов расходится на секунды",
+            analysis.offset_ms
+        );
+    }
 
     print_report(&analysis.report);
     Ok(())
@@ -188,6 +196,8 @@ struct Analysis {
     rate: u32,
     mic_frames: usize,
     system_frames: usize,
+    /// На сколько системная дорожка стартовала позже микрофонной.
+    offset_ms: i64,
     report: EchoReport,
 }
 
@@ -198,10 +208,10 @@ struct Analysis {
 /// самое, что непроверенный прибор целиком.
 fn analyze(store: &AudioManifestStore, session_id: &str) -> Result<Analysis, String> {
     let rate = session_sample_rate(store, session_id)?;
-    let mic = store
+    let mut mic = store
         .read_session_pcm(session_id, AudioChannel::Mic)
         .map_err(|error| error.to_string())?;
-    let system = store
+    let mut system = store
         .read_session_pcm(session_id, AudioChannel::System)
         .map_err(|error| error.to_string())?;
 
@@ -215,12 +225,50 @@ fn analyze(store: &AudioManifestStore, session_id: &str) -> Result<Analysis, Str
         ));
     }
 
+    // Дорожки начинаются в разное время: системный tap поднимается позже
+    // микрофона. `read_session_pcm` склеивает чанки канала подряд, и
+    // нулевой отсчёт двух дорожек — **не** один и тот же момент.
+    //
+    // Детектор ищет сдвиг в пределах 250 мс, а старт расходится на
+    // секунды. Без выравнивания он честно не находит ничего и печатает
+    // отказ — то есть прибор молчит там, где эхо может быть.
+    let offset_ms = start_offset_ms(store, session_id)?;
+    let offset = (offset_ms.unsigned_abs() as usize) * rate as usize / 1_000;
+    if offset_ms > 0 {
+        system.splice(0..0, std::iter::repeat_n(0i16, offset));
+    } else if offset_ms < 0 {
+        mic.splice(0..0, std::iter::repeat_n(0i16, offset));
+    }
+
     Ok(Analysis {
         rate,
         mic_frames: mic.len(),
         system_frames: system.len(),
+        offset_ms,
         report: detect_echo(&mic, &system, rate),
     })
+}
+
+/// На сколько системная дорожка стартовала позже микрофонной, мс.
+///
+/// Положительное — system позже; отрицательное — раньше. Считается по
+/// меткам первых чанков манифеста, потому что другого общего времени у
+/// дорожек нет.
+fn start_offset_ms(store: &AudioManifestStore, session_id: &str) -> Result<i64, String> {
+    let chunks = store
+        .list_chunks(session_id)
+        .map_err(|error| error.to_string())?;
+    let first = |channel: AudioChannel| -> Option<u64> {
+        chunks
+            .iter()
+            .filter(|chunk| chunk.channel == channel)
+            .map(|chunk| chunk.timestamp_ms)
+            .min()
+    };
+    match (first(AudioChannel::Mic), first(AudioChannel::System)) {
+        (Some(mic), Some(system)) => Ok(system as i64 - mic as i64),
+        _ => Err("у одной из дорожек нет чанков — выравнивать нечем".to_string()),
+    }
 }
 
 fn print_report(report: &EchoReport) {
@@ -447,6 +495,62 @@ mod tests {
         let error = analyze(&store, "s1").expect_err("одна дорожка — отказ");
 
         assert!(error.contains("пусты"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Системный tap поднимается позже микрофона, и без выравнивания
+    /// заведомое эхо не находится вовсе: детектор ищет сдвиг в пределах
+    /// 250 мс, а старт расходится на секунду.
+    ///
+    /// Это и был дефект, из-за которого прибор отказался считать
+    /// настоящую встречу.
+    #[test]
+    fn a_late_system_tap_does_not_hide_the_echo() {
+        let root = tmp_root("late-tap");
+        let _ = std::fs::remove_dir_all(&root);
+        let seconds = SELF_CHECK_RATE as usize;
+        let system = speechlike(seconds * 8, 1);
+        let mic = echo_of(&system, SELF_CHECK_DELAY, 0.4);
+
+        // Tap поднялся на секунду позже: первой секунды системного звука
+        // на диске нет вовсе, а в микрофоне её эхо есть — так и выглядит
+        // настоящая запись.
+        let late_by_ms = 1_000u64;
+        let late_frames = SELF_CHECK_RATE as usize * late_by_ms as usize / 1_000;
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store.begin_session("s1", 0, "проба").expect("session");
+            store
+                .append_chunk(AudioChannel::Mic, &bytes_of(&mic), SELF_CHECK_RATE, 0)
+                .expect("mic");
+            store
+                .append_chunk(
+                    AudioChannel::System,
+                    &bytes_of(&system[late_frames..]),
+                    SELF_CHECK_RATE,
+                    late_by_ms,
+                )
+                .expect("system");
+            store.end_session(1_000).expect("end");
+        }
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        let analysis = analyze(&store, "s1").expect("разбор");
+
+        assert_eq!(
+            analysis.offset_ms, late_by_ms as i64,
+            "сдвиг старта не замечен"
+        );
+        assert!(
+            !analysis.report.windows.is_empty(),
+            "заведомое эхо не найдено после выравнивания"
+        );
+        assert!(
+            analysis.report.echo_windows() * 2 >= analysis.report.windows.len(),
+            "помечено {} окон из {}",
+            analysis.report.echo_windows(),
+            analysis.report.windows.len()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
