@@ -80,7 +80,7 @@ struct FinalSegmentsView: View {
 private struct EditHintBar: View {
     var body: some View {
         Label(
-            "Нажмите на реплику, чтобы поправить текст. ▶ рядом с именем "
+            "Нажмите на реплику, чтобы поправить текст. ▶ под тайм-кодом "
                 + "проигрывает её, не открывая правку",
             systemImage: "hand.tap"
         )
@@ -125,10 +125,17 @@ private struct FinalSegmentRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Space.sm) {
-            Text(SpeakerFormat.timecode(ms: segment.startMs))
-                .font(Theme.Text.mono())
-                .foregroundStyle(Theme.textTertiary)
-                .frame(width: 52, alignment: .leading)
+            // Время и звук — одна колонка: обе отвечают на «где это в
+            // записи», и обе не про текст.
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                Text(SpeakerFormat.timecode(ms: segment.startMs))
+                    .font(Theme.Text.mono())
+                    .foregroundStyle(Theme.textTertiary)
+                if audioAvailable, !fragmentMissing {
+                    playButton
+                }
+            }
+            .frame(width: 52, alignment: .leading)
 
             VStack(alignment: .leading, spacing: Theme.Space.xxs) {
                 header
@@ -224,22 +231,29 @@ private struct FinalSegmentRow: View {
         }
     }
 
-    /// Шапка реплики: кто говорит, кнопка прослушивания, пометки.
-    ///
-    /// Прослушивание живёт здесь, а не в панели правки, потому что это
-    /// разные задачи. Чтобы понять, кто говорит, реплику надо послушать —
-    /// и назначить спикера тут же, не входя в правку текста и не рискуя
-    /// задеть его.
+    /// Шапка реплики: кто говорит и пометки.
     private var header: some View {
         HStack(spacing: Theme.Space.xs) {
             speakerMenu
-            if audioAvailable, !fragmentMissing {
-                Button(isPlaying ? "⏹" : "▶") { togglePlayback() }
-                    .buttonStyle(.themedSecondary)
-                    .help(isPlaying ? "Остановить" : "Прослушать эту реплику")
-            }
             Spacer(minLength: 0)
         }
+    }
+
+    /// Прослушивание — под тайм-кодом и иконкой.
+    ///
+    /// Не в панели правки, потому что это разные задачи: чтобы понять,
+    /// кто говорит, реплику надо послушать, не входя в правку текста и
+    /// не рискуя его задеть. И не подписью — на каждой строке подпись
+    /// превратила бы транскрипт в панель кнопок.
+    private var playButton: some View {
+        Button(action: togglePlayback) {
+            Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                .font(.system(size: 9))
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(isPlaying ? Theme.accent : Theme.textTertiary)
+        .help(isPlaying ? "Остановить" : "Прослушать эту реплику")
+        .accessibilityLabel(isPlaying ? "Остановить" : "Прослушать реплику")
     }
 
     /// Звук читается с диска по нажатию, а не при отрисовке: список
