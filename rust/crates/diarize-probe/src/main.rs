@@ -38,10 +38,29 @@
 //!
 //! - движок отказался считать, либо нашёл голосов **меньше**, чем в
 //!   записи заведомо есть, — прибор слеп, дальше не идём;
-//! - нашёл **больше**, либо число растёт от количества материала — это
-//!   неточность настройки, а не слепота. Печатается громко, с числами, и
-//!   работать не мешает: выбор порога и есть задача 3, а спрятать числа,
-//!   по которым он делается, значит сделать её невыполнимой.
+//! - нашёл **больше**, либо число едет от перекладывания того же
+//!   материала — это неточность настройки, а не слепота. Печатается
+//!   громко, с числами, и работать не мешает: выбор порога и есть
+//!   задача 3, а спрятать числа, по которым он делается, значит сделать
+//!   её невыполнимой.
+//!
+//! ## Устойчивость числа проверяется двумя перекладываниями
+//!
+//! Первое — та же запись дважды подряд. Второе — переставленные местами
+//! половины. Люди в обоих те же по построению, поэтому другое число
+//! означает, что движок делит человека.
+//!
+//! Второе заведено после замера и заведено не для симметрии. По одному
+//! удвоению было решено, что число **растёт от количества материала** —
+//! удвоение ведь меняет и длину. Замер это опроверг: запись с четырьмя
+//! людьми даёт 4 в исходном виде, 6 при удвоении, **4 при утроении** и 7
+//! при учетверении. Роста нет, есть неустойчивость, и перестановка
+//! половин показывает её при неизменной длине (4 → 5).
+//!
+//! Отдельно проверено, что дело не в случайности: тот же вход трижды
+//! подряд даёт одно и то же число. И отдельно — что это свойство не
+//! движка вообще, а трудного материала: запись с двумя далёкими голосами
+//! даёт 2 при любом расположении.
 
 mod wav;
 
@@ -82,9 +101,19 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if !self_check(engine.as_mut(), &controls).is_empty() {
+    let checked = self_check(engine.as_mut(), &controls);
+    if !checked.problems.is_empty() {
         eprintln!("\nПрибор слеп: до настоящих данных дело не дошло.");
         return ExitCode::FAILURE;
+    }
+    if !checked.notes.is_empty() {
+        // Напоминание идёт **после** вердикта и перед числами, а не вместе
+        // с предупреждением: между ними уезжает таблица, и «числам можно
+        // верить» без этой строки прочитывается как «числа точны».
+        println!(
+            "\nЧисла ниже — оценка, а не факт: на контроле выше движок показал\n\
+             неустойчивость, и на этой записи она тоже возможна."
+        );
     }
 
     let result = match session {
@@ -180,12 +209,27 @@ fn load_controls(data_root: &Path) -> Result<Vec<Control>, String> {
     Ok(out)
 }
 
+/// Что прибор увидел, проверяя движок.
+///
+/// Две корзины, а не одна, и это то же разделение, что в вердикте:
+/// `problems` — слепота, прогон дальше не идёт; `notes` — неточность,
+/// сказать о ней надо громко, а мешать работе она не должна.
+///
+/// Обе возвращаются, а не только печатаются: ветка, о которой известно
+/// лишь из вывода на экран, тестом не проверяется вовсе — и снимается
+/// потом незамеченной.
+#[derive(Debug, Default)]
+pub struct SelfCheck {
+    problems: Vec<String>,
+    notes: Vec<String>,
+}
+
 /// Проверка движка по записям с известным ответом.
 ///
 /// Пусто — можно верить числам ниже. Иначе — по строке на каждую беду, и
 /// строка называет **свою**: вердикт «прибор слеп» без причины под ним
 /// нечем ни проверить, ни починить.
-fn self_check(engine: &mut dyn Diarizer, controls: &[Control]) -> Vec<String> {
+fn self_check(engine: &mut dyn Diarizer, controls: &[Control]) -> SelfCheck {
     println!("Проверка движка на записях с известным ответом");
 
     if controls.is_empty() {
@@ -193,16 +237,23 @@ fn self_check(engine: &mut dyn Diarizer, controls: &[Control]) -> Vec<String> {
         // отсутствие контролей ни при чём.
         let probe = engine.diarize(&vec![0i16; RATE as usize], RATE);
         return match probe.refused {
-            Some(reason) => report(vec![format!("движок отказался считать — {reason}")]),
-            None => report(vec![
-                "движок отвечает, а проверить его нечем: контрольных записей нет \
-                 (скачать — scripts/fetch-diarize-models.sh)"
-                    .to_string(),
-            ]),
+            Some(reason) => report(
+                vec![format!("движок отказался считать — {reason}")],
+                Vec::new(),
+            ),
+            None => report(
+                vec![
+                    "движок отвечает, а проверить его нечем: контрольных записей нет \
+                     (скачать — scripts/fetch-diarize-models.sh)"
+                        .to_string(),
+                ],
+                Vec::new(),
+            ),
         };
     }
 
     let mut problems = Vec::new();
+    let mut notes = Vec::new();
     for control in controls {
         let seconds = control.pcm.len() as f64 / f64::from(RATE);
         let once = engine.diarize(&control.pcm, RATE);
@@ -214,29 +265,50 @@ fn self_check(engine: &mut dyn Diarizer, controls: &[Control]) -> Vec<String> {
             continue;
         }
 
-        // Тот же материал дважды подряд. Люди в нём по построению те же,
-        // поэтому рост числа голосов означает, что движок делит человека,
-        // а не что в записи кто-то появился. Контроль не требует второго
-        // файла и не зависит от того, верна ли подпись на первом.
+        // Тот же материал, переложенный двумя способами. Люди в нём по
+        // построению те же, поэтому другое число голосов означает, что
+        // движок делит человека, а не что в записи кто-то появился.
+        // Контроль не требует второго файла и не зависит от того, верна ли
+        // подпись на первом.
+        //
+        // Способа два, и второй заведён после замера. Удвоение меняет и
+        // расположение, и **длину**, поэтому по нему одному было решено,
+        // что число растёт от количества материала. Замер это опроверг:
+        // та же запись трижды даёт верное число, а дважды — завышенное.
+        // Перестановка половин держит длину неизменной и разделяет два
+        // объяснения: если число едет и здесь, дело не в объёме.
         let doubled: Vec<i16> = control
             .pcm
             .iter()
             .chain(control.pcm.iter())
             .copied()
             .collect();
-        let twice = engine.diarize(&doubled, RATE);
-        let twice_found = twice.refused.is_none().then_some(twice.speakers_found);
+        let middle = control.pcm.len() / 2;
+        let swapped: Vec<i16> = control.pcm[middle..]
+            .iter()
+            .chain(control.pcm[..middle].iter())
+            .copied()
+            .collect();
+        let count = |engine: &mut dyn Diarizer, pcm: &[i16]| -> Option<u32> {
+            let report = engine.diarize(pcm, RATE);
+            report.refused.is_none().then_some(report.speakers_found)
+        };
+        let twice_found = count(engine, &doubled);
+        let swapped_found = count(engine, &swapped);
 
+        let say = |found: Option<u32>| match found {
+            Some(found) => found.to_string(),
+            None => "?".to_string(),
+        };
         println!(
-            "  {:26} {:.1} с: в записи {} человек, движок нашёл {}{}",
+            "  {:26} {:.1} с: в записи {} человек, движок нашёл {} \
+             (дважды — {}, половины переставлены — {})",
             control.name,
             seconds,
             control.speakers,
             once.speakers_found,
-            match twice_found {
-                Some(found) => format!(", на удвоенной записи — {found}"),
-                None => ", удвоенную посчитать не удалось".to_string(),
-            }
+            say(twice_found),
+            say(swapped_found),
         );
 
         if once.speakers_found < control.speakers {
@@ -246,35 +318,50 @@ fn self_check(engine: &mut dyn Diarizer, controls: &[Control]) -> Vec<String> {
             ));
         }
         if once.speakers_found > control.speakers {
-            println!(
-                "    ! разорвал {} человек на {} — порог кластеризации не настроен под этот\n\
-                 \x20     материал. Числа ниже читать с этим в уме; выбор порога — задача 3",
-                control.speakers, once.speakers_found
-            );
+            notes.push(format!(
+                "{}: разорвал {} человек на {} — порог кластеризации не настроен под этот \
+                 материал. Числа ниже читать с этим в уме; выбор порога — задача 3",
+                control.name, control.speakers, once.speakers_found
+            ));
         }
-        if let Some(found) = twice_found
-            && found > once.speakers_found
-        {
-            println!(
-                "    ! та же запись дважды дала {found} голосов вместо {} — число зависит от\n\
-                 \x20     количества материала, а не только от того, кто говорит. Для встречи\n\
-                 \x20     на час это значит больше дробления, чем на десяти минутах",
+        // Неустойчивость считается по обоим перекладываниям сразу: расходится
+        // хоть одно — число голосов свойством записи не является.
+        let unstable: Vec<String> = [
+            ("дважды", twice_found),
+            ("с переставленными половинами", swapped_found),
+        ]
+        .into_iter()
+        .filter_map(|(how, found)| {
+            let found = found?;
+            (found != once.speakers_found).then(|| format!("{how} — {found}"))
+        })
+        .collect();
+        if !unstable.is_empty() {
+            notes.push(format!(
+                "{}: те же люди, переложенные иначе, дали другое число ({}, было {}) — число \
+                 голосов на этом материале неустойчиво, и верное значение из него не следует. \
+                 Движок при этом не случаен: тот же вход даёт то же число",
+                control.name,
+                unstable.join(", "),
                 once.speakers_found
-            );
+            ));
         }
     }
-    report(problems)
+    report(problems, notes)
 }
 
 /// Напечатать вердикт и вернуть его же вызывающему.
-fn report(problems: Vec<String>) -> Vec<String> {
+fn report(problems: Vec<String>, notes: Vec<String>) -> SelfCheck {
+    for note in &notes {
+        println!("    ! {note}");
+    }
     if problems.is_empty() {
         println!("  ВЕРДИКТ: движок видит смену голоса, числам ниже можно верить");
     }
     for problem in &problems {
         println!("  ВЕРДИКТ: {problem}");
     }
-    problems
+    SelfCheck { problems, notes }
 }
 
 fn list_sessions(root: &Path) -> Result<(), String> {
@@ -592,11 +679,48 @@ mod tests {
         }
     }
 
+    /// Двойник, у которого число зависит от **расположения**, а не от
+    /// длины: смотрит, громко ли начинается дорожка.
+    ///
+    /// Удвоение его не ловит — удвоенная запись начинается так же, как
+    /// исходная. Ловит только перестановка половин, ради которой её и
+    /// завели: по одному удвоению неустойчивость на настоящем движке была
+    /// принята за рост от количества материала.
+    struct UnstableUnderReordering;
+
+    impl Diarizer for UnstableUnderReordering {
+        fn diarize(&mut self, pcm: &[i16], sample_rate: u32) -> DiarizeReport {
+            let ms = pcm.len() as u64 * 1_000 / u64::from(sample_rate);
+            let head = &pcm[..pcm.len().min(1_000)];
+            let loud = head.iter().any(|sample| sample.abs() > 1_000);
+            let turns = if loud {
+                vec![VoiceTurn::new(0, ms / 2, 0), VoiceTurn::new(ms / 2, ms, 1)]
+            } else {
+                vec![VoiceTurn::new(0, ms, 0)]
+            };
+            DiarizeReport::from_turns(turns)
+        }
+    }
+
     fn problem(engine: &mut dyn Diarizer, controls: &[Control], needle: &str) {
-        let problems = self_check(engine, controls);
+        let seen = self_check(engine, controls);
         assert!(
-            problems.iter().any(|line| line.contains(needle)),
-            "вердикт не назвал «{needle}»: {problems:?}"
+            seen.problems.iter().any(|line| line.contains(needle)),
+            "вердикт не назвал «{needle}»: {seen:?}"
+        );
+    }
+
+    /// Предупреждение — не беда: проверяется, что оно **сказано** и что
+    /// прогон при этом продолжается.
+    fn note(engine: &mut dyn Diarizer, controls: &[Control], needle: &str) {
+        let seen = self_check(engine, controls);
+        assert!(
+            seen.notes.iter().any(|line| line.contains(needle)),
+            "предупреждение не названо «{needle}»: {seen:?}"
+        );
+        assert!(
+            seen.problems.is_empty(),
+            "неточность остановила прогон: {seen:?}"
         );
     }
 
@@ -604,7 +728,12 @@ mod tests {
     /// значит — он мог бы быть красным всегда.
     #[test]
     fn the_self_check_passes_a_working_diarizer() {
-        assert!(self_check(&mut PitchControl, &[two_voices(), one_voice()]).is_empty());
+        let seen = self_check(&mut PitchControl, &[two_voices(), one_voice()]);
+        assert!(seen.problems.is_empty(), "{seen:?}");
+        assert!(
+            seen.notes.is_empty(),
+            "рабочий движок получил предупреждение: {seen:?}"
+        );
     }
 
     /// Движок, не видящий смены, — единственная настоящая слепота, и
@@ -631,17 +760,17 @@ mod tests {
     /// объявляла работающий движок слепым.
     #[test]
     fn without_controls_a_working_engine_is_not_judged_blind() {
-        let problems = self_check(&mut PitchControl, &[]);
+        let seen = self_check(&mut PitchControl, &[]);
 
         assert!(
-            problems
+            seen.problems
                 .iter()
                 .any(|line| line.contains("проверить его нечем")),
-            "{problems:?}"
+            "{seen:?}"
         );
         assert!(
-            !problems.iter().any(|line| line.contains("слились")),
-            "движок объявлен слепым без материала: {problems:?}"
+            !seen.problems.iter().any(|line| line.contains("слились")),
+            "движок объявлен слепым без материала: {seen:?}"
         );
     }
 
@@ -659,8 +788,59 @@ mod tests {
     /// числа, по которым его выбирают.
     #[test]
     fn over_splitting_is_loud_but_not_fatal() {
-        assert!(self_check(&mut AlwaysSplits, &[one_voice()]).is_empty());
-        assert!(self_check(&mut MultipliesWithLength, &[two_voices()]).is_empty());
+        note(&mut AlwaysSplits, &[one_voice()], "разорвал");
+        note(
+            &mut MultipliesWithLength,
+            &[two_voices()],
+            "переложенные иначе",
+        );
+    }
+
+    /// Неустойчивость по расположению ловится **только** перестановкой
+    /// половин: удвоение начинается так же, как исходная запись, и разницы
+    /// не видит вовсе.
+    ///
+    /// Ради этого случая перестановка и заведена: на настоящем движке
+    /// неустойчивость по одному удвоению была прочитана как рост от
+    /// количества материала, и вывод оказался неверным.
+    #[test]
+    fn reordering_catches_what_doubling_misses() {
+        // Контроль начинается громко: движок обязан увидеть двоих.
+        let loud_then_quiet = control(
+            "2-loud-first.wav",
+            2,
+            [
+                voice(110.0, CASE_MS),
+                vec![0i16; (RATE as u64 * CASE_MS / 1_000) as usize],
+            ]
+            .concat(),
+        );
+
+        let mut engine = UnstableUnderReordering;
+        // Материал обязан пройти положительный случай, иначе тест
+        // утверждал бы о неустойчивости на слепом движке.
+        let straight = engine.diarize(&loud_then_quiet.pcm, RATE);
+        assert_eq!(straight.speakers_found, 2, "двойник не нашёл двоих");
+
+        // Удвоение слепо к этой неустойчивости — это и есть смысл теста.
+        let doubled: Vec<i16> = loud_then_quiet
+            .pcm
+            .iter()
+            .chain(loud_then_quiet.pcm.iter())
+            .copied()
+            .collect();
+        assert_eq!(
+            engine.diarize(&doubled, RATE).speakers_found,
+            2,
+            "удвоение обязано дать то же число — иначе ловит оно, а не перестановка"
+        );
+
+        // А перестановка — видит, и вердикт при этом не смертельный.
+        note(
+            &mut UnstableUnderReordering,
+            &[loud_then_quiet],
+            "переставленными половинами",
+        );
     }
 
     /// Синтетика для двойников обязана быть разной: если бы два «голоса»
