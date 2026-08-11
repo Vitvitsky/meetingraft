@@ -56,8 +56,70 @@ const NUM_CLUSTERS: i32 = -1;
 const MIN_DURATION_ON: f32 = 0.3;
 /// Пауза короче этой отрезок не разрывает, секунды.
 const MIN_DURATION_OFF: f32 = 0.5;
-/// Потоков на инференс. Проход идёт post-call, живому пути не мешает.
-const NUM_THREADS: i32 = 2;
+/// Потоков на инференс.
+///
+/// Было жёстко два, «чтобы не мешать живому пути», и это оказалось
+/// главным тормозом: проход по двадцатиминутной встрече занимал шесть с
+/// половиной минут. Живому пути он не мешает по другой причине —
+/// диаризация идёт **post-call**, когда запись уже кончилась, — так что
+/// экономить было не на чем.
+///
+/// Берётся из числа ядер, потолок восемь: выше отдача падает, а память
+/// под каждый поток растёт. Переопределяется `MEETINGRAFT_DIARIZE_THREADS`.
+fn num_threads() -> i32 {
+    if let Ok(value) = std::env::var("MEETINGRAFT_DIARIZE_THREADS")
+        && let Ok(threads) = value.trim().parse::<i32>()
+        && threads > 0
+    {
+        return threads;
+    }
+    std::thread::available_parallelism()
+        .map(|cores| (cores.get() as i32).clamp(1, 8))
+        .unwrap_or(2)
+}
+
+/// Чем считать: `cpu`, `coreml` (Apple), `cuda`.
+///
+/// Берётся из `MEETINGRAFT_DIARIZE_PROVIDER`, умолчание — `cpu`.
+///
+/// **Переменной, а не константой, и вот почему.** В macOS-сборке
+/// провайдер CoreML действительно есть — `libonnxruntime.a` несёт
+/// `CoreMLExecutionProvider`, а sherpa знает строку `coreml`. Но
+/// «есть» не значит «быстрее»: модели здесь маленькие, а CoreML режет
+/// граф на куски и часть возвращает на CPU, и на малых графах накладные
+/// расходы съедают выигрыш регулярно. Числа снимаются на Маке, и до них
+/// выбирать нечего.
+///
+/// Metal/MPS в этой сборке нет вовсе: единственный путь к ускорителю —
+/// CoreML, и он сам решает, что отдать ANE, что GPU, а что CPU.
+///
+/// Отказ здесь **молчаливый со стороны sherpa**: не найдя провайдера, она
+/// печатает «Fallback to cpu!» в stderr и считает дальше. Поэтому имя
+/// провайдера прибор печатает сам — иначе замер «на CoreML» мог бы
+/// оказаться замером на CPU, и отличить их было бы нечем.
+fn provider() -> Option<String> {
+    match std::env::var("MEETINGRAFT_DIARIZE_PROVIDER") {
+        Ok(name) if !name.trim().is_empty() => Some(name.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Чем **просили** считать. Именно просили, а не считали.
+///
+/// Различие несущее: sherpa, не найдя провайдера, печатает
+/// «Fallback to cpu!» в stderr и считает дальше. Узнать снаружи, что
+/// именно случилось, нельзя — она не отдаёт этого никак. Поэтому строка
+/// говорит «запрошен», и рядом сказано, где смотреть отказ. Написать
+/// «считал coreml» значило бы утверждать то, чего мы не знаем: первая
+/// версия так и делала и врала на первой же машине без CoreML.
+pub fn requested_provider() -> String {
+    provider().unwrap_or_else(|| "cpu".to_string())
+}
+
+/// Сколько потоков ушло на инференс — для печати рядом со временем.
+pub fn threads_in_use() -> i32 {
+    num_threads()
+}
 
 /// Движок sherpa-onnx поверх пары моделей.
 pub struct SherpaDiarizer {
@@ -81,15 +143,15 @@ impl SherpaDiarizer {
                 pyannote: OfflineSpeakerSegmentationPyannoteModelConfig {
                     model: Some(path_string(&models.segmentation)?),
                 },
-                num_threads: NUM_THREADS,
+                num_threads: num_threads(),
                 debug: false,
-                provider: None,
+                provider: provider(),
             },
             embedding: SpeakerEmbeddingExtractorConfig {
                 model: Some(path_string(&models.embedding)?),
-                num_threads: NUM_THREADS,
+                num_threads: num_threads(),
                 debug: false,
-                provider: None,
+                provider: provider(),
             },
             clustering: FastClusteringConfig {
                 num_clusters: NUM_CLUSTERS,
@@ -225,9 +287,9 @@ impl SherpaEmbedder {
     pub fn open(models: &DiarizeModels) -> Result<Self, String> {
         let config = SpeakerEmbeddingExtractorConfig {
             model: Some(path_string(&models.embedding)?),
-            num_threads: NUM_THREADS,
+            num_threads: num_threads(),
             debug: false,
-            provider: None,
+            provider: provider(),
         };
         SpeakerEmbeddingExtractor::create(&config)
             .map(|inner| Self { inner })

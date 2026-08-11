@@ -28,7 +28,9 @@ pub use model_path::{
 pub use voiceprint::{Match, VoiceEmbedder, VoicePrint, best_match, build_print, similarity};
 
 #[cfg(feature = "model")]
-pub use sherpa::{SherpaDiarizer, SherpaEmbedder, voice_embedder};
+pub use sherpa::{
+    SherpaDiarizer, SherpaEmbedder, requested_provider, threads_in_use, voice_embedder,
+};
 
 use std::path::Path;
 
