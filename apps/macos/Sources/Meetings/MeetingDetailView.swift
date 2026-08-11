@@ -67,12 +67,21 @@ struct MeetingDetailView: View {
             reloadAttribution()
         }
         .onChange(of: section) { _, newValue in
+            switch newValue {
             // Правки в Final и Speakers переписывают текст транскрипта, а
             // признак отставания артефакта считается при чтении. Без
             // перечитывания плашка появилась бы только при повторном
             // заходе во встречу — то есть почти никогда.
-            if newValue == .artifacts {
+            case .artifacts:
                 viewModel.reload(meetingId: meeting.id)
+            // Обе вкладки читают одни данные, и переключение — самый
+            // частый момент, когда они могли разойтись: имя участника
+            // правят на одной, реплики смотрят на другой. Перечитывание
+            // на входе снимает вопрос, кто кого догоняет.
+            case .final, .speakers:
+                reloadAttribution()
+            default:
+                break
             }
         }
         .onChange(of: rebuild.state) { _, newValue in
@@ -174,8 +183,10 @@ struct MeetingDetailView: View {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
+    /// Версия для атрибуции — та же, чьё тело показано на экране.
+    /// Правило живёт в модели: см. `effectiveFinalVersion`.
     private func reloadAttribution() {
-        attribution.load(meetingId: meeting.id, version: viewModel.selectedFinalVersion)
+        attribution.load(meetingId: meeting.id, version: viewModel.effectiveFinalVersion)
     }
 
     private var liveCaptions: some View {
@@ -246,13 +257,36 @@ struct MeetingDetailView: View {
         if attribution.hasSegments {
             FinalSegmentsView(viewModel: attribution)
         } else {
-            ScrollView {
-                Text(markdown(viewModel.selectedFinalBody))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
+            VStack(spacing: 0) {
+                noSegmentsNote
+                ScrollView {
+                    Text(markdown(viewModel.selectedFinalBody))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
             }
         }
+    }
+
+    /// Почему у этой версии нельзя править текст и слушать реплики.
+    ///
+    /// Без этой строки экран просто показывает сплошной текст вместо
+    /// списка реплик, и выглядит это как «правка отключилась». Разница
+    /// между «здесь нечего править» и «сломалось» человеку изнутри
+    /// приложения не видна — значит, её надо назвать.
+    private var noSegmentsNote: some View {
+        Label(
+            "Эта версия собрана из live-субтитров: реплик в ней нет, "
+                + "поэтому правка текста и прослушивание недоступны. "
+                + "Их даёт пересбор Final — кнопка выше.",
+            systemImage: "info.circle"
+        )
+        .font(Theme.Text.caption)
+        .foregroundStyle(Theme.textSecondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal)
+        .padding(.vertical, Theme.Space.xs)
     }
 
     /// Provenance называет то, что фактически отработало: после

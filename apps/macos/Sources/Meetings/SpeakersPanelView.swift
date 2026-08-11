@@ -92,6 +92,8 @@ private struct SpeakerStatRow: View {
 
     @State private var displayName: String
     @FocusState private var isFieldFocused: Bool
+    /// Курсор над полем имени: показываем рамку.
+    @State private var isHovered = false
 
     init(
         row: SpeakerRowModel,
@@ -112,6 +114,20 @@ private struct SpeakerStatRow: View {
                 TextField("Имя участника", text: $displayName)
                     .textFieldStyle(.plain)
                     .font(Theme.Text.body)
+                    // Поле имени выглядит подписью, и что его правят,
+                    // ниоткуда не следует. Рамка по наведению говорит об
+                    // этом до нажатия, а не после.
+                    .padding(.horizontal, Theme.Space.xxs)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.sm)
+                            .stroke(
+                                isFieldFocused ? Theme.accent : Theme.textTertiary,
+                                lineWidth: 1
+                            )
+                            .opacity(isFieldFocused || isHovered ? 1 : 0)
+                    )
+                    .onHover { isHovered = $0 }
+                    .help("Имя участника: нажмите, чтобы поправить")
                     .focused($isFieldFocused)
                     // Enter сохраняет, уход фокуса — тоже, как и при
                     // правке реплики. Без второго набранное имя не

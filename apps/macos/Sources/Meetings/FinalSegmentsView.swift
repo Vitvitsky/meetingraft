@@ -30,6 +30,9 @@ struct FinalSegmentsView: View {
                 )
                 .padding(.horizontal, Theme.Space.sm)
             }
+            if !viewModel.segments.isEmpty {
+                EditHintBar()
+            }
             List(viewModel.segments, id: \.index) { segment in
                 FinalSegmentRow(
                     segment: segment,
@@ -55,6 +58,24 @@ struct FinalSegmentsView: View {
     }
 }
 
+/// Строка о том, что здесь можно править.
+///
+/// Правка по нажатию на текст ничем себя не выдавала: реплика выглядит
+/// обычным абзацем, и узнать о правке можно было только случайно. Молча
+/// спрятанная возможность в этом смысле не лучше молчаливого отказа —
+/// человек уверен, что функции нет.
+private struct EditHintBar: View {
+    var body: some View {
+        Label(
+            "Нажмите на реплику, чтобы поправить текст или прослушать её",
+            systemImage: "hand.tap"
+        )
+        .font(Theme.Text.caption)
+        .foregroundStyle(Theme.textTertiary)
+        .padding(.horizontal, Theme.Space.sm)
+    }
+}
+
 private struct FinalSegmentRow: View {
     let segment: FfiFinalSegment
     let speakers: [FfiSpeaker]
@@ -77,6 +98,8 @@ private struct FinalSegmentRow: View {
     let onPromote: () -> Void
     @FocusState private var isFieldFocused: Bool
     @State private var isConfirmingPromote = false
+    /// Курсор над репликой: показываем карандаш.
+    @State private var isHovered = false
     /// Звук этой реплики, если он есть. `nil` — записи за диапазон нет,
     /// и кнопки воспроизведения не будет вовсе.
     @State private var playableFragment: FfiAudioFragment?
@@ -123,13 +146,25 @@ private struct FinalSegmentRow: View {
                         }
                     editingBar
                 } else {
-                    Text(segment.text)
-                        .font(Theme.Text.body)
-                        .foregroundStyle(Theme.textPrimary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .contentShape(Rectangle())
-                        .onTapGesture(perform: onBeginEdit)
+                    // Карандаш по наведению: он и подсказывает, что
+                    // реплика правится нажатием, и не шумит, пока курсор
+                    // в другом месте.
+                    HStack(alignment: .top, spacing: Theme.Space.xs) {
+                        Text(segment.text)
+                            .font(Theme.Text.body)
+                            .foregroundStyle(Theme.textPrimary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Image(systemName: "pencil")
+                            .font(Theme.Text.caption)
+                            .foregroundStyle(Theme.textTertiary)
+                            .opacity(isHovered ? 1 : 0)
+                            .accessibilityHidden(true)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onBeginEdit)
+                    .onHover { isHovered = $0 }
+                    .help("Нажмите, чтобы поправить текст реплики")
                 }
                 if segment.textEdited, !isEditing {
                     Text("было: \(segment.originalText)")
