@@ -26,7 +26,7 @@ pub use local_agreement::{
 pub use mock::MockSttEngine;
 pub use model_path::{models_dir, resolve_whisper_model, whisper_filename_for_id};
 pub use noise_gate::NoiseGate;
-pub use pacing::InferencePacer;
+pub use pacing::{InferencePacer, MIN_SPEECH_FRAMES, PARTIAL_MIN_FRAMES, SILENCE_FRAMES};
 pub use window::{LiveCaptionPipeline, SttBackendKind, pcm_bytes_to_i16};
 
 #[cfg(feature = "whisper")]

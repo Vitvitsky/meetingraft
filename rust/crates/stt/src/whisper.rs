@@ -9,17 +9,13 @@ use whisper_rs::{
 
 use crate::local_agreement::{HypothesisWord, LocalAgreement, backfill_end_ms, words_from_tokens};
 use crate::noise_gate::NoiseGate;
-use crate::pacing::InferencePacer;
+use crate::pacing::{InferencePacer, MIN_SPEECH_FRAMES, PARTIAL_MIN_FRAMES, SILENCE_FRAMES};
 use crate::{Stabilized, SttEngine};
 use crate::{is_hallucination_prefix, is_whisper_hallucination};
 
 // Порога-константы больше нет: он не может обслужить и городской шум за
 // окном, и тихого собеседника из системного канала (Epic 18, замер
 // 2026-08-04). Решает превышение речи над фоном комнаты — см. NoiseGate.
-const SILENCE_FRAMES: usize = 16_000 * 3 / 10;
-const MIN_SPEECH_FRAMES: usize = 16_000 / 5;
-/// Не гоняем Whisper чаще чем раз в ~1 с на partial.
-const PARTIAL_MIN_FRAMES: usize = 16_000;
 /// Сегмент с no_speech_prob выше порога отбрасываем.
 const NO_SPEECH_PROB_MAX: f32 = 0.55;
 /// Потолок неустойчивого хвоста: без него согласие может не наступить
