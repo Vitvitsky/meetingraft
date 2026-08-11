@@ -70,6 +70,7 @@
 //! замену можно сравнить. По-русски не обучена ни одна из двух моделей,
 //! так что на наших встречах вопрос открыт (задача 3).
 
+mod compare;
 mod wav;
 
 use std::collections::BTreeMap;
@@ -422,8 +423,159 @@ fn probe(root: &Path, session_id: &str, engine: &mut dyn Diarizer) -> Result<(),
             continue;
         }
         print_report(&report, pcm.len() as u64 * 1_000 / u64::from(RATE));
+        print_against_labels(&store, session_id, channel, &report.turns);
     }
     Ok(())
+}
+
+/// Сверить найденные голоса с тем, что человек разметил в Final.
+///
+/// Лучший контроль из возможных, и единственный на нашей речи: чужие
+/// записи отвечают только на «видит ли движок смену вообще», а здесь
+/// видно, **тех ли** он разделил.
+///
+/// Отсутствие разметки — не ошибка и не молчание: печатается строкой, что
+/// сверять не с чем и почему.
+fn print_against_labels(
+    store: &AudioManifestStore,
+    meeting_id: &str,
+    channel: AudioChannel,
+    turns: &[diarize::VoiceTurn],
+) {
+    let labels = match human_labels(store, meeting_id, channel) {
+        Ok(labels) => labels,
+        Err(error) => {
+            println!("\n    Сверить с разметкой не вышло: {error}");
+            return;
+        }
+    };
+    if labels.is_empty() {
+        println!(
+            "\n    Сверять не с чем: на этой дорожке нет реплик, которым спикера\n\
+             \x20   поставил человек. Массовое назначение по каналу за разметку не\n\
+             \x20   считается — оно говорит то же, что и сам канал, и совпадение с\n\
+             \x20   ним ничего бы не значило."
+        );
+        return;
+    }
+
+    let seen = compare::compare(&labels, turns);
+    println!(
+        "\n    Сверка с разметкой человека: {} реплик, {:.1} с",
+        labels.len(),
+        seen.labelled_ms as f64 / 1_000.0
+    );
+    // Покрытие первым: при низком покрытии проценты ниже описывают
+    // крохотный кусок встречи, а читаются как ответ про неё целиком.
+    println!(
+        "      движок накрыл отрезками {:.0}% размеченного времени",
+        seen.coverage() * 100.0
+    );
+    if seen.covered_ms == 0 {
+        println!("      пересечений нет вовсе — сравнивать нечего");
+        return;
+    }
+    println!(
+        "      из накрытого в «свой» голос попало {:.0}%",
+        seen.accuracy() * 100.0
+    );
+
+    println!("\n      кто на какой голос лёг:");
+    for (speaker, cluster, ms) in &seen.mapping {
+        println!(
+            "        {speaker:<24} голос {cluster:<3} {:.1} с",
+            *ms as f64 / 1_000.0
+        );
+    }
+
+    let split: Vec<String> = seen
+        .per_speaker_wholeness()
+        .into_iter()
+        .filter(|(_, whole, _)| *whole < 0.9)
+        .map(|(speaker, whole, ms)| {
+            format!(
+                "{speaker} — {:.0}% от своих {:.1} с",
+                whole * 100.0,
+                ms as f64 / 1_000.0
+            )
+        })
+        .collect();
+    if !split.is_empty() {
+        println!("      разорваны на несколько голосов: {}", split.join("; "));
+    }
+
+    let mixed: Vec<String> = seen
+        .per_cluster_purity()
+        .into_iter()
+        .filter(|(_, purity, _)| *purity < 0.9)
+        .map(|(cluster, purity, ms)| {
+            format!(
+                "голос {cluster} — {:.0}% от своих {:.1} с",
+                purity * 100.0,
+                ms as f64 / 1_000.0
+            )
+        })
+        .collect();
+    if !mixed.is_empty() {
+        println!("      смешали нескольких людей: {}", mixed.join("; "));
+    }
+
+    println!(
+        "\n      Расхождение — не обязательно ошибка движка. Человек размечал\n\
+         \x20     реплики в транскрипте, а не голоса на слух: если внутри реплики\n\
+         \x20     заговорил второй, разметка этого не знает, а движок мог услышать\n\
+         \x20     верно. Судить надо прослушиванием спорных отрезков."
+    );
+}
+
+/// Реплики, которым спикера поставил **человек**, а не канал.
+///
+/// `speaker_pinned` — тот самый признак: массовое назначение по каналу
+/// такие сегменты не трогает (миграция 6). Брать вместо него все
+/// назначенные было бы самообманом: подпись по каналу повторяет то, что
+/// и так известно из дорожки, и совпадение с ней ничего не проверяет.
+fn human_labels(
+    store: &AudioManifestStore,
+    meeting_id: &str,
+    channel: AudioChannel,
+) -> Result<Vec<compare::Labelled>, String> {
+    let versions = store
+        .list_final_transcripts(meeting_id)
+        .map_err(|error| error.to_string())?;
+    // Список идёт от новых к старым: разметка живёт в последней версии,
+    // на неё пересбор и переносит ручные решения.
+    let Some(latest) = versions.first() else {
+        return Err("у встречи нет собранного Final".to_string());
+    };
+    let segments = store
+        .list_final_segments(meeting_id, latest.version)
+        .map_err(|error| error.to_string())?;
+
+    // Имя, а не id: отчёт читает человек, и «спикер a3f1…» ему ничего не
+    // говорит. Имени нет — остаётся id, но подменять его пустой строкой
+    // нельзя: две безымянных строки слились бы в одного человека.
+    let names: std::collections::BTreeMap<String, String> = store
+        .list_speakers(meeting_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|speaker| !speaker.display_name.trim().is_empty())
+        .map(|speaker| (speaker.id, speaker.display_name))
+        .collect();
+
+    Ok(segments
+        .into_iter()
+        .filter(|segment| {
+            segment.channel == channel && segment.speaker_pinned && !segment.speaker_id.is_empty()
+        })
+        .map(|segment| compare::Labelled {
+            speaker: names
+                .get(&segment.speaker_id)
+                .cloned()
+                .unwrap_or(segment.speaker_id),
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+        })
+        .collect())
 }
 
 fn print_report(report: &DiarizeReport, track_ms: u64) {
@@ -1005,6 +1157,109 @@ mod tests {
             report.speakers_found, 2,
             "два заведомо разных голоса с диска не разделились"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Заполнить Final с разметкой: часть реплик поставил человек, часть
+    /// — массовое назначение по каналу.
+    fn seed_final(root: &Path, meeting_id: &str, segments: Vec<domain::FinalSegment>) {
+        let mut store = AudioManifestStore::open(root).expect("store");
+        store
+            .upsert_final_transcript(&domain::FinalTranscript {
+                meeting_id: meeting_id.to_string(),
+                version: 1,
+                body_markdown: String::new(),
+                created_at_ms: 0,
+            })
+            .expect("транскрипт");
+        store
+            .replace_final_segments(meeting_id, 1, &segments)
+            .expect("сегменты");
+        for (id, name) in [("s-anya", "Аня"), ("s-borya", "Боря")] {
+            store
+                .upsert_speaker(&domain::Speaker {
+                    id: id.to_string(),
+                    meeting_id: meeting_id.to_string(),
+                    display_name: name.to_string(),
+                    sort_index: 0,
+                })
+                .expect("спикер");
+        }
+    }
+
+    fn final_segment(
+        index: u32,
+        start_ms: u64,
+        end_ms: u64,
+        channel: AudioChannel,
+        speaker_id: &str,
+        pinned: bool,
+    ) -> domain::FinalSegment {
+        domain::FinalSegment {
+            index,
+            start_ms,
+            end_ms,
+            channel,
+            speaker_id: speaker_id.to_string(),
+            speaker_pinned: pinned,
+            text: "реплика".to_string(),
+            text_edited: false,
+            original_text: String::new(),
+        }
+    }
+
+    /// Половина прибора, читающая разметку, проверяется на заведомом
+    /// случае: три реплики, из них человек поставил спикера одной.
+    ///
+    /// Проверяются сразу три вещи, и каждая — про молчаливую подмену:
+    /// берутся только ручные, только свой канал, и имя человека вместо
+    /// непрозрачного id.
+    #[test]
+    fn only_the_segments_a_person_pinned_count_as_labels() {
+        let root = tmp_root("labels");
+        let _ = std::fs::remove_dir_all(&root);
+        seed(&root, "m1", &voice(110.0, CASE_MS));
+        seed_final(
+            &root,
+            "m1",
+            vec![
+                // Ручная — идёт в эталон.
+                final_segment(0, 1_000, 5_000, AudioChannel::Mic, "s-anya", true),
+                // Массовое назначение по каналу — не идёт: оно повторяет
+                // то, что и так известно из дорожки.
+                final_segment(1, 5_000, 9_000, AudioChannel::Mic, "s-borya", false),
+                // Ручная, но на другой дорожке — не идёт в этот канал.
+                final_segment(2, 9_000, 12_000, AudioChannel::System, "s-borya", true),
+            ],
+        );
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        let labels = human_labels(&store, "m1", AudioChannel::Mic).expect("разметка");
+
+        assert_eq!(
+            labels.len(),
+            1,
+            "взято лишнее или потеряно своё: {labels:?}"
+        );
+        assert_eq!(labels[0].speaker, "Аня", "показан id вместо имени");
+        assert_eq!((labels[0].start_ms, labels[0].end_ms), (1_000, 5_000));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Final у встречи нет — отказ с причиной, а не пустая разметка.
+    ///
+    /// Пустая разметка и отсутствие Final читались бы одинаково: «сверять
+    /// не с чем», — а чинятся по-разному.
+    #[test]
+    fn a_meeting_without_a_final_is_refused_by_reason() {
+        let root = tmp_root("no-final");
+        let _ = std::fs::remove_dir_all(&root);
+        seed(&root, "m1", &voice(110.0, CASE_MS));
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        let error = human_labels(&store, "m1", AudioChannel::Mic).expect_err("Final нет");
+
+        assert!(error.contains("Final"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
