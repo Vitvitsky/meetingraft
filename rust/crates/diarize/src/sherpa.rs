@@ -16,10 +16,12 @@
 use sherpa_onnx::{
     FastClusteringConfig, OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig,
     OfflineSpeakerSegmentationModelConfig, OfflineSpeakerSegmentationPyannoteModelConfig,
-    SpeakerEmbeddingExtractorConfig,
+    SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig,
 };
 
-use crate::{DiarizeModels, DiarizeReport, Diarizer, VoiceTurn};
+use crate::{
+    DiarizeModels, DiarizeReport, Diarizer, VoiceEmbedder, VoiceTurn, resolve_diarize_models,
+};
 
 /// Порог кластеризации: насколько далеко голоса должны разойтись, чтобы
 /// считаться разными.
@@ -60,6 +62,11 @@ const NUM_THREADS: i32 = 2;
 /// Движок sherpa-onnx поверх пары моделей.
 pub struct SherpaDiarizer {
     inner: OfflineSpeakerDiarization,
+    /// Копия конфигурации: `set_config` принимает её целиком, а поменять
+    /// нужно одно поле. Хранить её дешевле, чем собирать заново, и
+    /// главное — так исключено, что вместе с порогом молча уедет
+    /// что-нибудь ещё.
+    config: OfflineSpeakerDiarizationConfig,
 }
 
 impl SherpaDiarizer {
@@ -93,7 +100,10 @@ impl SherpaDiarizer {
         };
 
         OfflineSpeakerDiarization::create(&config)
-            .map(|inner| Self { inner })
+            .map(|inner| Self {
+                inner,
+                config: config.clone(),
+            })
             .ok_or_else(|| {
                 format!(
                     "sherpa-onnx не поднялся на моделях {} и {} (причина — в stderr выше)",
@@ -105,6 +115,12 @@ impl SherpaDiarizer {
 }
 
 impl Diarizer for SherpaDiarizer {
+    fn set_cluster_threshold(&mut self, threshold: f32) -> bool {
+        self.config.clustering.threshold = threshold;
+        self.inner.set_config(&self.config);
+        true
+    }
+
     fn diarize(&mut self, pcm: &[i16], sample_rate: u32) -> DiarizeReport {
         // Частоту спрашиваем у самого движка, а не берём из головы.
         // Модели обучены на своей частоте, и подача 48 кГц под видом 16
@@ -193,4 +209,76 @@ mod tests {
 
         assert!(error.contains("segmentation.onnx"), "{error}");
     }
+}
+
+/// Считает вектор голоса по куску звука.
+///
+/// Отдельно от `SherpaDiarizer` намеренно: диаризация решает, **сколько**
+/// в записи людей, а здесь число называет человек, и остаётся померить
+/// похожесть. Это разные задачи с разной ценой ошибки, и одна ручка на
+/// две была бы ручкой ни на что.
+pub struct SherpaEmbedder {
+    inner: SpeakerEmbeddingExtractor,
+}
+
+impl SherpaEmbedder {
+    pub fn open(models: &DiarizeModels) -> Result<Self, String> {
+        let config = SpeakerEmbeddingExtractorConfig {
+            model: Some(path_string(&models.embedding)?),
+            num_threads: NUM_THREADS,
+            debug: false,
+            provider: None,
+        };
+        SpeakerEmbeddingExtractor::create(&config)
+            .map(|inner| Self { inner })
+            .ok_or_else(|| {
+                format!(
+                    "sherpa-onnx не поднял модель голосов {} (причина — в stderr выше)",
+                    models.embedding.display()
+                )
+            })
+    }
+}
+
+impl VoiceEmbedder for SherpaEmbedder {
+    fn dim(&self) -> usize {
+        self.inner.dim().max(0) as usize
+    }
+
+    fn embed(&mut self, pcm: &[i16], sample_rate: u32) -> Result<Vec<f32>, String> {
+        if pcm.is_empty() {
+            return Err("кусок пуст — считать вектор не по чему".to_string());
+        }
+        let stream = self
+            .inner
+            .create_stream()
+            .ok_or_else(|| "поток для вектора не создался".to_string())?;
+        let samples: Vec<f32> = pcm.iter().map(|s| f32::from(*s) / 32_768.0).collect();
+        stream.accept_waveform(sample_rate as i32, &samples);
+        stream.input_finished();
+
+        // Модель требует минимума материала, и это не мелочь: слишком
+        // короткая реплика вектора не даёт вовсе. Отказ здесь честнее
+        // вектора, посчитанного по трети слова, — тот выглядел бы как
+        // полноценный и тянул бы слепок в сторону.
+        if !self.inner.is_ready(&stream) {
+            return Err(format!(
+                "кусок в {:.2} с слишком короток для вектора голоса",
+                pcm.len() as f32 / sample_rate as f32
+            ));
+        }
+        self.inner
+            .compute(&stream)
+            .ok_or_else(|| "вектор не посчитался".to_string())
+    }
+}
+
+/// Движок векторов по сборке и по тому, что лежит на диске.
+///
+/// `Err` со строкой вместо заглушки: у слепков нет безобидного
+/// «отказываюсь считать» — если векторов нет, то и подписывать нечем, и
+/// вызывающий обязан это увидеть сразу.
+pub fn voice_embedder(data_root: impl AsRef<std::path::Path>) -> Result<SherpaEmbedder, String> {
+    let models = resolve_diarize_models(data_root.as_ref())?;
+    SherpaEmbedder::open(&models)
 }

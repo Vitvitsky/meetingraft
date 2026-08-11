@@ -77,25 +77,56 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use diarize::{DiarizeReport, Diarizer, diarize_backend, diarize_models_dir};
+use diarize::{
+    DiarizeReport, Diarizer, Match, VoiceEmbedder, VoicePrint, best_match, build_print,
+    diarize_backend, diarize_models_dir,
+};
 use domain::AudioChannel;
 use storage::AudioManifestStore;
 
 /// Частота живого пути; ею же пишутся чанки на диск (ADR-005).
 const RATE: u32 = 16_000;
 
+/// Что прибор делает с сессией.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Разделить голоса и сверить с разметкой.
+    Plain,
+    /// Перебрать пороги кластеризации.
+    Sweep,
+    /// Сложить слепки по разметке и проверить их на отложенной части.
+    Enroll,
+}
+
+/// Движок векторов — или отказ, если собрано без него.
+#[cfg(feature = "model")]
+fn open_embedder(root: &Path) -> Result<Box<dyn VoiceEmbedder>, String> {
+    diarize::voice_embedder(root).map(|embedder| Box::new(embedder) as Box<dyn VoiceEmbedder>)
+}
+
+#[cfg(not(feature = "model"))]
+fn open_embedder(_root: &Path) -> Result<Box<dyn VoiceEmbedder>, String> {
+    Err("собрано без --features model: векторов голоса считать нечем".to_string())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // Каталог данных нужен раньше самопроверки: и модели, и контрольные
     // записи лежат в нём же, рядом с базой.
-    let (root, session) = match args.as_slice() {
+    let (root, session, mode) = match args.as_slice() {
         [] => {
             println!("\n{USAGE}");
             return ExitCode::SUCCESS;
         }
-        [root] => (Path::new(root), None),
-        [root, session] => (Path::new(root), Some(session.as_str())),
+        [root] => (Path::new(root), None, Mode::Plain),
+        [root, session] => (Path::new(root), Some(session.as_str()), Mode::Plain),
+        [root, session, flag] if flag == "--sweep" => {
+            (Path::new(root), Some(session.as_str()), Mode::Sweep)
+        }
+        [root, session, flag] if flag == "--enroll" => {
+            (Path::new(root), Some(session.as_str()), Mode::Enroll)
+        }
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::FAILURE;
@@ -125,9 +156,14 @@ fn main() -> ExitCode {
         );
     }
 
-    let result = match session {
-        None => list_sessions(root),
-        Some(id) => probe(root, id, engine.as_mut()),
+    let result = match (session, mode) {
+        (None, _) => list_sessions(root),
+        (Some(id), Mode::Plain) => probe(root, id, engine.as_mut()),
+        (Some(id), Mode::Sweep) => sweep_thresholds(root, id, engine.as_mut()),
+        (Some(id), Mode::Enroll) => match open_embedder(root) {
+            Ok(mut embedder) => enroll(root, id, embedder.as_mut()),
+            Err(error) => Err(error),
+        },
     };
 
     match result {
@@ -143,10 +179,25 @@ const USAGE: &str = "\
 Использование:
   diarize-probe <каталог-данных>             — список сессий
   diarize-probe <каталог-данных> <сессия>    — разделить голоса по сессии
+  diarize-probe <каталог-данных> <сессия> --sweep
+                                            — перебрать пороги и сверить
+                                              каждый с разметкой человека
+  diarize-probe <каталог-данных> <сессия> --enroll
+                                            — сложить слепки голосов по
+                                              разметке и проверить их на
+                                              отложенной её части
 
 Каталог данных — тот, где лежит meetingraft.sqlite3. Модели и контрольные
 записи кладёт туда scripts/fetch-diarize-models.sh; движок включается
 сборкой с --features model.
+
+Прогон идёт минутами и печатает много; сохранять вывод стоит целиком, а
+не переписывать глазами:
+
+  ... -- \"$ROOT\" <сессия> --sweep 2>&1 | tee ~/diarize-sweep.txt
+
+`2>&1` обязателен: отказы движка и его собственные сообщения идут в
+stderr, и без него в файл попадёт только половина разговора.
 
 Мерить надо две записи, и они отвечают на разные вопросы: очную (двое
 говорят в один микрофон ноутбука) и созвон. Первая — тот случай, который
@@ -426,6 +477,430 @@ fn probe(root: &Path, session_id: &str, engine: &mut dyn Diarizer) -> Result<(),
         print_against_labels(&store, session_id, channel, &report.turns);
     }
     Ok(())
+}
+
+/// Пороги похожести для проверки слепков.
+///
+/// Косинус между векторами одного человека обычно заметно выше, чем между
+/// разными, но где проходит граница — свойство модели и материала, а не
+/// величина из документации. Поэтому перебор, а не константа.
+const ACCEPT: &[f32] = &[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+
+/// Минимальный отрыв от следующего по похожести.
+///
+/// Держится постоянным, чтобы таблица оставалась про один порог. Смысл
+/// его в другом: двое похожих без правила об отрыве делили бы реплики
+/// монеткой, каждый раз уверенно.
+const MARGIN: f32 = 0.05;
+
+/// Кусок разметки с посчитанным вектором.
+struct Sample {
+    /// Кого назвал человек.
+    truth: String,
+    vector: Vec<f32>,
+    ms: u64,
+}
+
+/// Сложить слепки по разметке и проверить их на отложенной части.
+///
+/// Задача не та, что у кластеризации, и более лёгкая: сколько в записи
+/// людей, говорит человек, и угадывать нечего — остаётся померить
+/// похожесть.
+///
+/// **Складывать и проверять на одном и том же нельзя.** Слепок, сложенный
+/// по куску, на этом же куске похож на себя почти идеально, и отчёт вышел
+/// бы прекрасным и пустым. Поэтому разметка делится, и делится дважды:
+///
+/// - **через один** — человек разметил понемногу по всей встрече. Проверка
+///   идёт на кусках рядом с обучающими, то есть в тех же условиях: это
+///   оценка сверху;
+/// - **первая треть против остального** — человек разметил начало и хочет
+///   остальное. Проверка идёт по материалу, которого слепок не видел ни
+///   рядом, ни по времени: это оценка снизу.
+///
+/// Правда между ними, и обе печатаются.
+fn enroll(root: &Path, session_id: &str, embedder: &mut dyn VoiceEmbedder) -> Result<(), String> {
+    let store = AudioManifestStore::open(root).map_err(|error| error.to_string())?;
+    let tracks = tracks(&store, session_id)?;
+
+    let mut worked = 0usize;
+    for (channel, pcm) in tracks {
+        let labels = human_labels(&store, session_id, channel).unwrap_or_default();
+        if labels.is_empty() {
+            println!(
+                "\n  Дорожка {} — разметки человека нет, складывать слепки не из чего",
+                channel.code()
+            );
+            continue;
+        }
+
+        println!(
+            "\n  Дорожка {} — {} реплик разметки",
+            channel.code(),
+            labels.len()
+        );
+        let (samples, skipped) = embed_labels(embedder, &pcm, &labels);
+        if skipped > 0 {
+            println!(
+                "    {skipped} реплик короче, чем нужно модели для вектора — пропущены.\n\
+                 \x20   Это не потеря разметки, а цена: короткая реплика вектора не даёт"
+            );
+        }
+        if samples.len() < 4 {
+            println!(
+                "    векторов вышло {} — делить и проверять не на чем",
+                samples.len()
+            );
+            continue;
+        }
+        worked += 1;
+
+        by_split(
+            "через один (разметка понемногу по всей встрече)",
+            &samples,
+            |index, _| index % 2 == 0,
+        );
+        by_split(
+            "первая треть против остального",
+            &samples,
+            |index, total| index * 3 < total,
+        );
+    }
+
+    if worked == 0 {
+        return Err("складывать слепки не из чего ни на одной дорожке".to_string());
+    }
+    println!(
+        "\n  Слепки нигде не сохранены: этот прогон складывает их в памяти и\n\
+         \x20 забывает. Хранение между встречами — отдельное решение (задача 7),\n\
+         \x20 и включаться оно должно осознанно."
+    );
+    Ok(())
+}
+
+/// Посчитать вектор по каждому размеченному куску.
+///
+/// Возвращает и число пропущенных: реплика короче минимума модели вектора
+/// не даёт, и молча терять её нельзя — из десяти реплик человека восемь
+/// коротких означают слепок по двум.
+fn embed_labels(
+    embedder: &mut dyn VoiceEmbedder,
+    pcm: &[i16],
+    labels: &[compare::Labelled],
+) -> (Vec<Sample>, usize) {
+    let mut out = Vec::new();
+    let mut skipped = 0usize;
+    for label in labels {
+        let from = (label.start_ms as usize * RATE as usize / 1_000).min(pcm.len());
+        let to = (label.end_ms as usize * RATE as usize / 1_000).min(pcm.len());
+        if to <= from {
+            skipped += 1;
+            continue;
+        }
+        match embedder.embed(&pcm[from..to], RATE) {
+            Ok(vector) => out.push(Sample {
+                truth: label.speaker.clone(),
+                vector,
+                ms: label.duration_ms(),
+            }),
+            Err(_) => skipped += 1,
+        }
+    }
+    (out, skipped)
+}
+
+/// Разложить куски человека на обучающие и отложенные.
+///
+/// Вынесено отдельно ради одного теста: **ни один кусок не имеет права
+/// попасть и туда, и туда**. Слепок, сложенный по куску, на этом же куске
+/// похож на себя почти идеально, и отчёт вышел бы прекрасным и пустым —
+/// та же ошибка, что «тест, который может пройти на пустом входе», только
+/// дороже: здесь она даёт не ноль, а девяносто процентов.
+///
+/// Делит **внутри каждого человека**: общий порядок отдал бы одного
+/// целиком в обучение, а другого целиком в проверку, и слепка для второго
+/// не оказалось бы вовсе.
+fn split<'a>(
+    by_person: &BTreeMap<&'a str, Vec<&'a Sample>>,
+    is_fit: &impl Fn(usize, usize) -> bool,
+) -> (Vec<(String, VoicePrint)>, Vec<&'a Sample>) {
+    let mut prints: Vec<(String, VoicePrint)> = Vec::new();
+    let mut trials: Vec<&Sample> = Vec::new();
+    for (name, mine) in by_person {
+        let total = mine.len();
+        let mut fit: Vec<(Vec<f32>, f32)> = Vec::new();
+        for (index, sample) in mine.iter().enumerate() {
+            if is_fit(index, total) {
+                fit.push((sample.vector.clone(), sample.ms as f32 / 1_000.0));
+            } else {
+                trials.push(sample);
+            }
+        }
+        if let Some(print) = build_print(&fit) {
+            prints.push(((*name).to_string(), print));
+        }
+    }
+    (prints, trials)
+}
+
+/// Сложить слепки по одной части разметки и проверить на другой.
+///
+/// `is_fit` решает по номеру куска **внутри одного человека**: делить
+/// общим порядком значило бы отдать одного целиком в обучение, а другого
+/// целиком в проверку, и слепка для второго не оказалось бы вовсе.
+fn by_split(title: &str, samples: &[Sample], is_fit: impl Fn(usize, usize) -> bool) {
+    let mut by_person: BTreeMap<&str, Vec<&Sample>> = BTreeMap::new();
+    for sample in samples {
+        by_person.entry(&sample.truth).or_default().push(sample);
+    }
+
+    let (prints, trials) = split(&by_person, &is_fit);
+
+    println!("\n    Деление: {title}");
+    if prints.len() < 2 || trials.is_empty() {
+        println!(
+            "      слепков {} и отложенных кусков {} — проверять нечего",
+            prints.len(),
+            trials.len()
+        );
+        return;
+    }
+    let names: Vec<String> = prints
+        .iter()
+        .map(|(name, print)| format!("{name} ({} кусков, {:.1} с)", print.samples, print.seconds))
+        .collect();
+    println!("      слепки: {}", names.join(", "));
+    println!(
+        "      проверка на {} отложенных кусках, {:.1} с",
+        trials.len(),
+        trials.iter().map(|sample| sample.ms).sum::<u64>() as f64 / 1_000.0
+    );
+    println!("       порог  подписано  из подписанного неверно  не опознано");
+
+    for accept in ACCEPT {
+        let mut named = 0u64;
+        let mut wrong = 0u64;
+        let mut unknown = 0u64;
+        for sample in &trials {
+            match best_match(&sample.vector, &prints, *accept, MARGIN) {
+                Match::Named { name, .. } => {
+                    named += sample.ms;
+                    if name != sample.truth {
+                        wrong += sample.ms;
+                    }
+                }
+                Match::Unknown { .. } => unknown += sample.ms,
+            }
+        }
+        let total = named + unknown;
+        println!(
+            "       {accept:.2} {:>9.0}% {:>23.0}% {:>12.0}%",
+            percent(named, total),
+            percent(wrong, named),
+            percent(unknown, total),
+        );
+    }
+    println!(
+        "      Главный столбец — средний: неверная подпись убедительна, и человек\n\
+         \x20    на неё полагается. Неопознанное безобидно, оно видно как есть."
+    );
+}
+
+/// Пороги для развёртки.
+///
+/// Снизу — то, что стоит в движке; сверху — заведомо слишком много.
+/// Шаг крупный намеренно: проход по получасовой дорожке идёт минутами, и
+/// мелкая сетка превращает замер в вечер.
+const SWEEP: &[f32] = &[0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00];
+
+/// Верхний конец здесь не для красоты. Если даже на 1.00 голосов остаётся
+/// много, дело не в пороге вовсе, и крутить дальше бессмысленно: следующий
+/// подозреваемый — `MIN_DURATION_ON`, отрезок в 0.3 с для слепка голоса
+/// короток, и десятки коротких реплик дают десятки плохих векторов.
+const _: () = ();
+
+/// Перебрать пороги и сверить каждый с разметкой человека.
+///
+/// Ради чего: порог по умолчанию подобран на чужих записях по минуте, и
+/// на настоящей встрече он оказался не тот — шестеро людей разошлись по
+/// десяткам голосов. Гадать о новом значении незачем, когда есть
+/// разметка: она и говорит, какой порог сходится **с нашей речью**.
+///
+/// Строки печатаются по мере счёта, а не в конце: прогон идёт минутами на
+/// каждый порог, и молчащий прибор неотличим от повисшего.
+fn sweep_thresholds(
+    root: &Path,
+    session_id: &str,
+    engine: &mut dyn Diarizer,
+) -> Result<(), String> {
+    if !engine.set_cluster_threshold(SWEEP[0]) {
+        return Err(
+            "у этого движка порога нет — перебирать нечего (собрано без --features model?)"
+                .to_string(),
+        );
+    }
+
+    let store = AudioManifestStore::open(root).map_err(|error| error.to_string())?;
+    let tracks = tracks(&store, session_id)?;
+
+    let mut done = 0usize;
+    for (channel, pcm) in tracks {
+        let labels = human_labels(&store, session_id, channel).unwrap_or_default();
+        if labels.is_empty() {
+            println!(
+                "\n  Дорожка {} — разметки человека нет, перебирать не с чем",
+                channel.code()
+            );
+            continue;
+        }
+        done += 1;
+
+        let labelled_ms: u64 = labels.iter().map(compare::Labelled::duration_ms).sum();
+        println!(
+            "\n  Дорожка {} — {} реплик разметки, {:.1} с",
+            channel.code(),
+            labels.len(),
+            labelled_ms as f64 / 1_000.0
+        );
+        println!("   порог  голосов  накрыто  в свой голос  худшая цельность  худшая чистота");
+
+        let mut rows: Vec<(f32, u32, f64)> = Vec::new();
+        for threshold in SWEEP {
+            engine.set_cluster_threshold(*threshold);
+            let report = engine.diarize(&pcm, RATE);
+            if let Some(reason) = report.refused {
+                println!("   {threshold:.2}  отказ: {reason}");
+                continue;
+            }
+            let seen = compare::compare(&labels, &report.turns);
+            let worst = |values: Vec<f64>| values.into_iter().fold(1.0f64, f64::min);
+            println!(
+                "   {threshold:.2} {:>8} {:>8.0}% {:>12.0}% {:>16.0}% {:>14.0}%",
+                report.speakers_found,
+                seen.coverage() * 100.0,
+                seen.accuracy() * 100.0,
+                worst(
+                    seen.per_speaker_wholeness()
+                        .into_iter()
+                        .map(|(_, whole, _)| whole)
+                        .collect()
+                ) * 100.0,
+                worst(
+                    seen.per_cluster_purity()
+                        .into_iter()
+                        .map(|(_, purity, _)| purity)
+                        .collect()
+                ) * 100.0,
+            );
+            rows.push((*threshold, report.speakers_found, seen.accuracy()));
+        }
+
+        summarise(&rows);
+    }
+
+    if done == 0 {
+        return Err(
+            "ни на одной дорожке нет разметки человека — перебирать пороги не с чем".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Назвать лучший порог — и сперва проверить, что перебор вообще что-то
+/// перебирал.
+///
+/// Одинаковое число голосов на всех порогах означает, что `set_config`
+/// молча ничего не сделал, и таблица выше — семь раз одна и та же строка
+/// под разными заголовками. Прибор, печатающий такое как результат, врёт
+/// убедительнее любого пропуска.
+fn summarise(rows: &[(f32, u32, f64)]) -> Sweep {
+    let verdict = judge_sweep(rows);
+    match &verdict {
+        Sweep::TooShort => {}
+        Sweep::Stuck(found) => println!(
+            "    ! на всех порогах ровно {found} голосов — порог не переставляется, и\n\
+             \x20     строки выше это одна и та же строка. Верить им нельзя"
+        ),
+        Sweep::Best {
+            thresholds,
+            found,
+            accuracy,
+        } => {
+            let middle = thresholds[thresholds.len() / 2];
+            if thresholds.len() == 1 {
+                println!(
+                    "    Лучше всего сходится порог {middle:.2}: {found} голосов, {:.0}%\n\
+                     \x20   попало в свой.",
+                    accuracy * 100.0
+                );
+            } else {
+                println!(
+                    "    Одинаково хорошо сходятся пороги {:.2}…{:.2} ({:.0}% попало в свой).\n\
+                     \x20   Брать надо середину — {middle:.2}, {found} голосов, — а не край:\n\
+                     \x20   на краю плато соседняя запись съедет с него первой же.",
+                    thresholds[0],
+                    thresholds[thresholds.len() - 1],
+                    accuracy * 100.0
+                );
+            }
+            println!(
+                "    Это **эта** запись, а не общий ответ; на другой встрече проверять\n\
+                 \x20   заново."
+            );
+        }
+    }
+    verdict
+}
+
+/// Чем кончился перебор.
+#[derive(Debug, PartialEq)]
+pub enum Sweep {
+    /// Строк меньше двух — сравнивать нечего.
+    TooShort,
+    /// Число голосов не сдвинулось ни на одном пороге.
+    Stuck(u32),
+    /// Пороги, сошедшиеся лучше всех.
+    ///
+    /// Их бывает несколько, и это не мелочь: при равном результате взять
+    /// верхний или нижний значит сесть на **край** плато, откуда соседняя
+    /// запись съедет первой же. Поэтому список, а не одно число, — и
+    /// берётся из него середина.
+    Best {
+        thresholds: Vec<f32>,
+        found: u32,
+        accuracy: f64,
+    },
+}
+
+/// Насколько два результата считаются одинаковыми.
+///
+/// Полпроцента: доли считаются из целых миллисекунд, и точное равенство
+/// поплыло бы от одного лишнего отсчёта на границе отрезка.
+const SAME_ACCURACY: f64 = 0.005;
+
+/// Вердикт отдельно от печати: ветка, видимая только на экране, тестом не
+/// проверяется и снимается потом незамеченной.
+fn judge_sweep(rows: &[(f32, u32, f64)]) -> Sweep {
+    if rows.len() < 2 {
+        return Sweep::TooShort;
+    }
+    if rows.iter().all(|(_, found, _)| *found == rows[0].1) {
+        return Sweep::Stuck(rows[0].1);
+    }
+    let best = rows
+        .iter()
+        .max_by(|a, b| a.2.total_cmp(&b.2))
+        .expect("строки есть");
+    let plateau: Vec<&(f32, u32, f64)> = rows
+        .iter()
+        .filter(|(_, _, accuracy)| best.2 - accuracy <= SAME_ACCURACY)
+        .collect();
+    let middle = plateau[plateau.len() / 2];
+    Sweep::Best {
+        thresholds: plateau.iter().map(|(threshold, ..)| *threshold).collect(),
+        found: middle.1,
+        accuracy: best.2,
+    }
 }
 
 /// Сверить найденные голоса с тем, что человек разметил в Final.
@@ -1261,6 +1736,265 @@ mod tests {
 
         assert!(error.contains("Final"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Порог, который ничего не переставляет, обязан быть назван.
+    ///
+    /// Самая опасная поломка перебора: таблица из семи одинаковых строк
+    /// под разными заголовками выглядит как результат, и «лучший порог»
+    /// из неё был бы взят с потолка.
+    #[test]
+    fn a_threshold_that_does_nothing_is_caught() {
+        let stuck = vec![(0.65, 82, 0.61), (0.75, 82, 0.61), (0.85, 82, 0.61)];
+
+        assert_eq!(judge_sweep(&stuck), Sweep::Stuck(82));
+    }
+
+    /// Лучшим считается порог с наибольшей долей попавших в свой голос,
+    /// а не с наименьшим числом голосов: мало голосов бывает и от того,
+    /// что движок слил всех в одного.
+    #[test]
+    fn the_best_row_is_the_one_that_agrees_most() {
+        let rows = vec![(0.65, 82, 0.61), (0.85, 6, 0.88), (0.95, 1, 0.30)];
+
+        assert_eq!(
+            judge_sweep(&rows),
+            Sweep::Best {
+                thresholds: vec![0.85],
+                found: 6,
+                accuracy: 0.88
+            }
+        );
+    }
+
+    /// Равные результаты — плато, и берётся его середина, а не край.
+    ///
+    /// Край выглядит так же хорошо на **этой** записи и съезжает на
+    /// следующей. Ровно та же ошибка, что была бы с порогом 0.60 на
+    /// контрольных записях: он тоже сходился, но стоял у самого обрыва.
+    #[test]
+    fn equal_results_are_a_plateau_and_the_middle_is_taken() {
+        let rows = vec![
+            (0.65, 6, 0.90),
+            (0.70, 6, 0.90),
+            (0.75, 6, 0.90),
+            (0.90, 1, 0.40),
+        ];
+
+        let Sweep::Best {
+            thresholds, found, ..
+        } = judge_sweep(&rows)
+        else {
+            panic!("плато не найдено");
+        };
+
+        assert_eq!(thresholds, vec![0.65, 0.70, 0.75], "плато обрезано");
+        assert_eq!(found, 6, "число голосов взято не из середины");
+    }
+
+    /// Одна строка — не перебор, и вердикта по ней нет.
+    #[test]
+    fn a_single_row_is_not_a_sweep() {
+        assert_eq!(judge_sweep(&[(0.65, 82, 0.61)]), Sweep::TooShort);
+        assert_eq!(judge_sweep(&[]), Sweep::TooShort);
+    }
+
+    /// Заглушка порога не имеет, и говорит об этом честно: `true` от неё
+    /// заставил бы перебор печатать одно и то же под семью заголовками.
+    #[test]
+    fn an_engine_without_a_threshold_says_so() {
+        assert!(!MockDiarizer::new().set_cluster_threshold(0.8));
+        assert!(!NeverSplits.set_cluster_threshold(0.8));
+    }
+
+    fn sample(truth: &str, vector: Vec<f32>) -> Sample {
+        Sample {
+            truth: truth.to_string(),
+            vector,
+            ms: 1_000,
+        }
+    }
+
+    fn grouped(samples: &[Sample]) -> BTreeMap<&str, Vec<&Sample>> {
+        let mut out: BTreeMap<&str, Vec<&Sample>> = BTreeMap::new();
+        for sample in samples {
+            out.entry(&sample.truth).or_default().push(sample);
+        }
+        out
+    }
+
+    /// **Главный тест всей затеи.** Ни один кусок не идёт и в слепок, и в
+    /// проверку.
+    ///
+    /// Слепок, сложенный по куску, на этом же куске похож на себя почти
+    /// идеально: пересечение дало бы отчёт прекрасный и пустой. Ошибка
+    /// того же рода, что «тест, который может пройти на пустом входе», но
+    /// дороже — там ноль, здесь девяносто процентов.
+    #[test]
+    fn no_sample_is_both_fitted_and_tested() {
+        let samples: Vec<Sample> = (0..10)
+            .map(|index| sample("аня", vec![index as f32, 1.0]))
+            .collect();
+        let grouped = grouped(&samples);
+
+        let (prints, trials) = split(&grouped, &|index, _| index % 2 == 0);
+
+        assert_eq!(prints.len(), 1, "слепок не сложился");
+        assert_eq!(prints[0].1.samples, 5, "в слепок ушло не то число кусков");
+        assert_eq!(trials.len(), 5, "отложено не то число кусков");
+        // Ни один вектор из проверки не должен встречаться среди
+        // обучающих: сравниваем по самим векторам, а не по номерам.
+        let fitted: Vec<&Vec<f32>> = samples
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| index % 2 == 0)
+            .map(|(_, sample)| &sample.vector)
+            .collect();
+        for trial in &trials {
+            assert!(
+                !fitted.contains(&&trial.vector),
+                "кусок {:?} попал и в слепок, и в проверку",
+                trial.vector
+            );
+        }
+    }
+
+    /// Деление идёт внутри человека, а не по общему порядку.
+    ///
+    /// Общий порядок отдал бы одного целиком в обучение, другого целиком
+    /// в проверку, и слепка для второго не оказалось бы вовсе — а таблица
+    /// при этом что-то бы печатала.
+    #[test]
+    fn each_person_gets_both_a_print_and_trials() {
+        let mut samples = Vec::new();
+        for index in 0..6 {
+            samples.push(sample("аня", vec![1.0, index as f32 / 10.0]));
+        }
+        for index in 0..6 {
+            samples.push(sample("боря", vec![0.0, 1.0 + index as f32 / 10.0]));
+        }
+        let grouped = grouped(&samples);
+
+        let (prints, trials) = split(&grouped, &|index, _| index % 2 == 0);
+
+        assert_eq!(prints.len(), 2, "слепок вышел не у каждого: {prints:?}");
+        assert!(
+            trials.iter().any(|t| t.truth == "аня") && trials.iter().any(|t| t.truth == "боря"),
+            "в проверке не все"
+        );
+    }
+
+    /// Заведомо разделимый случай: у каждого свой вектор с малым шумом.
+    /// Слепки обязаны узнать отложенные куски.
+    ///
+    /// Без этого положительного случая «никого не подписали» было бы
+    /// неотличимо от осторожности.
+    #[test]
+    fn clearly_different_voices_are_recognised_on_held_out_samples() {
+        let mut samples = Vec::new();
+        for index in 0..6 {
+            let jitter = index as f32 / 100.0;
+            samples.push(sample("аня", vec![1.0, jitter]));
+            samples.push(sample("боря", vec![jitter, 1.0]));
+        }
+        let grouped = grouped(&samples);
+        let (prints, trials) = split(&grouped, &|index, _| index % 2 == 0);
+        assert_eq!(prints.len(), 2);
+        assert!(!trials.is_empty(), "проверять нечего");
+
+        let named = trials
+            .iter()
+            .filter(|trial| {
+                matches!(
+                    best_match(&trial.vector, &prints, 0.8, MARGIN),
+                    Match::Named { ref name, .. } if *name == trial.truth
+                )
+            })
+            .count();
+
+        assert_eq!(
+            named,
+            trials.len(),
+            "узнаны не все: {named} из {}",
+            trials.len()
+        );
+    }
+
+    /// Заведомо неразделимый случай: у всех один и тот же голос. Никто не
+    /// должен быть подписан — отрыва нет.
+    #[test]
+    fn indistinguishable_voices_are_left_unknown() {
+        let mut samples = Vec::new();
+        for _ in 0..6 {
+            samples.push(sample("аня", vec![1.0, 0.0]));
+            samples.push(sample("боря", vec![1.0, 0.0]));
+        }
+        let grouped = grouped(&samples);
+        let (prints, trials) = split(&grouped, &|index, _| index % 2 == 0);
+        assert_eq!(prints.len(), 2, "слепки не сложились");
+
+        let named = trials
+            .iter()
+            .filter(|trial| {
+                matches!(
+                    best_match(&trial.vector, &prints, 0.5, MARGIN),
+                    Match::Named { .. }
+                )
+            })
+            .count();
+
+        assert_eq!(named, 0, "подписаны {named} кусков при одинаковых голосах");
+    }
+
+    /// Деление «первая треть» идёт внутри каждого человека, а не по
+    /// общему порядку.
+    ///
+    /// Найдено мутацией: перемежающееся деление к этому нечувствительно —
+    /// при любом порядке каждый второй кусок достаётся обучению. А вот
+    /// «первая треть», посчитанная по общему списку, отдала бы её целиком
+    /// первому человеку, и слепка для второго не вышло бы вовсе. Таблица
+    /// при этом печаталась бы как ни в чём не бывало.
+    #[test]
+    fn the_first_third_is_taken_from_each_person_not_from_the_list() {
+        let mut samples = Vec::new();
+        for index in 0..6 {
+            samples.push(sample("аня", vec![1.0, index as f32 / 10.0]));
+        }
+        for index in 0..6 {
+            samples.push(sample("боря", vec![0.0, 1.0 + index as f32 / 10.0]));
+        }
+        let grouped = grouped(&samples);
+
+        let (prints, trials) = split(&grouped, &|index, total| index * 3 < total);
+
+        assert_eq!(
+            prints.len(),
+            2,
+            "слепок вышел не у каждого — треть отрезана по общему списку: {prints:?}"
+        );
+        assert!(
+            prints.iter().all(|(_, print)| print.samples == 2),
+            "в слепок ушла не треть от каждого: {prints:?}"
+        );
+        assert!(
+            trials.iter().any(|t| t.truth == "аня") && trials.iter().any(|t| t.truth == "боря"),
+            "в проверке не все"
+        );
+    }
+
+    /// Первая треть против остального: слепок из начала, проверка по
+    /// концу. Пересечения по-прежнему нет.
+    #[test]
+    fn the_first_third_split_holds_out_the_rest() {
+        let samples: Vec<Sample> = (0..9)
+            .map(|index| sample("аня", vec![1.0, index as f32]))
+            .collect();
+        let grouped = grouped(&samples);
+
+        let (prints, trials) = split(&grouped, &|index, total| index * 3 < total);
+
+        assert_eq!(prints[0].1.samples, 3, "в слепок ушла не треть");
+        assert_eq!(trials.len(), 6, "отложено не две трети");
     }
 
     /// Пустая сессия — отказ, а не отчёт с нулями.

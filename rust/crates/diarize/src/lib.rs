@@ -16,6 +16,7 @@
 
 mod mock;
 mod model_path;
+mod voiceprint;
 
 #[cfg(feature = "model")]
 mod sherpa;
@@ -24,9 +25,10 @@ pub use mock::MockDiarizer;
 pub use model_path::{
     DiarizeModels, EMBEDDING_FILE, SEGMENTATION_FILE, diarize_models_dir, resolve_diarize_models,
 };
+pub use voiceprint::{Match, VoiceEmbedder, VoicePrint, best_match, build_print, similarity};
 
 #[cfg(feature = "model")]
-pub use sherpa::SherpaDiarizer;
+pub use sherpa::{SherpaDiarizer, SherpaEmbedder, voice_embedder};
 
 use std::path::Path;
 
@@ -118,6 +120,17 @@ impl DiarizeReport {
 /// и второй проход в него не влезает.
 pub trait Diarizer {
     fn diarize(&mut self, pcm: &[i16], sample_rate: u32) -> DiarizeReport;
+
+    /// Переставить порог, по которому голоса считаются разными.
+    ///
+    /// `false` — у этого движка порога нет вовсе, и это честный ответ, а
+    /// не отказ: у заглушки его действительно нет. Умолчание врать не
+    /// может по построению — соврало бы `true` без последствий, и
+    /// развёртка по порогу печатала бы одно и то же число под разными
+    /// заголовками.
+    fn set_cluster_threshold(&mut self, _threshold: f32) -> bool {
+        false
+    }
 }
 
 /// Движок по сборке и по тому, что лежит на диске.
