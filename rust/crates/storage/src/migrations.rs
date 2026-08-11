@@ -204,6 +204,21 @@ const STEPS: &[&str] = &[
     "
     ALTER TABLE sessions ADD COLUMN audio_deleted_at_ms INTEGER;
     ",
+    // 12 — откуда правка: рука человека или замена всюду (Epic 19).
+    //
+    // Раньше они были неотличимы, и одно нажатие «заменять всюду»
+    // навсегда закрывало свои позиции от следующих замен: правило
+    // пропуска смотрело на сам факт правки. Признак разделяет две вещи,
+    // которые вести себя должны по-разному — ручную трогать нельзя
+    // ничем, свою собственную замена вправе пересчитать.
+    //
+    // Умолчание `human` для уже лежащих строк выбрано в безопасную
+    // сторону. Среди них есть и массовые, но выдать ручную за массовую —
+    // значит позволить переписать её молча, а массовую за ручную — всего
+    // лишь не тронуть лишнего.
+    "
+    ALTER TABLE segment_edits ADD COLUMN origin TEXT NOT NULL DEFAULT 'human';
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.
@@ -285,6 +300,45 @@ mod tests {
         assert_eq!(
             codec, "pcm_s16le",
             "старая строка описана неверно — её файл прочитают как FLAC"
+        );
+    }
+
+    /// База, заведённая до признака источника, поднимается так, что её
+    /// правки считаются ручными.
+    ///
+    /// Массовые среди них тоже есть, и они станут неприкасаемыми — но
+    /// ошибка в эту сторону стоит лишней несделанной замены, а в
+    /// обратную стоила бы молча переписанной ручной работы.
+    #[test]
+    fn migration_marks_existing_edits_as_human() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        // Схема на шаг раньше признака: последний шаг и есть проверяемый.
+        for (index, step) in STEPS.iter().take(STEPS.len() - 1).enumerate() {
+            conn.execute_batch(step).expect("шаг схемы");
+            conn.execute_batch(&format!("PRAGMA user_version = {}", index + 1))
+                .expect("версия");
+        }
+        conn.execute(
+            "INSERT INTO segment_edits
+             (id, meeting_id, channel, start_ms, end_ms, original_text,
+              edited_text, created_at_ms, applied_version)
+             VALUES ('e1', 'm1', 'mic', 0, 1000, 'интра ру', 'intra.ru', 5, 1)",
+            [],
+        )
+        .expect("строка до миграции");
+
+        migrate(&conn).expect("migrate");
+
+        let origin: String = conn
+            .query_row(
+                "SELECT origin FROM segment_edits WHERE id = 'e1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("origin");
+        assert_eq!(
+            origin, "human",
+            "старая правка описана как массовая — её перепишет первая же замена"
         );
     }
 
