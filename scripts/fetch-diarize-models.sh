@@ -109,5 +109,12 @@ fetch "$SEG_URL/1-two-speakers-en.wav" "$CHECK/2-two-speakers-en.wav"
 fetch "$SEG_URL/0-four-speakers-zh.wav" "$CHECK/4-four-speakers-zh.wav"
 
 echo
-echo "Готово. Прогон:"
-echo "  cd rust && cargo run --release -p meetingraft-diarize-probe --features model -- \"$ROOT\""
+echo "Готово. Дальше — в каталоге rust:"
+echo
+echo "  RUN='cargo run --release -p meetingraft-diarize-probe --features model --'"
+echo "  \$RUN \"$ROOT\"                       # список сессий"
+echo "  \$RUN \"$ROOT\" <сессия> --apply       # подписать встречу по разметке"
+echo "  \$RUN \"$ROOT\" <сессия> --enroll      # насколько подписи верны"
+echo "  \$RUN \"$ROOT\" <сессия> --sweep       # перебрать пороги кластеризации"
+echo
+echo "Вывод стоит сохранять целиком: ... 2>&1 | tee ~/diarize.txt"
