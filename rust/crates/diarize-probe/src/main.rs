@@ -576,8 +576,13 @@ fn apply_prints(
     let accept = accept_threshold();
 
     let mut worked = 0usize;
+    let mut spans: Vec<(AudioChannel, Vec<(u64, u64)>)> = Vec::new();
     for (channel, pcm) in tracks {
         println!("\n  Дорожка {}", channel.code());
+        spans.push((
+            channel,
+            segment_spans(&store, session_id, channel).unwrap_or_default(),
+        ));
         let replies = match read_replies(&store, session_id, channel, embedder, &pcm) {
             Ok(replies) => replies,
             Err(error) => {
@@ -669,10 +674,117 @@ fn apply_prints(
         );
     }
 
+    report_channel_overlap(&spans);
+
     if worked == 0 {
         return Err("подписывать нечем ни на одной дорожке".to_string());
     }
     Ok(())
+}
+
+/// Границы реплик Final по каналу — для сверки каналов между собой.
+fn segment_spans(
+    store: &AudioManifestStore,
+    meeting_id: &str,
+    channel: AudioChannel,
+) -> Result<Vec<(u64, u64)>, String> {
+    let versions = store
+        .list_final_transcripts(meeting_id)
+        .map_err(|error| error.to_string())?;
+    let latest = versions
+        .first()
+        .ok_or_else(|| "у встречи нет собранного Final".to_string())?;
+    Ok(store
+        .list_final_segments(meeting_id, latest.version)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|segment| segment.channel == channel)
+        .map(|segment| (segment.start_ms, segment.end_ms))
+        .collect())
+}
+
+/// Сколько времени два набора отрезков звучат одновременно.
+///
+/// Вынесено отдельно ради теста: величина, живущая только внутри печати,
+/// не проверяется ничем и молча уезжает при первой же правке.
+fn shared_ms(first: &[(u64, u64)], second: &[(u64, u64)]) -> u64 {
+    let mut shared = 0u64;
+    for (from, to) in first {
+        for (other_from, other_to) in second {
+            shared += to.min(other_to).saturating_sub((*from).max(*other_from));
+        }
+    }
+    shared
+}
+
+/// Не одна ли это речь, посчитанная дважды.
+///
+/// Вопрос заведён по живому прогону: на встрече вышло 1276 с речи на
+/// `mic` и 709 с на `system` — 33 минуты на встрече в 22, — и все шестеро
+/// нашлись на обеих дорожках. Либо микрофон слышал динамики, либо каналы
+/// несут один и тот же разговор, и тогда раскладка по людям складывает
+/// одного человека с ним же.
+///
+/// Само по себе пересечение каналов законно: люди перебивают друг друга,
+/// и короткие наложения — норма. Тревожно другое — когда пересечение
+/// **велико по доле**: разговор, где половина времени звучит сразу в двух
+/// каналах, разговором двух каналов не является.
+fn report_channel_overlap(spans: &[(AudioChannel, Vec<(u64, u64)>)]) {
+    if spans.len() < 2 {
+        return;
+    }
+    let (first, second) = (&spans[0], &spans[1]);
+    let total = |segments: &[(u64, u64)]| -> u64 {
+        segments
+            .iter()
+            .map(|(from, to)| to.saturating_sub(*from))
+            .sum()
+    };
+    let (mine, theirs) = (total(&first.1), total(&second.1));
+    if mine == 0 || theirs == 0 {
+        return;
+    }
+
+    let shared = shared_ms(&first.1, &second.1);
+
+    let span = |segments: &[(u64, u64)]| -> u64 {
+        let start = segments.iter().map(|(from, _)| *from).min().unwrap_or(0);
+        let end = segments.iter().map(|(_, to)| *to).max().unwrap_or(0);
+        end.saturating_sub(start)
+    };
+    let wall = span(&first.1).max(span(&second.1));
+
+    println!("\n  Каналы друг относительно друга");
+    println!(
+        "    речи: {} {:.1} с, {} {:.1} с, вместе {:.1} с при длине встречи {:.1} с",
+        first.0.code(),
+        mine as f64 / 1_000.0,
+        second.0.code(),
+        theirs as f64 / 1_000.0,
+        (mine + theirs) as f64 / 1_000.0,
+        wall as f64 / 1_000.0,
+    );
+    println!(
+        "    звучат одновременно {:.1} с — {:.0}% от меньшего канала",
+        shared as f64 / 1_000.0,
+        percent(shared, mine.min(theirs)),
+    );
+
+    // Порог назван вслух и выбран по смыслу, а не по этим данным: половина
+    // — это уже не перебивания, а один разговор в двух каналах.
+    if shared * 2 > mine.min(theirs) {
+        println!(
+            "    ! больше половины меньшего канала звучит и в другом. Это не\n\
+             \x20     перебивания, а один разговор, попавший в обе дорожки: тогда\n\
+             \x20     раскладка по людям выше складывает человека с ним же, а\n\
+             \x20     «канал — источник истины» (ADR-012) на этой встрече не верно"
+        );
+    } else if mine + theirs > wall + wall / 5 {
+        println!(
+            "    ! речи насчиталось заметно больше длины встречи, хотя каналы почти\n\
+             \x20     не пересекаются. Смотреть надо на сами границы Final"
+        );
+    }
 }
 
 /// Прогнать слепки по репликам: сколько времени подписано и кому.
@@ -2430,6 +2542,29 @@ mod tests {
 
         assert_eq!(named, 11_000);
         assert_eq!(per_person[0].1, 11_000, "считались реплики, а не время");
+    }
+
+    /// Пересечение каналов считается по времени, а не по числу отрезков.
+    ///
+    /// Заведомо положительный и заведомо отрицательный случай: полное
+    /// совпадение даёт всю длину, разнесённые отрезки — ноль.
+    #[test]
+    fn overlapping_channels_are_measured_in_time() {
+        let same = vec![(0, 10_000)];
+        assert_eq!(shared_ms(&same, &same), 10_000);
+
+        let apart = vec![(20_000, 30_000)];
+        assert_eq!(shared_ms(&same, &apart), 0);
+
+        // Частичное наложение: 8000..10000.
+        assert_eq!(shared_ms(&same, &[(8_000, 12_000)]), 2_000);
+    }
+
+    /// Касание границами пересечением не является: конец одного отрезка и
+    /// начало другого — ноль, а не отрицательная величина.
+    #[test]
+    fn touching_segments_do_not_overlap() {
+        assert_eq!(shared_ms(&[(0, 5_000)], &[(5_000, 9_000)]), 0);
     }
 
     /// Пустая сессия — отказ, а не отчёт с нулями.
