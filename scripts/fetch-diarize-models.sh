@@ -41,22 +41,44 @@ mkdir -p "$CHECK"
 SEG_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models"
 EMB_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models"
 
+# Рядом с каждым скачанным файлом лежит `.source` с именем того, что в
+# него скачано. Без него смена модели не доезжает ни до кого: файл на
+# месте, скрипт его пропускает, и человек продолжает мерить старой моделью,
+# ничего об этом не зная. Обожглись ровно на этом 2026-08-11 — модель
+# поменяли, а на машине осталась прежняя, и числа замера были не про неё.
 fetch() {
     local url="$1" dest="$2"
+    local want
+    want="$(basename "$url")"
+    local mark="$dest.source"
+
     if [ -f "$dest" ]; then
-        echo "  уже на месте: $(basename "$dest")"
-        return
+        local have=""
+        [ -f "$mark" ] && have="$(cat "$mark")"
+        if [ "$have" = "$want" ]; then
+            echo "  уже на месте: $(basename "$dest") ($want)"
+            return
+        fi
+        if [ -z "$have" ]; then
+            echo "  заменяю: $(basename "$dest") — неизвестно, что в нём, метки нет"
+        else
+            echo "  заменяю: $(basename "$dest") — было $have, нужно $want"
+        fi
+    else
+        echo "  качаю: $(basename "$dest") ($want)"
     fi
-    echo "  качаю: $(basename "$dest")"
+
     curl -fL --progress-bar -o "$dest.part" "$url"
     mv "$dest.part" "$dest"
+    printf '%s' "$want" > "$mark"
 }
 
 echo "Модели -> $DIR"
 
 # Сегментация приезжает архивом; нужен из него один файл.
-if [ ! -f "$DIR/segmentation.onnx" ]; then
-    echo "  качаю: segmentation.onnx"
+SEG_WANT="sherpa-onnx-pyannote-segmentation-3-0"
+if [ ! -f "$DIR/segmentation.onnx" ] || [ "$(cat "$DIR/segmentation.onnx.source" 2>/dev/null)" != "$SEG_WANT" ]; then
+    echo "  качаю: segmentation.onnx ($SEG_WANT)"
     TMP="$(mktemp -d)"
     curl -fL --progress-bar -o "$TMP/seg.tar.bz2" \
         "$SEG_URL/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
@@ -65,9 +87,10 @@ if [ ! -f "$DIR/segmentation.onnx" ]; then
     # подменилась бы молча и разделяла бы хуже, а объяснить расхождение
     # чисел замера было бы нечем.
     mv "$TMP/sherpa-onnx-pyannote-segmentation-3-0/model.onnx" "$DIR/segmentation.onnx"
+    printf '%s' "$SEG_WANT" > "$DIR/segmentation.onnx.source"
     rm -rf "$TMP"
 else
-    echo "  уже на месте: segmentation.onnx"
+    echo "  уже на месте: segmentation.onnx ($SEG_WANT)"
 fi
 
 # CAM++, обученный на китайском и английском. Английский VoxCeleb стоял
