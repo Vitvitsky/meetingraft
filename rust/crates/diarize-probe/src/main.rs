@@ -96,6 +96,8 @@ enum Mode {
     Sweep,
     /// Сложить слепки по разметке и проверить их на отложенной части.
     Enroll,
+    /// Сложить слепки по разметке и прогнать по всем репликам Final.
+    Apply,
 }
 
 /// Движок векторов — или отказ, если собрано без него.
@@ -126,6 +128,9 @@ fn main() -> ExitCode {
         }
         [root, session, flag] if flag == "--enroll" => {
             (Path::new(root), Some(session.as_str()), Mode::Enroll)
+        }
+        [root, session, flag] if flag == "--apply" => {
+            (Path::new(root), Some(session.as_str()), Mode::Apply)
         }
         _ => {
             eprintln!("{USAGE}");
@@ -164,6 +169,10 @@ fn main() -> ExitCode {
             Ok(mut embedder) => enroll(root, id, embedder.as_mut()),
             Err(error) => Err(error),
         },
+        (Some(id), Mode::Apply) => match open_embedder(root) {
+            Ok(mut embedder) => apply_prints(root, id, embedder.as_mut()),
+            Err(error) => Err(error),
+        },
     };
 
     match result {
@@ -186,6 +195,11 @@ const USAGE: &str = "\
                                             — сложить слепки голосов по
                                               разметке и проверить их на
                                               отложенной её части
+  diarize-probe <каталог-данных> <сессия> --apply
+                                            — сложить слепки по разметке и
+                                              прогнать по всем репликам
+                                              Final: сколько встречи
+                                              получит имя
 
 Каталог данных — тот, где лежит meetingraft.sqlite3. Модели и контрольные
 записи кладёт туда scripts/fetch-diarize-models.sh; движок включается
@@ -517,6 +531,229 @@ fn compute_provider() -> String {
 #[cfg(not(feature = "model"))]
 fn compute_provider() -> String {
     "движка нет".to_string()
+}
+
+/// Порог похожести для прогона по встрече.
+///
+/// 0.45 — середина окна, снятого замером на настоящей встрече: при
+/// 0.40…0.50 подписывалось 84…94% отложенного времени **без единой
+/// неверной подписи**, ниже начинали появляться ошибки, выше росло
+/// неопознанное. Переопределяется `MEETINGRAFT_DIARIZE_ACCEPT`.
+fn accept_threshold() -> f32 {
+    std::env::var("MEETINGRAFT_DIARIZE_ACCEPT")
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(0.45)
+}
+
+/// Реплика Final: то, что прогоняется через слепки.
+struct Reply {
+    ms: u64,
+    /// Кого назвал человек; пусто — не размечена.
+    labelled: String,
+    /// Разметку ставил человек поимённо, а не массовое назначение.
+    pinned: bool,
+    vector: Vec<f32>,
+}
+
+/// Сложить слепки по разметке и прогнать по **всем** репликам Final.
+///
+/// То, ради чего всё и затевалось: человек размечает несколько реплик,
+/// остальное подписывается само, неопознанное остаётся неопознанным.
+///
+/// Границы берутся из Final (ADR-011), а не у сегментации: они уже есть,
+/// они точнее и совпадают с тем, что человек видит в транскрипте. Побочно
+/// это снимает вопрос покрытия — оно становится полным по построению, а у
+/// сегментации на этой встрече было 67%.
+fn apply_prints(
+    root: &Path,
+    session_id: &str,
+    embedder: &mut dyn VoiceEmbedder,
+) -> Result<(), String> {
+    let store = AudioManifestStore::open(root).map_err(|error| error.to_string())?;
+    let tracks = tracks(&store, session_id)?;
+    let accept = accept_threshold();
+
+    let mut worked = 0usize;
+    for (channel, pcm) in tracks {
+        println!("\n  Дорожка {}", channel.code());
+        let replies = match read_replies(&store, session_id, channel, embedder, &pcm) {
+            Ok(replies) => replies,
+            Err(error) => {
+                println!("    {error}");
+                continue;
+            }
+        };
+        let fit: Vec<(Vec<f32>, f32)> = replies
+            .iter()
+            .filter(|reply| reply.pinned && !reply.labelled.is_empty())
+            .map(|reply| (reply.vector.clone(), reply.ms as f32 / 1_000.0))
+            .collect();
+        let mut by_name: BTreeMap<&str, Vec<(Vec<f32>, f32)>> = BTreeMap::new();
+        for reply in replies
+            .iter()
+            .filter(|r| r.pinned && !r.labelled.is_empty())
+        {
+            by_name
+                .entry(&reply.labelled)
+                .or_default()
+                .push((reply.vector.clone(), reply.ms as f32 / 1_000.0));
+        }
+        let prints: Vec<(String, VoicePrint)> = by_name
+            .iter()
+            .filter_map(|(name, vectors)| {
+                build_print(vectors).map(|print| ((*name).to_string(), print))
+            })
+            .collect();
+        if prints.len() < 2 {
+            println!(
+                "    слепков вышло {} — размечено слишком мало, подписывать нечем",
+                prints.len()
+            );
+            continue;
+        }
+        worked += 1;
+
+        let total_ms: u64 = replies.iter().map(|reply| reply.ms).sum();
+        println!(
+            "    реплик {}, речи {:.1} с; из них размечено человеком {} на {:.1} с",
+            replies.len(),
+            total_ms as f64 / 1_000.0,
+            fit.len(),
+            fit.iter().map(|(_, seconds)| seconds).sum::<f32>()
+        );
+        println!(
+            "    слепки: {}",
+            prints
+                .iter()
+                .map(|(name, print)| format!("{name} ({} кусков)", print.samples))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        println!("\n     порог  подписано  не опознано");
+        for value in ACCEPT {
+            let (named, _) = run_prints(&replies, &prints, *value);
+            println!(
+                "      {value:.2} {:>9.0}% {:>12.0}%",
+                percent(named, total_ms),
+                percent(total_ms - named, total_ms)
+            );
+        }
+
+        let (named, per_person) = run_prints(&replies, &prints, accept);
+        println!("\n    При пороге {accept:.2} встреча выглядит так:");
+        for (name, ms) in &per_person {
+            println!(
+                "      {name:<24} {:>6.1} с ({:.0}%)",
+                *ms as f64 / 1_000.0,
+                percent(*ms, total_ms)
+            );
+        }
+        println!(
+            "      {:<24} {:>6.1} с ({:.0}%)",
+            "не опознано",
+            (total_ms - named) as f64 / 1_000.0,
+            percent(total_ms - named, total_ms)
+        );
+
+        // Размеченные реплики вошли в слепки, поэтому их совпадение ничего
+        // не измеряет: слепок похож на своё же. Числа выше — про то, какую
+        // часть встречи схема **накрывает**, а не про то, права ли она.
+        // Права ли — отвечает `--enroll` на отложенной части.
+        println!(
+            "\n    Это покрытие, а не точность: размеченные реплики вошли в слепки и\n\
+             \x20   на себя же и похожи. Насколько подписи верны, отвечает --enroll,\n\
+             \x20   где проверка идёт по кускам, которых слепок не видел."
+        );
+    }
+
+    if worked == 0 {
+        return Err("подписывать нечем ни на одной дорожке".to_string());
+    }
+    Ok(())
+}
+
+/// Прогнать слепки по репликам: сколько времени подписано и кому.
+fn run_prints(
+    replies: &[Reply],
+    prints: &[(String, VoicePrint)],
+    accept: f32,
+) -> (u64, Vec<(String, u64)>) {
+    let mut named = 0u64;
+    let mut per_person: BTreeMap<String, u64> = BTreeMap::new();
+    for reply in replies {
+        if let Match::Named { name, .. } = best_match(&reply.vector, prints, accept, MARGIN) {
+            named += reply.ms;
+            *per_person.entry(name).or_default() += reply.ms;
+        }
+    }
+    let mut out: Vec<(String, u64)> = per_person.into_iter().collect();
+    out.sort_by_key(|(_, ms)| std::cmp::Reverse(*ms));
+    (named, out)
+}
+
+/// Все реплики Final последней версии с посчитанными векторами.
+fn read_replies(
+    store: &AudioManifestStore,
+    meeting_id: &str,
+    channel: AudioChannel,
+    embedder: &mut dyn VoiceEmbedder,
+    pcm: &[i16],
+) -> Result<Vec<Reply>, String> {
+    let versions = store
+        .list_final_transcripts(meeting_id)
+        .map_err(|error| error.to_string())?;
+    let latest = versions
+        .first()
+        .ok_or_else(|| "у встречи нет собранного Final".to_string())?;
+    let names: BTreeMap<String, String> = store
+        .list_speakers(meeting_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|speaker| !speaker.display_name.trim().is_empty())
+        .map(|speaker| (speaker.id, speaker.display_name))
+        .collect();
+
+    let segments = store
+        .list_final_segments(meeting_id, latest.version)
+        .map_err(|error| error.to_string())?;
+    let mut out = Vec::new();
+    let mut short = 0usize;
+    for segment in segments.into_iter().filter(|s| s.channel == channel) {
+        let from = (segment.start_ms as usize * RATE as usize / 1_000).min(pcm.len());
+        let to = (segment.end_ms as usize * RATE as usize / 1_000).min(pcm.len());
+        if to <= from {
+            short += 1;
+            continue;
+        }
+        match embedder.embed(&pcm[from..to], RATE) {
+            Ok(vector) => out.push(Reply {
+                ms: segment.end_ms.saturating_sub(segment.start_ms),
+                labelled: names
+                    .get(&segment.speaker_id)
+                    .cloned()
+                    .unwrap_or(segment.speaker_id),
+                pinned: segment.speaker_pinned,
+                vector,
+            }),
+            Err(_) => short += 1,
+        }
+    }
+    if out.is_empty() {
+        return Err(format!(
+            "на этой дорожке нет реплик Final, по которым считается вектор \
+             (слишком коротких — {short})"
+        ));
+    }
+    // Пропуск называется вслух: реплика короче минимума модели вектора не
+    // даёт, и молча выпасть из отчёта она не имеет права — иначе «встреча
+    // подписана на 90%» окажется утверждением про её половину.
+    if short > 0 {
+        println!("    {short} реплик короче, чем нужно модели для вектора — не считаются");
+    }
+    Ok(out)
 }
 
 /// Пороги похожести для проверки слепков.
@@ -2132,6 +2369,67 @@ mod tests {
 
         assert_eq!(prints[0].1.samples, 3, "в слепок ушла не треть");
         assert_eq!(trials.len(), 6, "отложено не две трети");
+    }
+
+    fn reply(labelled: &str, pinned: bool, vector: Vec<f32>, ms: u64) -> Reply {
+        Reply {
+            ms,
+            labelled: labelled.to_string(),
+            pinned,
+            vector,
+        }
+    }
+
+    /// Прогон по всем репликам подписывает похожие и оставляет чужого
+    /// неопознанным.
+    ///
+    /// Заведомо положительный и заведомо отрицательный случай в одном:
+    /// двое своих обязаны получить имена, а третий, чьего слепка нет, —
+    /// остаться без. Без второй половины «подписано 100%» значило бы, что
+    /// схема подписывает всех подряд.
+    #[test]
+    fn a_stranger_without_a_print_stays_unknown() {
+        let prints = vec![
+            (
+                "аня".to_string(),
+                build_print(&[(vec![1.0, 0.0, 0.0], 1.0)]).expect("слепок"),
+            ),
+            (
+                "боря".to_string(),
+                build_print(&[(vec![0.0, 1.0, 0.0], 1.0)]).expect("слепок"),
+            ),
+        ];
+        let replies = vec![
+            reply("аня", true, vec![1.0, 0.05, 0.0], 1_000),
+            reply("боря", true, vec![0.05, 1.0, 0.0], 1_000),
+            // Третий человек: ортогонален обоим слепкам.
+            reply("", false, vec![0.0, 0.0, 1.0], 1_000),
+        ];
+
+        let (named, per_person) = run_prints(&replies, &prints, 0.9);
+
+        assert_eq!(named, 2_000, "подписано не двое: {per_person:?}");
+        assert_eq!(per_person.len(), 2, "чужой получил имя: {per_person:?}");
+        assert!(per_person.iter().all(|(_, ms)| *ms == 1_000));
+    }
+
+    /// Время считается по репликам, а не по их числу: длинная реплика
+    /// весит больше короткой, и отчёт про долю встречи иначе врал бы.
+    #[test]
+    fn time_is_counted_not_replies() {
+        let prints = vec![(
+            "аня".to_string(),
+            build_print(&[(vec![1.0, 0.0], 1.0)]).expect("слепок"),
+        )];
+        let replies = vec![
+            reply("аня", true, vec![1.0, 0.0], 10_000),
+            reply("аня", true, vec![1.0, 0.0], 1_000),
+        ];
+
+        let (named, per_person) = run_prints(&replies, &prints, 0.9);
+
+        assert_eq!(named, 11_000);
+        assert_eq!(per_person[0].1, 11_000, "считались реплики, а не время");
     }
 
     /// Пустая сессия — отказ, а не отчёт с нулями.
