@@ -39,6 +39,17 @@ pub enum SttDiagnosticKind {
     /// пометили своё начало нулём, и любое их сопоставление было смещено
     /// — включая приборы, которые это должны были поймать.
     CaptureChannelSkew,
+    /// Сколько стоил один шаг подъёма захвата.
+    ///
+    /// `text` — имя шага, `buffer_ms` — его цена в миллисекундах. Ноль
+    /// значит «меньше миллисекунды», то есть «не этот шаг».
+    ///
+    /// Заведено под задачу 3 Epic 25: системный канал начинается на
+    /// секунду позже микрофонного, и эта секунда — потерянная запись, а не
+    /// только смещение. Какой именно шаг её съедает, из кода не видно:
+    /// `AudioHardwareCreateProcessTap`, сборка aggregate и `AudioDeviceStart`
+    /// — вызовы в `coreaudiod`, и цена у них не наша. Здесь она и мерится.
+    CaptureStartStep,
 }
 
 impl SttDiagnosticKind {
@@ -51,6 +62,7 @@ impl SttDiagnosticKind {
             Self::SkippedShortSegment => "skipped_short_segment",
             Self::CaptureChannelStart => "capture_channel_start",
             Self::CaptureChannelSkew => "capture_channel_skew",
+            Self::CaptureStartStep => "capture_start_step",
         }
     }
 }
@@ -89,6 +101,7 @@ mod tests {
             SttDiagnosticKind::SkippedShortSegment.code(),
             SttDiagnosticKind::CaptureChannelStart.code(),
             SttDiagnosticKind::CaptureChannelSkew.code(),
+            SttDiagnosticKind::CaptureStartStep.code(),
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(unique.len(), codes.len());

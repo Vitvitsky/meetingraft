@@ -38,6 +38,14 @@ final class AudioCaptureCoordinator {
     /// Начало записи в тиках общих часов: снимается перед запуском первого
     /// источника, поэтому ни один буфер не может быть раньше него.
     private var recordingAnchor: UInt64?
+    /// Когда вернулся `start()` каждого источника, в тиках общих часов.
+    ///
+    /// Отдельно от якоря записи: между «вызов вернулся» и «пришёл первый
+    /// буфер» может лежать своё время, и оно измеряется само по себе.
+    /// Иначе шаги сложатся в сотню миллисекунд при разнице стартов в
+    /// секунду, и остаток окажется приписан неизвестно чему.
+    private var micStartedAt: UInt64?
+    private var systemStartedAt: UInt64?
 
     /// Запрос разрешения вынесен в зависимость: в тестовом бандле
     /// системный промпт недоступен и подвесил бы тест.
@@ -95,6 +103,10 @@ final class AudioCaptureCoordinator {
             return
         }
 
+        // Секундомер с этой точки, а не с начала метода: ожидание
+        // разрешения — время человека, а не наша цена.
+        var timer = CaptureStepTimer(clock: clock)
+
         let id = UUID().uuidString
         let err = core.startRecording(sessionId: id, title: MeetingTitle.forNewMeeting())
         guard err.isEmpty else {
@@ -107,15 +119,22 @@ final class AudioCaptureCoordinator {
         micStartOffsetMs = nil
         systemStartOffsetMs = nil
         recordingAnchor = nil
+        micStartedAt = nil
+        systemStartedAt = nil
         sttBackend = core.sttBackend()
         // До start mic: иначе ранние буферы отбрасываются в ingest.
         isRecording = true
+        timer.step("session_open")
 
         systemAudio.prepare()
         systemAudioAvailable = systemAudio.isAvailable
         systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unknown
         // Пока tap не запущен, микшер не должен ждать системный канал.
         core.setSystemAudioExpected(expected: false)
+        // Разведка создаёт и сразу отпускает tap, и её цена — это цена
+        // ожидания перед записью. Платится она только за первую встречу
+        // после запуска приложения: удачная разведка запоминается.
+        timer.step("system_prepare")
 
         // Начало записи — до запуска первого источника: якорь канала
         // отсчитывается от него, и буфер, записанный раньше собственного
@@ -139,6 +158,8 @@ final class AudioCaptureCoordinator {
             sttBackend = "idle"
             return
         }
+        micStartedAt = clock.now()
+        timer.step("mic_start")
 
         if systemAudioAvailable {
             do {
@@ -152,6 +173,21 @@ final class AudioCaptureCoordinator {
                 systemAudioAvailable = false
                 systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unsupported
             }
+            systemStartedAt = clock.now()
+            timer.step("system_start")
+        }
+
+        logStartSteps(timer.steps)
+    }
+
+    /// Записать замер подъёма захвата в журнал диагностики.
+    ///
+    /// Шаги координатора и шаги самих источников идут одним списком: вопрос
+    /// «куда девается секунда до первого системного буфера» разбирается по
+    /// всей цепочке, а не по её половине.
+    private func logStartSteps(_ steps: [CaptureStartStep]) {
+        for step in steps + microphone.lastStartSteps + systemAudio.lastStartSteps {
+            core.logCaptureStartStep(name: step.name, elapsedMs: step.elapsedMs)
         }
     }
 
@@ -195,6 +231,14 @@ final class AudioCaptureCoordinator {
         inputLevel += (normalized - inputLevel) * Self.levelSmoothing
     }
 
+    /// Имя канала для журнала — то же, каким его знает ядро.
+    private func channelCode(_ channel: FfiAudioChannel) -> String {
+        switch channel {
+        case .mic: "mic"
+        case .system: "system"
+        }
+    }
+
     /// Привязать канал к общему времени по его первому буферу.
     ///
     /// Сдвиг считается от начала записи, а метки чанков внутри канала —
@@ -204,17 +248,29 @@ final class AudioCaptureCoordinator {
     private func anchorIfNeeded(channel: FfiAudioChannel, hostTime: UInt64) {
         guard let recordingAnchor else { return }
         let offset = clock.elapsedMs(from: recordingAnchor, to: hostTime)
+        let startedAt: UInt64?
         switch channel {
         case .mic:
             guard micStartOffsetMs == nil else { return }
             micStartOffsetMs = offset
             micPipeline.anchor(startOffsetMs: offset)
+            startedAt = micStartedAt
         case .system:
             guard systemStartOffsetMs == nil else { return }
             systemStartOffsetMs = offset
             systemPipeline.anchor(startOffsetMs: offset)
+            startedAt = systemStartedAt
         }
         core.logCaptureChannelStart(channel: channel, offsetMs: offset)
+
+        // Последний шаг цепочки, и единственный, который кончается не
+        // возвратом из вызова, а приходом звука.
+        if let startedAt {
+            core.logCaptureStartStep(
+                name: "\(channelCode(channel)):first_buffer",
+                elapsedMs: clock.elapsedMs(from: startedAt, to: hostTime)
+            )
+        }
 
         // Разницу пишем, когда стали известны оба конца — раньше её просто
         // нет.

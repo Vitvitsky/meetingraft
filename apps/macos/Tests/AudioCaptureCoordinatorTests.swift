@@ -8,6 +8,8 @@ private final class FakeTap: AudioTapping {
     var startCalls = 0
     var stopCalls = 0
     var startError: Error?
+    /// Что «источник» отчитался о цене своего подъёма.
+    var lastStartSteps: [CaptureStartStep] = []
 
     private var onSamples: SamplesHandler?
 
@@ -237,6 +239,65 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
                     && $0.contains("\"buffer_ms\":1162")
             },
             "в журнале нет старта системного канала: \(log)"
+        )
+    }
+
+    /// Замер подъёма захвата — целой цепочкой, а не половиной.
+    ///
+    /// Задача 3 Epic 25 спрашивает, какой шаг съедает секунду до первого
+    /// системного буфера. Ответить можно только если в журнале есть все
+    /// звенья: шаги координатора, шаги самого источника и последнее звено —
+    /// ожидание звука, которое не кончается возвратом из вызова.
+    func testStartTimingCoversTheWholeChain() async throws {
+        let core = makeCore()
+        let microphone = FakeTap()
+        let systemAudio = FakeTap(isAvailable: true)
+        // Так отчитался бы настоящий tap: цена сидит в одном шаге.
+        systemAudio.lastStartSteps = [
+            CaptureStartStep(name: "system:create_tap", elapsedMs: 700),
+            CaptureStartStep(name: "system:aggregate", elapsedMs: 30),
+        ]
+        let coordinator = makeCoordinator(
+            microphone: microphone,
+            systemAudio: systemAudio,
+            core: core
+        )
+        await coordinator.startRecording()
+
+        let frames = Int(AudioChunkPipeline.targetSampleRate * 0.1)
+        let samples = Array(repeating: Float(0.1), count: frames)
+        systemAudio.emit(samples, hostTime: hostTime(atMs: 1_162))
+        for _ in 0 ..< 50 where coordinator.systemStartOffsetMs == nil {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        coordinator.stopRecording()
+
+        let log = try String(contentsOfFile: core.diagnosticsLogPath(), encoding: .utf8)
+        let steps = log
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { $0.contains("capture_start_step") }
+        XCTAssertFalse(steps.isEmpty, "шагов нет вовсе — проверять нечего")
+
+        for name in ["session_open", "system_prepare", "mic_start", "system_start"] {
+            XCTAssertTrue(
+                steps.contains { $0.contains("\"text\":\"\(name)\"") },
+                "в цепочке нет шага \(name): \(log)"
+            )
+        }
+        XCTAssertTrue(
+            steps.contains {
+                $0.contains("\"text\":\"system:create_tap\"") && $0.contains("\"buffer_ms\":700")
+            },
+            "замер самого источника не доехал до журнала: \(log)"
+        )
+        // Последнее звено: от возврата из `start()` до первого буфера.
+        // Часы в тесте стоят, поэтому это ровно метка буфера.
+        XCTAssertTrue(
+            steps.contains {
+                $0.contains("\"text\":\"system:first_buffer\"") && $0.contains("\"buffer_ms\":1162")
+            },
+            "ожидание первого буфера не измерено: \(log)"
         )
     }
 }

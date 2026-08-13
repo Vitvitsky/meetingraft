@@ -22,6 +22,7 @@ final class SystemAudioCapture: AudioTapping {
     private var onSamples: SamplesHandler?
     /// Разведка уже проходила успешно — повторять её не нужно.
     private var didProbeSuccessfully = false
+    private(set) var lastStartSteps: [CaptureStartStep] = []
 
     private static let aggregateUid = "com.vitvitsky.meetingraft.aggregate"
 
@@ -72,6 +73,10 @@ final class SystemAudioCapture: AudioTapping {
 
     func start(onSamples: @escaping SamplesHandler) throws {
         stop()
+        // Шаги мерятся всегда: какой из этих вызовов стоит секунду, из кода
+        // не видно — все они уходят в `coreaudiod` (задача 3 Epic 25).
+        var timer = CaptureStepTimer()
+        lastStartSteps = []
 
         let tap: AudioObjectID
         switch createTap() {
@@ -83,12 +88,14 @@ final class SystemAudioCapture: AudioTapping {
             throw CaptureError.unavailable(error)
         }
         tapId = tap
+        timer.step("system:create_tap")
 
         guard let outputUid = Self.defaultOutputDeviceUid() else {
             stop()
             status = .noOutputDevice
             throw CaptureError.unavailable(.noOutputDevice)
         }
+        timer.step("system:output_device")
 
         guard let aggregate = createAggregate(tapId: tap, outputUid: outputUid) else {
             stop()
@@ -96,6 +103,7 @@ final class SystemAudioCapture: AudioTapping {
             throw CaptureError.unavailable(.aggregateFailed)
         }
         aggregateId = aggregate
+        timer.step("system:aggregate")
 
         guard let format = Self.streamFormat(of: aggregate),
               let downmixer = PCMDownmixer(from: format)
@@ -106,6 +114,7 @@ final class SystemAudioCapture: AudioTapping {
         }
         self.downmixer = downmixer
         self.onSamples = onSamples
+        timer.step("system:stream_format")
 
         var procId: AudioDeviceIOProcID?
         let createStatus = AudioDeviceCreateIOProcIDWithBlock(
@@ -121,6 +130,7 @@ final class SystemAudioCapture: AudioTapping {
             throw CaptureError.unavailable(.aggregateFailed)
         }
         ioProcId = procId
+        timer.step("system:io_proc")
 
         let startStatus = AudioDeviceStart(aggregate, procId)
         guard startStatus == noErr else {
@@ -128,9 +138,11 @@ final class SystemAudioCapture: AudioTapping {
             status = .aggregateFailed
             throw CaptureError.unavailable(.aggregateFailed)
         }
+        timer.step("system:device_start")
 
         isAvailable = true
         status = .granted
+        lastStartSteps = timer.steps
         log.info("System audio tap started")
     }
 

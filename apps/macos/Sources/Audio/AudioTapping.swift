@@ -25,6 +25,12 @@ protocol AudioTapping: AnyObject {
     func start(onSamples: @escaping SamplesHandler) throws
 
     func stop()
+
+    /// Во что обошёлся последний `start()`, по шагам.
+    ///
+    /// Здесь, а не в координаторе: цену шага знает только тот, кто его
+    /// делает. Координатору остаётся сложить и записать.
+    var lastStartSteps: [CaptureStartStep] { get }
 }
 
 extension AudioTapping {
@@ -35,4 +41,9 @@ extension AudioTapping {
     }
 
     func prepare() {}
+
+    /// Источник вправе не мериться: тестовые двойники ничего не поднимают.
+    var lastStartSteps: [CaptureStartStep] {
+        []
+    }
 }

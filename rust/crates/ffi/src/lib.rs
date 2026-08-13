@@ -1405,6 +1405,24 @@ impl MeetingCore {
         );
     }
 
+    /// Записать цену одного шага подъёма захвата.
+    ///
+    /// Имя шага придумывает Swift — цену знает только он: все эти вызовы
+    /// уходят в `coreaudiod` и AVFoundation. Ядру число нужно лишь чтобы
+    /// оно не пропало: без журнала замер живёт до конца прогона, а вопрос
+    /// «куда девается секунда в начале встречи» возвращается на каждой.
+    pub fn log_capture_start_step(&self, name: String, elapsed_ms: u64) {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.diagnostics.append(
+            &[SttDiagnostic::new(
+                SttDiagnosticKind::CaptureStartStep,
+                name,
+                elapsed_ms,
+            )],
+            now_ms(),
+        );
+    }
+
     /// Записать разницу стартов двух каналов.
     ///
     /// `later_channel` — тот, что начался позже. Молчать про эту разницу
@@ -3728,6 +3746,42 @@ mod tests {
                 && lines[2].contains("\"buffer_ms\":1150"),
             "разница стартов с числом: {}",
             lines[2]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Цена шага подъёма захвата ложится в журнал с именем и числом.
+    ///
+    /// Ноль тоже ложится, и это не пустая строка: «меньше миллисекунды»
+    /// — ответ «не этот шаг», а пропуск строки был бы отсутствием ответа.
+    #[test]
+    fn capture_start_steps_go_to_the_diagnostics_log() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-steps-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        std::fs::create_dir_all(&root).expect("root");
+
+        core.log_capture_start_step("system:create_tap".to_string(), 712);
+        core.log_capture_start_step("system:output_device".to_string(), 0);
+
+        let log = std::fs::read_to_string(core.diagnostics_log_path()).expect("журнал");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2, "журнал непуст, иначе проверять нечего");
+        assert!(
+            lines[0].contains("\"kind\":\"capture_start_step\"")
+                && lines[0].contains("\"text\":\"system:create_tap\"")
+                && lines[0].contains("\"buffer_ms\":712"),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains("\"buffer_ms\":0"),
+            "дешёвый шаг обязан остаться в журнале: {}",
+            lines[1]
         );
 
         let _ = std::fs::remove_dir_all(&root);

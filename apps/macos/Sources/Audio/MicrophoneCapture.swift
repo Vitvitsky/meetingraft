@@ -25,6 +25,7 @@ final class MicrophoneCapture: AudioTapping {
     private var downmixer: PCMDownmixer?
     private var onSamples: SamplesHandler?
     private let log = Logger(subsystem: "com.vitvitsky.meetingraft", category: "Microphone")
+    private(set) var lastStartSteps: [CaptureStartStep] = []
 
     /// Голосовая обработка включается только явным запросом.
     static var voiceProcessingEnabled: Bool {
@@ -39,6 +40,11 @@ final class MicrophoneCapture: AudioTapping {
     func start(onSamples: @escaping SamplesHandler) throws {
         stop()
         self.onSamples = onSamples
+        // Шаги мерятся всегда, а не под флагом: замер стоит одного вызова
+        // часов, а вопрос «куда девается секунда в начале встречи» иначе
+        // возвращается на каждой встрече без единого числа.
+        var timer = CaptureStepTimer()
+        lastStartSteps = []
 
         let input = engine.inputNode
         // Включать до чтения формата: VPIO меняет формат входа, и
@@ -52,22 +58,28 @@ final class MicrophoneCapture: AudioTapping {
                 NSLog("MeetingRaft: голосовая обработка недоступна (\(error))")
             }
         }
+        timer.step("mic:voice_processing")
         // nil format = hardware format; иначе -10877 / пустой stream.
         let hwFormat = input.inputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
             throw CaptureError.invalidInputFormat
         }
+        timer.step("mic:input_format")
 
         guard let downmixer = PCMDownmixer(from: hwFormat) else {
             throw CaptureError.converterUnavailable
         }
         self.downmixer = downmixer
+        timer.step("mic:downmixer")
 
         engine.prepare()
         input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, when in
             self?.emit(buffer: buffer, when: when)
         }
+        timer.step("mic:install_tap")
         try engine.start()
+        timer.step("mic:engine_start")
+        lastStartSteps = timer.steps
     }
 
     func stop() {
