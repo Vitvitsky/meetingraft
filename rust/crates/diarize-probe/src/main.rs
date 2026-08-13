@@ -676,8 +676,21 @@ fn apply_prints(
         );
     }
 
-    report_channel_overlap(&spans);
-    report_envelope_match(&raw, &track_starts(&store, session_id).unwrap_or_default());
+    // Сведены ли метки каналов: без этого всё, что сравнивает дорожки
+    // между собой, врёт на неизвестную величину (Epic 25). Ошибка чтения
+    // и отсутствие сессии читаются как «не сведены» — сравнение с
+    // предупреждением лучше сравнения без него.
+    let channel_clock_unified = store
+        .channel_clock_unified(session_id)
+        .unwrap_or(None)
+        .unwrap_or(false);
+
+    report_channel_overlap(&spans, channel_clock_unified);
+    report_envelope_match(
+        &raw,
+        &track_starts(&store, session_id).unwrap_or_default(),
+        channel_clock_unified,
+    );
 
     if worked == 0 {
         return Err("подписывать нечем ни на одной дорожке".to_string());
@@ -773,6 +786,29 @@ fn match_by_window(
         .collect()
 }
 
+/// Что сказать про общее время каналов перед их сравнением (Epic 25).
+///
+/// `None` — говорить нечего: метки сведены. Иначе — предупреждение, и
+/// молчать вместо него нельзя. До Epic 25 оба канала помечали своё начало
+/// нулём, разница стартов пропадала (на `6CE19EC5` — 1150 мс), и всякое
+/// число из сравнения дорожек несло эту разницу в себе. Именно так
+/// постоянный сдвиг записи приняли за задержку эха.
+///
+/// Отдельной функцией от печати, чтобы проверялось само решение
+/// говорить или молчать, а не текст на экране.
+fn channel_clock_note(unified: bool) -> Option<String> {
+    if unified {
+        return None;
+    }
+    Some(
+        "    ! метки каналов этой записи не сведены к общему времени (Epic 25).\n\
+         \x20     Разница стартов у неё неизвестна и в числах ниже сидит целиком:\n\
+         \x20     сдвиг — это задержка звука плюс она. Восстановить её нечем;\n\
+         \x20     сравнивать каналы честно можно только на новой записи."
+            .to_string(),
+    )
+}
+
 /// Слышит ли микрофон то же, что системный канал.
 ///
 /// Заведён по разбору 2026-08-13. На `mic` должен был попадать только
@@ -783,7 +819,11 @@ fn match_by_window(
 /// Повторов текстом при этом всего 12%, и это не возражение: копия в
 /// микрофоне глухая, и Whisper распознаёт её **другими словами**. Текст
 /// расходится, звук — нет, и мерить надо звук.
-fn report_envelope_match(raw: &[(AudioChannel, Vec<i16>)], starts: &BTreeMap<String, u64>) {
+fn report_envelope_match(
+    raw: &[(AudioChannel, Vec<i16>)],
+    starts: &BTreeMap<String, u64>,
+    channel_clock_unified: bool,
+) {
     if raw.len() < 2 {
         return;
     }
@@ -809,6 +849,9 @@ fn report_envelope_match(raw: &[(AudioChannel, Vec<i16>)], starts: &BTreeMap<Str
         println!(
             "    дорожки начались с разницей {skew} мс — выровнены по манифесту перед сравнением"
         );
+    }
+    if let Some(note) = channel_clock_note(channel_clock_unified) {
+        println!("{note}");
     }
     println!(
         "    громкость {} и {} совпадает на {value:.2} при сдвиге {lag} мс",
@@ -1153,7 +1196,7 @@ fn shared_ms(first: &[Span], second: &[Span]) -> u64 {
 /// и короткие наложения — норма. Тревожно другое — когда пересечение
 /// **велико по доле**: разговор, где половина времени звучит сразу в двух
 /// каналах, разговором двух каналов не является.
-fn report_channel_overlap(spans: &[(AudioChannel, Vec<Span>)]) {
+fn report_channel_overlap(spans: &[(AudioChannel, Vec<Span>)], unified: bool) {
     if spans.len() < 2 {
         return;
     }
@@ -1178,6 +1221,9 @@ fn report_channel_overlap(spans: &[(AudioChannel, Vec<Span>)]) {
     let wall = span(&first.1).max(span(&second.1));
 
     println!("\n  Каналы друг относительно друга");
+    if let Some(note) = channel_clock_note(unified) {
+        println!("{note}");
+    }
     println!(
         "    речи: {} {:.1} с, {} {:.1} с, вместе {:.1} с при длине встречи {:.1} с",
         first.0.code(),
@@ -3382,6 +3428,45 @@ mod tests {
         let error = tracks(&store, "s1").expect_err("пустая сессия — отказ");
 
         assert!(error.contains("нет чанков"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// О записи без общего времени каналов прибор говорит вслух, о
+    /// сведённой — молчит.
+    ///
+    /// Оба случая вместе: без второго утверждение выполнялось бы и
+    /// предупреждением, которое печатается всегда, — а такое перестают
+    /// читать на второй встрече.
+    #[test]
+    fn an_unaligned_recording_is_flagged_and_an_aligned_one_is_not() {
+        assert_eq!(channel_clock_note(true), None, "лишнее предупреждение");
+
+        let note = channel_clock_note(false).expect("предупреждение обязано быть");
+        assert!(note.contains("не сведены"), "{note}");
+        assert!(
+            note.contains("в числах ниже сидит целиком"),
+            "предупреждение не говорит, что делать с числами: {note}"
+        );
+    }
+
+    /// Свежая запись помечена сведённой самим `begin_session`.
+    ///
+    /// Это заведомо положительный случай к признаку: без него «старая не
+    /// сведена» выполнялось бы и на флаге, который всегда ноль, — и
+    /// предупреждение висело бы на каждой встрече.
+    #[test]
+    fn a_fresh_session_is_marked_as_having_a_common_clock() {
+        let root = tmp_root("clock-flag");
+        let _ = std::fs::remove_dir_all(&root);
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store.begin_session("s1", 0, "проба").expect("session");
+            store.end_session(1_000).expect("end");
+        }
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        assert_eq!(store.channel_clock_unified("s1").expect("флаг"), Some(true));
+        assert_eq!(channel_clock_note(true), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

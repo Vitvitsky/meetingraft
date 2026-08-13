@@ -9,7 +9,7 @@ use domain::{
     GlossaryKind, GlossaryScope, GlossaryTerm, MeetingSummary, SearchHit, SearchHitKind, Speaker,
     SpeechLanguage, edits_by_position,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
 
 /// Ошибки store.
@@ -260,9 +260,13 @@ impl AudioManifestStore {
         started_at_ms: u64,
         title: &str,
     ) -> Result<(), AudioManifestError> {
+        // `channel_clock_unified = 1` ставит сама запись, а не вызывающий:
+        // этот код и есть тот, что сводит каналы к общему времени (Epic 25).
+        // Флагом, приезжающим снаружи, можно было бы соврать; здесь нельзя.
         self.conn.execute(
-            "INSERT OR REPLACE INTO sessions (id, started_at_ms, title, ended_at_ms)
-             VALUES (?1, ?2, ?3, NULL)",
+            "INSERT OR REPLACE INTO sessions
+                 (id, started_at_ms, title, ended_at_ms, channel_clock_unified)
+             VALUES (?1, ?2, ?3, NULL, 1)",
             params![session_id, started_at_ms as i64, title],
         )?;
         for channel in [AudioChannel::Mic, AudioChannel::System] {
@@ -503,6 +507,30 @@ impl AudioManifestStore {
             |row| row.get(0),
         )?;
         Ok(count as u64)
+    }
+
+    /// Сведены ли метки каналов этой записи к общему времени (Epic 25).
+    ///
+    /// `None` — такой сессии в таблице нет; это не то же самое, что
+    /// «не сведены», и путать их нельзя: первое означает «сравнивать
+    /// нечего», второе — «сравнивать можно, но со смещением».
+    ///
+    /// Записи до Epic 25 отвечают `false` навсегда. Восстановить их сдвиг
+    /// нечем, и всё, что сравнивает каналы между собой, обязано на таких
+    /// записях говорить об этом вслух, а не подгонять молча.
+    pub fn channel_clock_unified(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<bool>, AudioManifestError> {
+        let unified: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT channel_clock_unified FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(unified.map(|value| value != 0))
     }
 
     /// Список чанков session.
@@ -2907,6 +2935,41 @@ pub(crate) mod tests {
             assert_eq!(
                 store.read_session_pcm("m1", AudioChannel::System).unwrap(),
                 vec![9]
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Новая запись помечена сведённой, старая — нет, отсутствующая
+    /// отличима от обеих.
+    ///
+    /// Три случая вместе, потому что смысл признака — в их различии.
+    /// Заведомо положительный случай здесь `s-new`: без него утверждение
+    /// «старая не сведена» выполнялось бы и на признаке, который всегда
+    /// ноль.
+    #[test]
+    fn channel_clock_flag_separates_new_recordings_from_old_and_missing() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("s-new", 1, "").unwrap();
+            // Так выглядит запись, сделанная до Epic 25: строка есть,
+            // признака нет.
+            store
+                .conn
+                .execute(
+                    "INSERT INTO sessions (id, started_at_ms, title, channel_clock_unified)
+                     VALUES ('s-old', 1, '', 0)",
+                    [],
+                )
+                .unwrap();
+
+            assert_eq!(store.channel_clock_unified("s-new").unwrap(), Some(true));
+            assert_eq!(store.channel_clock_unified("s-old").unwrap(), Some(false));
+            assert_eq!(
+                store.channel_clock_unified("s-missing").unwrap(),
+                None,
+                "«сессии нет» — не то же, что «не сведена»"
             );
         }
         let _ = fs::remove_dir_all(&root);

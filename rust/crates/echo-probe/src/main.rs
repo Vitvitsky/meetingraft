@@ -159,11 +159,33 @@ fn list_sessions(root: &Path) -> Result<(), String> {
                 .sum()
         };
         let (mic, system) = (frames(AudioChannel::Mic), frames(AudioChannel::System));
-        // Обе дорожки обязательны: детектору нечего сравнивать с одной.
-        let mark = if mic > 0 && system > 0 { "+" } else { " " };
-        println!("  {mark} {} — mic {mic}, system {system}", meeting.id);
+        // Обе дорожки обязательны: детектору нечего сравнивать с одной. И
+        // общее время обязательно: без него сравнение смещено на
+        // неизвестную величину (Epic 25).
+        let unified = store
+            .channel_clock_unified(&meeting.id)
+            .map_err(|error| error.to_string())?
+            .unwrap_or(false);
+        let mark = if mic > 0 && system > 0 && unified {
+            "+"
+        } else {
+            " "
+        };
+        let clock = if unified {
+            ""
+        } else {
+            ", метки каналов не сведены"
+        };
+        println!(
+            "  {mark} {} — mic {mic}, system {system}{clock}",
+            meeting.id
+        );
     }
     println!("\nСтрока с «+» годится для прогона: echo-probe <каталог> <сессия>");
+    println!(
+        "Записи без общего времени каналов прибор не судит вовсе: сдвиг их\n\
+         старта неизвестен, а искать эхо он умеет только в пределах 250 мс."
+    );
     Ok(())
 }
 
@@ -207,6 +229,17 @@ struct Analysis {
 /// можно было проверить тестом. Непроверенная половина прибора — то же
 /// самое, что непроверенный прибор целиком.
 fn analyze(store: &AudioManifestStore, session_id: &str) -> Result<Analysis, String> {
+    // Отказ до чтения дорожек: на записи с несведёнными метками у прибора
+    // нет ответа, и печатать вместо ответа число — хуже, чем не печатать
+    // ничего. Именно так и вышло на `6CE19EC5`: 0.09 приняли за «эха нет»,
+    // а выравнивать было нечем (Epic 25).
+    require_common_clock(
+        store
+            .channel_clock_unified(session_id)
+            .map_err(|error| error.to_string())?,
+        session_id,
+    )?;
+
     let rate = session_sample_rate(store, session_id)?;
     let mut mic = store
         .read_session_pcm(session_id, AudioChannel::Mic)
@@ -247,6 +280,30 @@ fn analyze(store: &AudioManifestStore, session_id: &str) -> Result<Analysis, Str
         offset_ms,
         report: detect_echo(&mic, &system, rate),
     })
+}
+
+/// Годится ли запись для сравнения дорожек между собой (Epic 25).
+///
+/// Отдельной функцией от чтения базы, потому что решение здесь и есть
+/// предмет проверки: до Epic 25 оба канала помечали своё начало нулём, и
+/// выравнивание по манифесту было выравниванием по неправде.
+fn require_common_clock(unified: Option<bool>, session_id: &str) -> Result<(), String> {
+    match unified {
+        Some(true) => Ok(()),
+        // «Сессии нет» и «метки не сведены» — разные отказы. Первый значит
+        // «сравнивать нечего», второй — «сравнивать можно, но со сдвигом
+        // на неизвестную величину».
+        None => Err(format!(
+            "сессии {session_id} нет в базе — сравнивать нечего"
+        )),
+        Some(false) => Err(format!(
+            "метки каналов сессии {session_id} не сведены к общему времени (Epic 25).\n\
+             Прибор не судит: детектор ищет сдвиг в пределах 250 мс, а старт\n\
+             каналов у таких записей расходится на секунды. Величина сдвига\n\
+             нигде не записана, восстановить её нечем, и подогнать дорожки\n\
+             значило бы придумать ответ. Нужна новая запись."
+        )),
+    }
 }
 
 /// На сколько системная дорожка стартовала позже микрофонной, мс.
@@ -486,6 +543,49 @@ mod tests {
             "заведомое эхо не найдено на сохранённых дорожках: {} из {}",
             analysis.report.echo_windows(),
             analysis.report.windows.len()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Запись без общего времени каналов прибор не судит вовсе.
+    ///
+    /// Три случая вместе: без положительного утверждение «отказывает»
+    /// выполнялось бы и функцией, которая отказывает всегда.
+    #[test]
+    fn a_recording_without_a_common_clock_gets_no_verdict() {
+        assert!(require_common_clock(Some(true), "s1").is_ok());
+
+        let old = require_common_clock(Some(false), "s1").expect_err("отказ");
+        assert!(old.contains("не сведены"), "{old}");
+        assert!(old.contains("не судит"), "{old}");
+
+        let missing = require_common_clock(None, "s1").expect_err("отказ");
+        assert!(
+            missing.contains("нет в базе"),
+            "«сессии нет» смешано с «не сведены»: {missing}"
+        );
+    }
+
+    /// Прогон настоящей сессии через guard проходит: `begin_session`
+    /// помечает новую запись сведённой сам.
+    #[test]
+    fn a_fresh_session_passes_the_clock_check() {
+        let root = tmp_root("fresh-clock");
+        let _ = std::fs::remove_dir_all(&root);
+        let seconds = SELF_CHECK_RATE as usize;
+        let system = speechlike(seconds * 8, 1);
+        let mic = echo_of(&system, SELF_CHECK_DELAY, 0.4);
+        seed(&root, "s1", &mic, &system);
+
+        let store = AudioManifestStore::open(&root).expect("store");
+        assert_eq!(
+            store.channel_clock_unified("s1").expect("флаг"),
+            Some(true),
+            "новая запись обязана быть помечена сведённой"
+        );
+        assert!(
+            analyze(&store, "s1").is_ok(),
+            "guard не пустил свежую запись"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
