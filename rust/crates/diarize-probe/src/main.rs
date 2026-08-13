@@ -677,7 +677,7 @@ fn apply_prints(
     }
 
     report_channel_overlap(&spans);
-    report_envelope_match(&raw);
+    report_envelope_match(&raw, &track_starts(&store, session_id).unwrap_or_default());
 
     if worked == 0 {
         return Err("подписывать нечем ни на одной дорожке".to_string());
@@ -687,10 +687,13 @@ fn apply_prints(
 
 /// Насколько сдвиг может уехать при поиске совпадения.
 ///
-/// Полсекунды: сетевая задержка Zoom до динамиков и обратно в микрофон
-/// укладывается в неё с запасом, а дальше начинают случайно совпадать
-/// разные события речи.
-const MAX_ENVELOPE_LAG_MS: u64 = 500;
+/// Было полсекунды — по сетевой задержке Zoom до динамиков и обратно. На
+/// настоящей встрече максимум лёг ровно на край, и это оказался не ответ,
+/// а признак: дорожки начинаются в разное время, и расхождение больше
+/// всего диапазона. Начала теперь выравниваются по манифесту, а запас
+/// оставлен вдвое шире прежнего — на то, что метки чанков сами по себе
+/// не идеальны.
+const MAX_ENVELOPE_LAG_MS: u64 = 1_000;
 
 /// Порог, выше которого совпадение громкости считается одним событием.
 ///
@@ -710,7 +713,7 @@ const SAME_SOUND: f32 = 0.5;
 /// Повторов текстом при этом всего 12%, и это не возражение: копия в
 /// микрофоне глухая, и Whisper распознаёт её **другими словами**. Текст
 /// расходится, звук — нет, и мерить надо звук.
-fn report_envelope_match(raw: &[(AudioChannel, Vec<i16>)]) {
+fn report_envelope_match(raw: &[(AudioChannel, Vec<i16>)], starts: &BTreeMap<String, u64>) {
     if raw.len() < 2 {
         return;
     }
@@ -719,13 +722,37 @@ fn report_envelope_match(raw: &[(AudioChannel, Vec<i16>)]) {
         return;
     }
 
-    let (value, lag) = envelope_match(&first.1, &second.1, RATE, MAX_ENVELOPE_LAG_MS);
+    // Выровнять начала: дорожки пишутся с момента запуска своего
+    // источника, а источники поднимаются не одновременно.
+    let skew = starts
+        .get(second.0.code())
+        .and_then(|theirs| {
+            starts
+                .get(first.0.code())
+                .map(|mine| *theirs as i64 - *mine as i64)
+        })
+        .unwrap_or(0);
+    let (value, lag) = envelope_match(&first.1, &second.1, RATE, MAX_ENVELOPE_LAG_MS, skew);
+
     println!("\n  Звучит ли в одном канале то же, что в другом");
+    if skew != 0 {
+        println!(
+            "    дорожки начались с разницей {skew} мс — выровнены по манифесту перед сравнением"
+        );
+    }
     println!(
         "    громкость {} и {} совпадает на {value:.2} при сдвиге {lag} мс",
         first.0.code(),
         second.0.code(),
     );
+    // Максимум на краю диапазона — не ответ, а признак узкого диапазона.
+    // Тот же капкан, что уже ловили у порога кластеризации.
+    if lag.unsigned_abs() >= MAX_ENVELOPE_LAG_MS {
+        println!(
+            "    ! сдвиг лёг ровно на край поиска — значит настоящий может быть\n\
+             \x20     дальше, и число выше за ответ брать нельзя"
+        );
+    }
 
     if value >= SAME_SOUND {
         println!(
@@ -803,7 +830,13 @@ const ENVELOPE_MS: u64 = 50;
 /// ни попало.
 ///
 /// Возвращает `(корреляция, сдвиг в мс)`.
-fn envelope_match(mic: &[i16], system: &[i16], sample_rate: u32, max_lag_ms: u64) -> (f32, i64) {
+fn envelope_match(
+    mic: &[i16],
+    system: &[i16],
+    sample_rate: u32,
+    max_lag_ms: u64,
+    skew_ms: i64,
+) -> (f32, i64) {
     let step = (sample_rate as u64 * ENVELOPE_MS / 1_000) as usize;
     if step == 0 {
         return (0.0, 0);
@@ -818,10 +851,18 @@ fn envelope_match(mic: &[i16], system: &[i16], sample_rate: u32, max_lag_ms: u64
     };
     let (mine, theirs) = (envelope(mic), envelope(system));
     let max_lag = (max_lag_ms / ENVELOPE_MS) as i64;
+    // Расхождение начал — не тот сдвиг, который ищем: он известен заранее
+    // и вычитается, а поиск идёт вокруг нуля уже по выровненным рядам.
+    //
+    // Знак **вычитается**, и это не мелочь: вторая дорожка, начатая
+    // позже, описывает то же настоящее время меньшим номером кадра.
+    // Прибавление вместо вычитания уводило поиск вдвое дальше от истины,
+    // и поймал это тест на заведомо опоздавшей дорожке.
+    let skew = skew_ms / ENVELOPE_MS as i64;
 
     let mut best = (0.0f32, 0i64);
     for lag in -max_lag..=max_lag {
-        let value = correlation(&mine, &theirs, lag);
+        let value = correlation(&mine, &theirs, lag - skew);
         if value > best.0 {
             best = (value, lag * ENVELOPE_MS as i64);
         }
@@ -1851,6 +1892,31 @@ fn print_report(report: &DiarizeReport, track_ms: u64) {
 }
 
 /// Дорожки сессии целиком, по одной на канал (ADR-006).
+/// Когда каждая дорожка началась — по метке первого чанка канала.
+///
+/// Без этого сравнивать дорожки между собой нельзя, и на этом уже
+/// обжигались: системный tap поднимается позже микрофона, и на встрече
+/// `6CE19EC5` они разошлись на секунду. `echo-probe` из-за этого печатал
+/// «задержка не найдена» там, где эхо могло быть (PR #90). Я повторил ту
+/// же ошибку в корреляции огибающих, и симптом был тот же — максимум лёг
+/// ровно на край диапазона поиска.
+fn track_starts(
+    store: &AudioManifestStore,
+    session_id: &str,
+) -> Result<BTreeMap<String, u64>, String> {
+    let chunks = store
+        .list_chunks(session_id)
+        .map_err(|error| error.to_string())?;
+    let mut out: BTreeMap<String, u64> = BTreeMap::new();
+    for chunk in chunks {
+        let slot = out
+            .entry(chunk.channel.code().to_string())
+            .or_insert(u64::MAX);
+        *slot = (*slot).min(chunk.timestamp_ms);
+    }
+    Ok(out)
+}
+
 fn tracks(
     store: &AudioManifestStore,
     session_id: &str,
@@ -2981,6 +3047,36 @@ mod tests {
         assert_eq!(expected_shared_ms(100, 100, 0), 0);
     }
 
+    /// Речеподобная дорожка: слоги **разной** длины.
+    ///
+    /// Ровное чередование здесь не годится, и это выяснилось падением
+    /// теста: периодический сигнал совпадает сам с собой на множестве
+    /// сдвигов, и стоило расширить диапазон поиска, как «разная речь»
+    /// совпала на 0.67, а сдвинутая копия нашлась не там, где сдвинута.
+    /// Настоящая речь так себя не ведёт — слоги неровные.
+    fn speechlike(seed: u64, rate: usize) -> Vec<i16> {
+        // Длины слогов из простого детерминированного генератора: не
+        // повторяются на всей дорожке вовсе. Циклический список коротких
+        // слогов не годится — он периодичен по самому списку, и тест на
+        // выравнивание находил совпадение на сдвиге, кратном периоду.
+        let mut state = seed;
+        let mut next = |low: usize, high: usize| -> usize {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            low + (state >> 33) as usize % (high - low)
+        };
+        let mut out = Vec::new();
+        let mut loud = true;
+        while out.len() < rate * 6 {
+            let samples = next(60, 400) * rate / 1_000;
+            let level: i16 = if loud { 6_000 } else { 60 };
+            out.extend(std::iter::repeat_n(level, samples));
+            loud = !loud;
+        }
+        out
+    }
+
     /// Заведомо один и тот же звук: та же дорожка, приглушённая и
     /// сдвинутая. Совпадение обязано найтись, и сдвиг — назваться.
     ///
@@ -2989,33 +3085,55 @@ mod tests {
     /// настоящих данных промолчал бы.
     #[test]
     fn the_same_sound_is_found_even_when_quiet_and_late() {
-        // Слоги: громко-тихо по 200 мс, две секунды.
-        let loud: Vec<i16> = (0..32_000)
-            .map(|i| if (i / 3_200) % 2 == 0 { 6_000 } else { 60 })
-            .collect();
+        let loud = speechlike(1, 16_000);
         // Копия впятеро тише, сдвинутая на 100 мс (1600 отсчётов).
         let mut quiet = vec![30i16; 1_600];
         quiet.extend(loud.iter().map(|s| s / 5));
 
-        let (value, lag) = envelope_match(&loud, &quiet, 16_000, MAX_ENVELOPE_LAG_MS);
+        let (value, lag) = envelope_match(&loud, &quiet, 16_000, MAX_ENVELOPE_LAG_MS, 0);
 
         assert!(value >= SAME_SOUND, "тихая копия не найдена: {value:.2}");
         assert_eq!(lag, 100, "сдвиг назван неверно");
+    }
+
+    /// Расхождение начал снимается выравниванием, а не поиском.
+    ///
+    /// Тот же дефект, что был у `echo-probe`: дорожки пишутся с момента
+    /// запуска своего источника, и на настоящей встрече разошлись на
+    /// секунду — больше всего диапазона поиска. Симптом был характерный:
+    /// максимум лёг ровно на край.
+    #[test]
+    fn a_late_track_is_aligned_not_searched() {
+        let loud = speechlike(1, 16_000);
+        // Вторая дорожка начата на 2 секунды позже: в ней тот же звук, но
+        // первых двух секунд нет.
+        let late: Vec<i16> = loud[32_000..].to_vec();
+
+        // Без выравнивания сдвиг в 2000 мс за диапазон не влезает.
+        let (blind, edge) = envelope_match(&loud, &late, 16_000, MAX_ENVELOPE_LAG_MS, 0);
+        assert!(
+            blind < SAME_SOUND || edge.unsigned_abs() >= MAX_ENVELOPE_LAG_MS,
+            "без выравнивания нашлось совпадение {blind:.2} на сдвиге {edge}"
+        );
+
+        // С выравниванием — находится сразу и в нуле.
+        let (aligned, lag) = envelope_match(&loud, &late, 16_000, MAX_ENVELOPE_LAG_MS, 2_000);
+        assert!(
+            aligned >= SAME_SOUND,
+            "выравнивание не помогло: {aligned:.2}"
+        );
+        assert_eq!(lag, 0, "после выравнивания сдвиг обязан быть нулевым");
     }
 
     /// Заведомо разный звук: слоги идут вразнобой. Совпадения быть не
     /// должно, иначе прибор объявит дефектом любой разговор.
     #[test]
     fn different_speech_does_not_look_like_one_sound() {
-        let one: Vec<i16> = (0..32_000)
-            .map(|i| if (i / 3_200) % 2 == 0 { 6_000 } else { 60 })
-            .collect();
-        // Втрое более длинные слоги — те же уровни, другой ритм.
-        let other: Vec<i16> = (0..32_000)
-            .map(|i| if (i / 9_600) % 2 == 0 { 60 } else { 6_000 })
-            .collect();
+        let one = speechlike(1, 16_000);
+        // Тот же набор уровней, другой ритм — как у двух разных людей.
+        let other = speechlike(999, 16_000);
 
-        let (value, _) = envelope_match(&one, &other, 16_000, MAX_ENVELOPE_LAG_MS);
+        let (value, _) = envelope_match(&one, &other, 16_000, MAX_ENVELOPE_LAG_MS, 0);
 
         assert!(
             value < SAME_SOUND,
@@ -3028,12 +3146,10 @@ mod tests {
     #[test]
     fn silence_matches_nothing() {
         let quiet = vec![0i16; 32_000];
-        let speech: Vec<i16> = (0..32_000)
-            .map(|i| if (i / 3_200) % 2 == 0 { 6_000 } else { 60 })
-            .collect();
+        let speech = speechlike(1, 16_000);
 
-        assert_eq!(envelope_match(&quiet, &speech, 16_000, 500).0, 0.0);
-        assert_eq!(envelope_match(&quiet, &quiet, 16_000, 500).0, 0.0);
+        assert_eq!(envelope_match(&quiet, &speech, 16_000, 500, 0).0, 0.0);
+        assert_eq!(envelope_match(&quiet, &quiet, 16_000, 500, 0).0, 0.0);
     }
 
     /// Пустая сессия — отказ, а не отчёт с нулями.
