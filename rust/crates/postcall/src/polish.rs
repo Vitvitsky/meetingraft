@@ -161,7 +161,7 @@ fn split_numbered(line: &str) -> Option<(usize, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use domain::AudioChannel;
+    use domain::{AudioChannel, SpeakerSource};
 
     use super::*;
 
@@ -180,7 +180,7 @@ mod tests {
             end_ms: u64::from(index) * 1000 + 900,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: text.to_string(),
             text_edited: false,
             original_text: String::new(),

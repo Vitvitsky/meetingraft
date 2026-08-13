@@ -14,6 +14,7 @@
 //! говорит другой человек», а не «кого зовут Пётр»: имя ставит человек
 //! (задача 6 плана) либо слепок, включённый осознанно (задача 7).
 
+mod enroll;
 mod mock;
 mod model_path;
 mod voiceprint;
@@ -21,9 +22,13 @@ mod voiceprint;
 #[cfg(feature = "model")]
 mod sherpa;
 
+pub use enroll::{
+    Assignment, DEFAULT_ACCEPT, DEFAULT_MARGIN, EnrollPlan, Reply, plan as plan_enrollment,
+};
 pub use mock::MockDiarizer;
 pub use model_path::{
-    DiarizeModels, EMBEDDING_FILE, SEGMENTATION_FILE, diarize_models_dir, resolve_diarize_models,
+    DiarizeModels, EMBEDDING_FILE, SEGMENTATION_FILE, diarize_models_dir, embedding_model_id,
+    resolve_diarize_models,
 };
 pub use voiceprint::{Match, VoiceEmbedder, VoicePrint, best_match, build_print, similarity};
 

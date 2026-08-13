@@ -235,6 +235,46 @@ const STEPS: &[&str] = &[
     "
     ALTER TABLE sessions ADD COLUMN channel_clock_unified INTEGER NOT NULL DEFAULT 0;
     ",
+    // 14 — источник подписи говорящего и слепки голоса (ADR-013).
+    //
+    // `speaker_pinned` был булевым «поставлено рукой», и его хватало на
+    // два источника. Со слепками их три, порядок между ними жёсткий
+    // (человек → канал → слепок), и булевым он не выражается.
+    //
+    // **Старым строкам источник не угадывается, а выводится точно.**
+    // Признак и был ровно тем, чем стал бы `human`, а непустое имя без
+    // него могло появиться только массовым назначением по каналу —
+    // третьего пути записи в схеме не существовало. Поэтому здесь нет
+    // умолчания «в безопасную сторону», как в шаге 12: там выбор был
+    // между двумя возможными правдами, здесь правда одна.
+    //
+    // Помеченная строка становится `human` независимо от имени: пустое
+    // имя при поднятом признаке — это человек, снявший подпись, и защиту
+    // от перезаписи он заслужил ровно так же, как поставивший её.
+    //
+    // Старый столбец уносится тем же шагом. Оставить его значило бы
+    // держать два источника истины про одно и то же — рассинхрон
+    // молчаливый, база о нём не скажет, а поймается он тогда же, когда и
+    // всё такое: месяцы спустя, на чьей-то потерянной правке.
+    "
+    ALTER TABLE final_segments ADD COLUMN speaker_source TEXT NOT NULL DEFAULT '';
+    UPDATE final_segments SET speaker_source = 'human'
+        WHERE speaker_pinned = 1;
+    UPDATE final_segments SET speaker_source = 'channel'
+        WHERE speaker_pinned = 0 AND speaker_id <> '';
+    ALTER TABLE final_segments DROP COLUMN speaker_pinned;
+
+    CREATE TABLE IF NOT EXISTS voiceprints (
+        meeting_id TEXT NOT NULL,
+        speaker_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        vector BLOB NOT NULL,
+        samples INTEGER NOT NULL,
+        seconds REAL NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (meeting_id, speaker_id)
+    );
+    ",
 ];
 
 /// Версия схемы, к которой приводит полный набор шагов.
@@ -492,6 +532,88 @@ mod tests {
             has_column(&conn, "artifacts", "source_fingerprint"),
             "артефакты остались без source_fingerprint"
         );
+    }
+
+    /// Поднять базу до версии 13 — состояния, в котором сегменты ещё
+    /// помечены булевым `speaker_pinned`.
+    fn migrate_to_version_13(conn: &Connection) {
+        for (index, step) in STEPS.iter().enumerate().take(13) {
+            conn.execute_batch(step)
+                .unwrap_or_else(|error| panic!("шаг {} не применился: {error}", index + 1));
+        }
+        conn.execute_batch("PRAGMA user_version = 13")
+            .expect("версия 13");
+    }
+
+    /// Источник подписи у старых строк **выводится**, а не угадывается:
+    /// помеченная рукой становится `human`, непустое имя без пометки —
+    /// `channel`, отсутствие имени — отсутствием источника.
+    ///
+    /// Соврав здесь в сторону `channel`, мы отдали бы ручную работу под
+    /// перезапись первым же массовым назначением — молча и навсегда.
+    #[test]
+    fn migration_derives_the_label_source_of_existing_segments() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        migrate_to_version_13(&conn);
+        for (idx, speaker, pinned) in [
+            (0_i64, "", 0_i64),
+            (1, "sp-anna", 0),
+            (2, "sp-peter", 1),
+            // Человек снял подпись: имя пусто, но признак поднят.
+            (3, "", 1),
+        ] {
+            conn.execute(
+                "INSERT INTO final_segments
+                 (meeting_id, version, idx, start_ms, end_ms, channel, speaker_id,
+                  speaker_pinned, text)
+                 VALUES ('m1', 1, ?1, 0, 100, 'mic', ?2, ?3, 'реплика')",
+                rusqlite::params![idx, speaker, pinned],
+            )
+            .expect("строка версии 13");
+        }
+
+        migrate(&conn).expect("миграция 14");
+
+        let mut statement = conn
+            .prepare("SELECT idx, speaker_source FROM final_segments ORDER BY idx")
+            .expect("запрос");
+        let sources: Vec<(i64, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("чтение")
+            .map(|row| row.expect("строка"))
+            .collect();
+        assert_eq!(
+            sources,
+            vec![
+                (0, String::new()),
+                (1, "channel".to_owned()),
+                (2, "human".to_owned()),
+                (3, "human".to_owned()),
+            ]
+        );
+    }
+
+    /// Старого столбца после миграции быть не должно: два признака про
+    /// одно и то же разъезжаются молча, и база об этом не скажет.
+    #[test]
+    fn migration_takes_the_old_pinned_column_away() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        migrate_to_version_13(&conn);
+
+        migrate(&conn).expect("миграция 14");
+
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('final_segments')")
+            .expect("pragma")
+            .query_map([], |row| row.get(0))
+            .expect("чтение")
+            .map(|row| row.expect("строка"))
+            .collect();
+        assert!(
+            !columns.iter().any(|name| name == "speaker_pinned"),
+            "столбец остался: {columns:?}"
+        );
+        assert!(columns.iter().any(|name| name == "speaker_source"));
     }
 
     #[test]

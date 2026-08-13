@@ -61,9 +61,105 @@ pub fn resolve_diarize_models(data_root: impl AsRef<Path>) -> Result<DiarizeMode
     ))
 }
 
+/// Отпечаток модели эмбеддинга: по чему судить, сравнимы ли слепки.
+///
+/// Считается **по содержимому файла**, а не по его имени. Имя здесь врёт
+/// по построению: `embedding.onnx` называется так и до, и после замены
+/// модели, и ровно на этом обожглись однажды — скрипт пропускал уже
+/// лежащий файл, английская модель осталась вместо многоязычной, и замер
+/// шёл прежней, ничего об этом не сказав. «Файл уже есть» и «файл тот,
+/// который нужен» — разные утверждения.
+///
+/// Метка `.source`, заведённая тем же разбором, читается рядом и идёт в
+/// ответ для человека, но решает не она: метку можно потерять, а
+/// содержимое — нет.
+///
+/// Ошибка — когда файла нет вовсе. Пустой строки этот вызов не отдаёт:
+/// пустой идентификатор сравнялся бы с пустым у другой модели, и слепки
+/// разных моделей молча признались бы сравнимыми.
+pub fn embedding_model_id(data_root: impl AsRef<Path>) -> Result<String, String> {
+    let path = diarize_models_dir(data_root).join(EMBEDDING_FILE);
+    let bytes = std::fs::read(&path)
+        .map_err(|error| format!("модель {} не читается: {error}", path.display()))?;
+
+    // FNV-1a: нужен различающий отпечаток, а не криптография.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in &bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
+    let marker = std::fs::read_to_string(path.with_extension("onnx.source"))
+        .ok()
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty());
+    Ok(match marker {
+        Some(name) => format!("{name}:{hash:016x}"),
+        None => format!("{hash:016x}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Отпечаток обязан меняться вместе с содержимым файла: на этом
+    /// стоит всё правило «векторы разных моделей несравнимы».
+    ///
+    /// Заведомо положительный случай идёт первым: тот же файл — тот же
+    /// отпечаток. Без него проверка «отличается» выполнялась бы и у
+    /// функции, отдающей каждый раз новое число.
+    #[test]
+    fn the_model_id_follows_the_file_contents() {
+        let root = tmp_root("model-id");
+        let dir = diarize_models_dir(&root);
+        std::fs::create_dir_all(&dir).expect("каталог");
+        let embedding = dir.join(EMBEDDING_FILE);
+        std::fs::write(&embedding, b"english model").expect("файл");
+
+        let first = embedding_model_id(&root).expect("отпечаток");
+        assert_eq!(first, embedding_model_id(&root).expect("повтор"));
+
+        std::fs::write(&embedding, b"multilingual model").expect("замена");
+        let second = embedding_model_id(&root).expect("отпечаток после замены");
+
+        assert_ne!(
+            first, second,
+            "замена модели прошла незамеченной — тот самый дефект скрипта"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Имя файла не меняется при замене модели, и метка `.source` тоже
+    /// может остаться прежней — она пишется скриптом, а модель мог
+    /// положить и человек. Отпечаток обязан разойтись всё равно.
+    #[test]
+    fn the_model_id_does_not_trust_the_source_marker_alone() {
+        let root = tmp_root("model-id-marker");
+        let dir = diarize_models_dir(&root);
+        std::fs::create_dir_all(&dir).expect("каталог");
+        std::fs::write(dir.join(EMBEDDING_FILE), b"one").expect("файл");
+        std::fs::write(dir.join("embedding.onnx.source"), "cam++").expect("метка");
+        let first = embedding_model_id(&root).expect("отпечаток");
+
+        std::fs::write(dir.join(EMBEDDING_FILE), b"another").expect("замена");
+        let second = embedding_model_id(&root).expect("отпечаток");
+
+        assert!(
+            first.starts_with("cam++:"),
+            "метка не попала в ответ: {first}"
+        );
+        assert_ne!(first, second);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Модели нет — отказ, а не пустая строка. Пустой идентификатор
+    /// сравнялся бы с пустым у другой модели.
+    #[test]
+    fn a_missing_model_has_no_id_at_all() {
+        let root = tmp_root("model-id-missing");
+        assert!(embedding_model_id(&root).is_err());
+    }
 
     fn tmp_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

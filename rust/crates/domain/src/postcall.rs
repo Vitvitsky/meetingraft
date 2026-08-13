@@ -88,6 +88,75 @@ impl TranscriptSegment {
     }
 }
 
+/// Откуда у реплики взялось имя говорящего (ADR-013).
+///
+/// Порядок здесь не декоративный: человек сильнее канала, канал сильнее
+/// слепка. Каждый шаг подписи обязан спрашивать источник **до** того, как
+/// писать своё имя, иначе автоматика молча затирает ручную работу — ровно
+/// то, ради чего в Phase 11 заводился `speaker_pinned`.
+///
+/// Отдельным значением стоит и отсутствие подписи. Неопознанная реплика —
+/// законный исход, а не отсутствие данных: при слепках ошибка идёт именно
+/// в отказ, и отличать «никто не подписал» от «подписал канал» нужно и
+/// коду, и человеку.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpeakerSource {
+    /// Никто: реплика неопознана.
+    #[default]
+    None,
+    /// Канал захвата (ADR-012).
+    Channel,
+    /// Человек назначил вручную.
+    Human,
+    /// Слепок голоса (ADR-013).
+    VoicePrint,
+}
+
+impl SpeakerSource {
+    /// Код для хранения и границы UniFFI.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::Channel => "channel",
+            Self::Human => "human",
+            Self::VoicePrint => "voiceprint",
+        }
+    }
+
+    /// Разбор кода; неизвестное значение считается отсутствием подписи.
+    ///
+    /// Сюда же попадает пустая строка. Выбор в сторону «никто» осознан:
+    /// незнакомый код от будущей версии лучше показать неопознанным, чем
+    /// выдать за ручную работу и тем защитить от перезаписи.
+    pub fn from_code(code: &str) -> Self {
+        match code {
+            "channel" => Self::Channel,
+            "human" => Self::Human,
+            "voiceprint" => Self::VoicePrint,
+            _ => Self::None,
+        }
+    }
+
+    /// Вправе ли `writer` переписать подпись этого источника.
+    ///
+    /// Единственное место, где записан порядок человек → канал → слепок.
+    /// Разложенное по вызовам сравнение разъехалось бы: в ядре три пути
+    /// подписи, и каждый решал бы заново.
+    pub fn may_overwrite(self, writer: SpeakerSource) -> bool {
+        match self {
+            // Неопознанное берёт кто угодно, в том числе повторно.
+            Self::None => true,
+            // Ручное не трогает ничто, кроме руки.
+            Self::Human => writer == Self::Human,
+            // Канал перебивается рукой и пересчётом самого канала, но не
+            // слепком: слепок уточняет там, где канал промолчал.
+            Self::Channel => writer != Self::VoicePrint,
+            // Слепок уступает всем, включая следующий пересчёт слепков.
+            Self::VoicePrint => true,
+        }
+    }
+}
+
 /// Сегмент финального транскрипта: текст с положением во времени и
 /// каналом. В отличие от live, канал здесь известен точно — post-call
 /// распознаёт дорожки раздельно (ADR-009).
@@ -100,12 +169,12 @@ pub struct FinalSegment {
     pub channel: AudioChannel,
     /// Пусто, пока спикер не назначен.
     pub speaker_id: String,
-    /// Спикер поставлен человеком вручную.
+    /// Откуда взялась подпись (ADR-013).
     ///
-    /// Массовое назначение по каналу такие сегменты не трогает: иначе
-    /// исправление одной реплики терялось бы при следующем назначении, и
-    /// заметить это было бы нечем.
-    pub speaker_pinned: bool,
+    /// Раньше здесь стоял булев `speaker_pinned` — «поставлено рукой», — и
+    /// его хватало ровно на два источника. Со слепками их три, и порядок
+    /// между ними жёсткий; булевым он не выражается.
+    pub speaker_source: SpeakerSource,
     pub text: String,
     /// Текст заменён ручной правкой из журнала (Epic 19).
     ///
@@ -332,9 +401,65 @@ pub fn body_fingerprint(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactKind, EditOrigin, FinalSegment, SegmentEdit, body_fingerprint, edits_by_position,
+        ArtifactKind, EditOrigin, FinalSegment, SegmentEdit, SpeakerSource, body_fingerprint,
+        edits_by_position,
     };
     use crate::AudioChannel;
+
+    /// Ради этого признак и заводился: автоматика не смеет трогать
+    /// поставленное рукой. До ADR-013 это держал `speaker_pinned`, и
+    /// потерять правило при замене булева на перечисление было бы
+    /// откатом Phase 11.
+    #[test]
+    fn nothing_but_a_human_overwrites_a_human_label() {
+        assert!(!SpeakerSource::Human.may_overwrite(SpeakerSource::Channel));
+        assert!(!SpeakerSource::Human.may_overwrite(SpeakerSource::VoicePrint));
+        assert!(SpeakerSource::Human.may_overwrite(SpeakerSource::Human));
+    }
+
+    /// Слепок уточняет там, где канал промолчал, и только там. Иначе на
+    /// звонке один на один — случае, где канал точен абсолютно
+    /// (ADR-012), — модель переписывала бы верное на вероятное.
+    #[test]
+    fn a_voiceprint_fills_the_gaps_but_does_not_argue_with_the_channel() {
+        assert!(SpeakerSource::None.may_overwrite(SpeakerSource::VoicePrint));
+        assert!(!SpeakerSource::Channel.may_overwrite(SpeakerSource::VoicePrint));
+    }
+
+    /// Пересчёт обязан переписывать собственную прошлую работу: иначе
+    /// первый прогон с плохим слепком остался бы навсегда, и кнопка
+    /// «пересчитать» ничего бы не пересчитывала.
+    #[test]
+    fn each_source_may_redo_its_own_work() {
+        for source in [
+            SpeakerSource::None,
+            SpeakerSource::Channel,
+            SpeakerSource::Human,
+            SpeakerSource::VoicePrint,
+        ] {
+            assert!(
+                source.may_overwrite(source),
+                "источник {source:?} обязан переписывать сам себя"
+            );
+        }
+    }
+
+    /// Незнакомый код — от базы, тронутой более новой версией. Считать
+    /// его ручной подписью значило бы защитить от перезаписи то, о чём
+    /// мы ничего не знаем.
+    #[test]
+    fn an_unknown_code_reads_as_no_label() {
+        assert_eq!(SpeakerSource::from_code("nonsense"), SpeakerSource::None);
+        assert_eq!(SpeakerSource::from_code(""), SpeakerSource::None);
+        for source in [
+            SpeakerSource::None,
+            SpeakerSource::Channel,
+            SpeakerSource::Human,
+            SpeakerSource::VoicePrint,
+        ] {
+            assert_eq!(SpeakerSource::from_code(source.code()), source);
+        }
+    }
 
     #[test]
     fn fingerprint_is_stable_for_the_same_text() {
@@ -415,7 +540,7 @@ mod tests {
             end_ms: 2000,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: "интра ру".into(),
             text_edited: false,
             original_text: String::new(),

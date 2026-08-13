@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn edit_overrides_segment_text_of_its_version() {
-        use domain::FinalSegment;
+        use domain::{FinalSegment, SpeakerSource};
 
         let mut store = AudioManifestStore::open(tmp_root()).expect("store");
         store
@@ -248,7 +248,7 @@ mod tests {
                     end_ms: 2000,
                     channel: AudioChannel::Mic,
                     speaker_id: String::new(),
-                    speaker_pinned: false,
+                    speaker_source: SpeakerSource::None,
                     text: "интра ру".into(),
                     text_edited: false,
                     original_text: String::new(),
@@ -274,7 +274,7 @@ mod tests {
                     end_ms: 2000,
                     channel: AudioChannel::Mic,
                     speaker_id: String::new(),
-                    speaker_pinned: false,
+                    speaker_source: SpeakerSource::None,
                     text: "интра ру".into(),
                     text_edited: false,
                     original_text: String::new(),
@@ -296,7 +296,7 @@ mod tests {
     /// порядку выборки, а не времени правки.
     #[test]
     fn edit_collision_on_same_position_prefers_the_latest_by_created_at() {
-        use domain::FinalSegment;
+        use domain::{FinalSegment, SpeakerSource};
 
         let mut store = AudioManifestStore::open(tmp_root()).expect("store");
         store
@@ -309,7 +309,7 @@ mod tests {
                     end_ms: 2000,
                     channel: AudioChannel::Mic,
                     speaker_id: String::new(),
-                    speaker_pinned: false,
+                    speaker_source: SpeakerSource::None,
                     text: "интра ру".into(),
                     text_edited: false,
                     original_text: String::new(),
@@ -374,7 +374,7 @@ mod tests {
     /// ищет по ключу «канал, начало, конец», её не найдёт никогда.
     #[test]
     fn moved_edit_lands_on_the_segment_of_the_new_version() {
-        use domain::FinalSegment;
+        use domain::{FinalSegment, SpeakerSource};
 
         let mut store = AudioManifestStore::open(tmp_root()).expect("store");
         store
@@ -387,7 +387,7 @@ mod tests {
                     end_ms: 2100,
                     channel: AudioChannel::Mic,
                     speaker_id: String::new(),
-                    speaker_pinned: false,
+                    speaker_source: SpeakerSource::None,
                     text: "интра ру".into(),
                     text_edited: false,
                     original_text: String::new(),

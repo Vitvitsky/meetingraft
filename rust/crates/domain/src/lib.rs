@@ -16,11 +16,11 @@ pub use glossary::{GlossaryKind, GlossaryScope, GlossaryTerm};
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use postcall::{
     Artifact, ArtifactKind, EditOrigin, EditPosition, FinalSegment, FinalTranscript,
-    MeetingSummary, SearchHit, SearchHitKind, SegmentEdit, TranscriptSegment, body_fingerprint,
-    edits_by_position,
+    MeetingSummary, SearchHit, SearchHitKind, SegmentEdit, SpeakerSource, TranscriptSegment,
+    body_fingerprint, edits_by_position,
 };
 pub use session::SessionState;
-pub use speaker::Speaker;
+pub use speaker::{Speaker, StoredVoicePrint};
 
 /// Версия доменного крейта; используется smoke-тестом сборки.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
