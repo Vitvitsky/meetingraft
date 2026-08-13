@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Foundation
+import OSLog
 
 /// Захват микрофона через AVAudioEngine → 16 kHz Float mono callbacks.
 ///
@@ -22,7 +23,9 @@ import Foundation
 final class MicrophoneCapture: AudioTapping {
     private let engine = AVAudioEngine()
     private var downmixer: PCMDownmixer?
-    private var onSamples: (([Float]) -> Void)?
+    private var onSamples: SamplesHandler?
+    private let log = Logger(subsystem: "com.vitvitsky.meetingraft", category: "Microphone")
+    private(set) var lastStartSteps: [CaptureStartStep] = []
 
     /// Голосовая обработка включается только явным запросом.
     static var voiceProcessingEnabled: Bool {
@@ -34,9 +37,14 @@ final class MicrophoneCapture: AudioTapping {
     }
 
     /// Старт tap на input. `onSamples` вызывается off-main.
-    func start(onSamples: @escaping ([Float]) -> Void) throws {
+    func start(onSamples: @escaping SamplesHandler) throws {
         stop()
         self.onSamples = onSamples
+        // Шаги мерятся всегда, а не под флагом: замер стоит одного вызова
+        // часов, а вопрос «куда девается секунда в начале встречи» иначе
+        // возвращается на каждой встрече без единого числа.
+        var timer = CaptureStepTimer()
+        lastStartSteps = []
 
         let input = engine.inputNode
         // Включать до чтения формата: VPIO меняет формат входа, и
@@ -50,22 +58,28 @@ final class MicrophoneCapture: AudioTapping {
                 NSLog("MeetingRaft: голосовая обработка недоступна (\(error))")
             }
         }
+        timer.step("mic:voice_processing")
         // nil format = hardware format; иначе -10877 / пустой stream.
         let hwFormat = input.inputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
             throw CaptureError.invalidInputFormat
         }
+        timer.step("mic:input_format")
 
         guard let downmixer = PCMDownmixer(from: hwFormat) else {
             throw CaptureError.converterUnavailable
         }
         self.downmixer = downmixer
+        timer.step("mic:downmixer")
 
         engine.prepare()
-        input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
-            self?.emit(buffer: buffer)
+        input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, when in
+            self?.emit(buffer: buffer, when: when)
         }
+        timer.step("mic:install_tap")
         try engine.start()
+        timer.step("mic:engine_start")
+        lastStartSteps = timer.steps
     }
 
     func stop() {
@@ -79,11 +93,27 @@ final class MicrophoneCapture: AudioTapping {
         onSamples = nil
     }
 
-    private func emit(buffer: AVAudioPCMBuffer) {
+    private func emit(buffer: AVAudioPCMBuffer, when: AVAudioTime) {
         guard let downmixer, let onSamples else { return }
         let samples = downmixer.convert(buffer)
         guard !samples.isEmpty else { return }
-        onSamples(samples)
+        onSamples(samples, hostTime(of: when))
+    }
+
+    /// Момент записи буфера в тиках общих часов.
+    ///
+    /// `hostTime` у tap'а на входе валиден всегда, но проверка стоит
+    /// дёшево, а её отсутствие — нет: невалидный ноль уехал бы в метку
+    /// начала канала и вернул бы ту самую разницу стартов, ради которой
+    /// эти часы и появились. Отказ виден в логе, подмена времени
+    /// приёма — честная и худшая из двух: она запаздывает на длину
+    /// буфера, зато не врёт на секунду.
+    private func hostTime(of when: AVAudioTime) -> UInt64 {
+        guard when.isHostTimeValid else {
+            log.error("у буфера микрофона нет hostTime — метка канала взята по времени приёма")
+            return HostClock.system.now()
+        }
+        return when.hostTime
     }
 
     enum CaptureError: Error {

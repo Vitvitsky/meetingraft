@@ -82,7 +82,9 @@ The backend handles long-running and heavy post-call processing.
 - пословная диффа Live против Final для вкладки Compare
 - атрибуция говорящих по каналам (ADR-012): спикер заводится на канал,
   назначается массово и правится точечно; ручная правка переживает
-  переназначение канала
+  переназначение канала. На встрече через динамики канал источником истины
+  не является, и там атрибуция отказывается, а не подписывает владельцем
+  (ADR-014)
 - upload or finalize raw audio artifact
 - assign speakers
 - generate artifacts from templates: built-in (brief, follow-up email,

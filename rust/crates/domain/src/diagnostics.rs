@@ -26,6 +26,30 @@ pub enum SttDiagnosticKind {
     /// возможность распознать очень короткое «да». Потеря должна быть
     /// видимой — молчаливая здесь хуже.
     SkippedShortSegment,
+    /// Канал захвата привязан к общему времени записи.
+    ///
+    /// `text` — код канала, `buffer_ms` — насколько его первый буфер
+    /// позже начала записи.
+    CaptureChannelStart,
+    /// Разница стартов двух каналов.
+    ///
+    /// `text` — какой канал начался позже, `buffer_ms` — на сколько.
+    /// Пишется обязательно: молча эта разница уже раз стоила недели
+    /// разбора. На встрече `6CE19EC5` каналы разошлись на 1150 мс, оба
+    /// пометили своё начало нулём, и любое их сопоставление было смещено
+    /// — включая приборы, которые это должны были поймать.
+    CaptureChannelSkew,
+    /// Сколько стоил один шаг подъёма захвата.
+    ///
+    /// `text` — имя шага, `buffer_ms` — его цена в миллисекундах. Ноль
+    /// значит «меньше миллисекунды», то есть «не этот шаг».
+    ///
+    /// Заведено под задачу 3 Epic 25: системный канал начинается на
+    /// секунду позже микрофонного, и эта секунда — потерянная запись, а не
+    /// только смещение. Какой именно шаг её съедает, из кода не видно:
+    /// `AudioHardwareCreateProcessTap`, сборка aggregate и `AudioDeviceStart`
+    /// — вызовы в `coreaudiod`, и цена у них не наша. Здесь она и мерится.
+    CaptureStartStep,
 }
 
 impl SttDiagnosticKind {
@@ -36,6 +60,9 @@ impl SttDiagnosticKind {
             Self::ReleasedHeld => "released_held",
             Self::DroppedNoSpeech => "dropped_no_speech",
             Self::SkippedShortSegment => "skipped_short_segment",
+            Self::CaptureChannelStart => "capture_channel_start",
+            Self::CaptureChannelSkew => "capture_channel_skew",
+            Self::CaptureStartStep => "capture_start_step",
         }
     }
 }
@@ -72,6 +99,9 @@ mod tests {
             SttDiagnosticKind::ReleasedHeld.code(),
             SttDiagnosticKind::DroppedNoSpeech.code(),
             SttDiagnosticKind::SkippedShortSegment.code(),
+            SttDiagnosticKind::CaptureChannelStart.code(),
+            SttDiagnosticKind::CaptureChannelSkew.code(),
+            SttDiagnosticKind::CaptureStartStep.code(),
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(unique.len(), codes.len());

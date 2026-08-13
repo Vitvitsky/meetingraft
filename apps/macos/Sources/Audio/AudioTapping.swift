@@ -6,6 +6,14 @@ import Foundation
 /// системный process tap юнит-тестами не покрыть, поэтому в тестах
 /// подставляются фейки.
 protocol AudioTapping: AnyObject {
+    /// Порция сэмплов и момент её записи в тиках `mach_absolute_time`.
+    ///
+    /// Момент нужен потому, что счётчик кадров канала не знает, когда
+    /// канал начался: оба канала считали бы от своего нуля, а стартуют
+    /// они с разницей около секунды. Общее время — только из этих тиков
+    /// (см. `HostClock`).
+    typealias SamplesHandler = (_ samples: [Float], _ hostTime: UInt64) -> Void
+
     /// Готов ли источник отдавать звук. Для системного tap зависит от
     /// разрешения и версии macOS, поэтому проверяется после `prepare()`.
     var isAvailable: Bool { get }
@@ -14,9 +22,15 @@ protocol AudioTapping: AnyObject {
     func prepare()
 
     /// `onSamples` вызывается off-main, 16 kHz mono Float32.
-    func start(onSamples: @escaping ([Float]) -> Void) throws
+    func start(onSamples: @escaping SamplesHandler) throws
 
     func stop()
+
+    /// Во что обошёлся последний `start()`, по шагам.
+    ///
+    /// Здесь, а не в координаторе: цену шага знает только тот, кто его
+    /// делает. Координатору остаётся сложить и записать.
+    var lastStartSteps: [CaptureStartStep] { get }
 }
 
 extension AudioTapping {
@@ -27,4 +41,9 @@ extension AudioTapping {
     }
 
     func prepare() {}
+
+    /// Источник вправе не мериться: тестовые двойники ничего не поднимают.
+    var lastStartSteps: [CaptureStartStep] {
+        []
+    }
 }

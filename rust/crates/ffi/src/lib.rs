@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryKind,
     GlossaryScope, GlossaryTerm, LanguagePolicy, MeetingSummary, SearchHit, SessionState, Speaker,
-    SpeechLanguage, body_fingerprint, edits_by_position,
+    SpeechLanguage, SttDiagnostic, SttDiagnosticKind, body_fingerprint, edits_by_position,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
@@ -424,6 +424,14 @@ fn transcribe_frames(
         .iter()
         .flat_map(|frame| pipeline.push_frame(&frame.pcm, sample_rate, frame.dominant))
         .collect()
+}
+
+/// Канал захвата из Swift в домен.
+fn domain_channel(channel: FfiAudioChannel) -> AudioChannel {
+    match channel {
+        FfiAudioChannel::Mic => AudioChannel::Mic,
+        FfiAudioChannel::System => AudioChannel::System,
+    }
 }
 
 /// Записать в журнал то, что движок выбросил или придержал.
@@ -1378,6 +1386,57 @@ impl MeetingCore {
     pub fn clear_diagnostics_log(&self) {
         let guard = self.inner.lock().expect("meeting core poisoned");
         guard.diagnostics.clear();
+    }
+
+    /// Записать, когда канал захвата начался относительно начала записи.
+    ///
+    /// Swift знает эти числа и больше никто: якоря живут в его часах
+    /// (`mach_absolute_time` первого буфера каждого канала). Ядру они
+    /// нужны только для журнала — метки чанков приходят уже сведёнными.
+    pub fn log_capture_channel_start(&self, channel: FfiAudioChannel, offset_ms: u64) {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.diagnostics.append(
+            &[SttDiagnostic::new(
+                SttDiagnosticKind::CaptureChannelStart,
+                domain_channel(channel).code(),
+                offset_ms,
+            )],
+            now_ms(),
+        );
+    }
+
+    /// Записать цену одного шага подъёма захвата.
+    ///
+    /// Имя шага придумывает Swift — цену знает только он: все эти вызовы
+    /// уходят в `coreaudiod` и AVFoundation. Ядру число нужно лишь чтобы
+    /// оно не пропало: без журнала замер живёт до конца прогона, а вопрос
+    /// «куда девается секунда в начале встречи» возвращается на каждой.
+    pub fn log_capture_start_step(&self, name: String, elapsed_ms: u64) {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.diagnostics.append(
+            &[SttDiagnostic::new(
+                SttDiagnosticKind::CaptureStartStep,
+                name,
+                elapsed_ms,
+            )],
+            now_ms(),
+        );
+    }
+
+    /// Записать разницу стартов двух каналов.
+    ///
+    /// `later_channel` — тот, что начался позже. Молчать про эту разницу
+    /// нельзя: она уже раз стоила недели разбора (Epic 25).
+    pub fn log_capture_channel_skew(&self, later_channel: FfiAudioChannel, skew_ms: u64) {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.diagnostics.append(
+            &[SttDiagnostic::new(
+                SttDiagnosticKind::CaptureChannelSkew,
+                domain_channel(later_channel).code(),
+                skew_ms,
+            )],
+            now_ms(),
+        );
     }
 
     /// Спикеры встречи в пользовательском порядке.
@@ -2442,10 +2501,7 @@ impl MeetingCore {
         timestamp_ms: u64,
     ) -> String {
         let mut guard = self.inner.lock().expect("meeting core poisoned");
-        let domain_channel = match channel {
-            FfiAudioChannel::Mic => AudioChannel::Mic,
-            FfiAudioChannel::System => AudioChannel::System,
-        };
+        let domain_channel = domain_channel(channel);
         {
             let Some(store) = guard.store.as_mut() else {
                 return "recording not started".to_string();
@@ -3652,6 +3708,81 @@ mod tests {
         core.set_diagnostics_log_enabled(false);
         assert!(!core.is_diagnostics_log_enabled());
         assert_eq!(core.diagnostics_log_size_bytes(), 0, "прошлое тоже стёрто");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Разница стартов каналов обязана попадать в журнал с числом.
+    ///
+    /// Проверяется заведомо непустым журналом: пустой файл выполнил бы
+    /// любое утверждение «нет строки не про то», и тест прошёл бы, ничего
+    /// не проверив.
+    #[test]
+    fn capture_channel_clock_goes_to_the_diagnostics_log() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-clock-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        std::fs::create_dir_all(&root).expect("root");
+
+        core.log_capture_channel_start(FfiAudioChannel::Mic, 12);
+        core.log_capture_channel_start(FfiAudioChannel::System, 1_162);
+        core.log_capture_channel_skew(FfiAudioChannel::System, 1_150);
+
+        let log = std::fs::read_to_string(core.diagnostics_log_path()).expect("журнал");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 3, "журнал непуст, иначе проверять нечего");
+        assert!(
+            lines[1].contains("\"kind\":\"capture_channel_start\"")
+                && lines[1].contains("\"buffer_ms\":1162")
+                && lines[1].contains("\"text\":\"system\""),
+            "старт канала с числом: {}",
+            lines[1]
+        );
+        assert!(
+            lines[2].contains("\"kind\":\"capture_channel_skew\"")
+                && lines[2].contains("\"buffer_ms\":1150"),
+            "разница стартов с числом: {}",
+            lines[2]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Цена шага подъёма захвата ложится в журнал с именем и числом.
+    ///
+    /// Ноль тоже ложится, и это не пустая строка: «меньше миллисекунды»
+    /// — ответ «не этот шаг», а пропуск строки был бы отсутствием ответа.
+    #[test]
+    fn capture_start_steps_go_to_the_diagnostics_log() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-steps-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        std::fs::create_dir_all(&root).expect("root");
+
+        core.log_capture_start_step("system:create_tap".to_string(), 712);
+        core.log_capture_start_step("system:output_device".to_string(), 0);
+
+        let log = std::fs::read_to_string(core.diagnostics_log_path()).expect("журнал");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2, "журнал непуст, иначе проверять нечего");
+        assert!(
+            lines[0].contains("\"kind\":\"capture_start_step\"")
+                && lines[0].contains("\"text\":\"system:create_tap\"")
+                && lines[0].contains("\"buffer_ms\":712"),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains("\"buffer_ms\":0"),
+            "дешёвый шаг обязан остаться в журнале: {}",
+            lines[1]
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
