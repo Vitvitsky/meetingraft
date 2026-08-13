@@ -51,11 +51,11 @@ final class AudioChunkPipelineTests: XCTestCase {
     /// разошедшиеся на 1150 мс, выглядели одновременными.
     func testAnchorShiftsEveryTimestampWithoutTouchingFrames() {
         var pipeline = AudioChunkPipeline()
-        pipeline.anchor(startOffsetMs: 1_150)
+        pipeline.anchor(startOffsetMs: 1150)
         let chunks = pipeline.push(samples: Array(repeating: Float(0.2), count: framesPerChunk * 3))
 
         XCTAssertEqual(chunks.count, 3, "вход непуст, иначе проверять нечего")
-        XCTAssertEqual(chunks.map { $0.timestampMs() }, [1_150, 1_250, 1_350])
+        XCTAssertEqual(chunks.map { $0.timestampMs() }, [1150, 1250, 1350])
         XCTAssertEqual(
             chunks.map(\.startFrame),
             (0 ..< 3).map { UInt64($0 * framesPerChunk) },
@@ -66,7 +66,7 @@ final class AudioChunkPipelineTests: XCTestCase {
     /// Непривязанный канал — это ноль, а не мусор от прошлой записи.
     func testResetDropsAnchor() {
         var pipeline = AudioChunkPipeline()
-        pipeline.anchor(startOffsetMs: 1_150)
+        pipeline.anchor(startOffsetMs: 1150)
         _ = pipeline.push(samples: Array(repeating: Float(0.2), count: framesPerChunk))
         pipeline.reset()
 

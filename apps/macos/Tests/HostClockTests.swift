@@ -12,11 +12,11 @@ final class HostClockTests: XCTestCase {
     func testSystemClockMeasuresRealInterval() {
         let clock = HostClock.system
         let started = clock.now()
-        usleep(50_000)
+        usleep(50000)
         let elapsed = clock.elapsedMs(from: started, to: clock.now())
 
         XCTAssertGreaterThanOrEqual(elapsed, 40, "пауза 50 мс не может измериться нулём")
-        XCTAssertLessThan(elapsed, 5_000, "и не может измериться секундами")
+        XCTAssertLessThan(elapsed, 5000, "и не может измериться секундами")
     }
 
     /// Множитель `mach_timebase_info` обязан применяться: на Apple Silicon
@@ -24,12 +24,12 @@ final class HostClockTests: XCTestCase {
     func testAppliesTimebaseMultiplier() {
         // 125/3 — Apple Silicon. Секунда = 24 000 000 тиков.
         let clock = HostClock(numerator: 125, denominator: 3, now: { 0 })
-        XCTAssertEqual(clock.elapsedMs(from: 0, to: 24_000_000), 1_000)
-        XCTAssertEqual(clock.elapsedMs(from: 1_000_000, to: 25_000_000), 1_000)
+        XCTAssertEqual(clock.elapsedMs(from: 0, to: 24_000_000), 1000)
+        XCTAssertEqual(clock.elapsedMs(from: 1_000_000, to: 25_000_000), 1000)
 
         // 1/1 — Intel, тик равен наносекунде.
         let intel = HostClock(numerator: 1, denominator: 1, now: { 0 })
-        XCTAssertEqual(intel.elapsedMs(from: 0, to: 1_150_000_000), 1_150)
+        XCTAssertEqual(intel.elapsedMs(from: 0, to: 1_150_000_000), 1150)
     }
 
     /// Обратный порядок даёт ноль, а не переполнение UInt64.

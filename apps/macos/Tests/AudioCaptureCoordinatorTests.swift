@@ -177,21 +177,21 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
         let frames = Int(AudioChunkPipeline.targetSampleRate * 0.1)
         let samples = Array(repeating: Float(0.1), count: frames)
         microphone.emit(samples, hostTime: hostTime(atMs: 12))
-        systemAudio.emit(samples, hostTime: hostTime(atMs: 1_162))
+        systemAudio.emit(samples, hostTime: hostTime(atMs: 1162))
         await waitForChunks(coordinator)
         for _ in 0 ..< 50 where coordinator.systemStartOffsetMs == nil {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
 
         XCTAssertEqual(coordinator.micStartOffsetMs, 12)
-        XCTAssertEqual(coordinator.systemStartOffsetMs, 1_162, "разница стартов — 1150 мс")
+        XCTAssertEqual(coordinator.systemStartOffsetMs, 1162, "разница стартов — 1150 мс")
 
         // Привязка одноразовая: дальше метки идут от кадров, иначе внутри
         // канала появилось бы дрожание часов. Ждём именно роста счётчика:
         // без него утверждение выполнялось бы просто потому, что второй
         // буфер ещё не дошёл.
         let processed = coordinator.chunkCount
-        microphone.emit(samples, hostTime: hostTime(atMs: 9_000))
+        microphone.emit(samples, hostTime: hostTime(atMs: 9000))
         for _ in 0 ..< 50 where coordinator.chunkCount == processed {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -220,7 +220,7 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
         let frames = Int(AudioChunkPipeline.targetSampleRate * 0.1)
         let samples = Array(repeating: Float(0.1), count: frames)
         microphone.emit(samples, hostTime: hostTime(atMs: 12))
-        systemAudio.emit(samples, hostTime: hostTime(atMs: 1_162))
+        systemAudio.emit(samples, hostTime: hostTime(atMs: 1162))
         for _ in 0 ..< 50 where coordinator.systemStartOffsetMs == nil {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -266,7 +266,7 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
 
         let frames = Int(AudioChunkPipeline.targetSampleRate * 0.1)
         let samples = Array(repeating: Float(0.1), count: frames)
-        systemAudio.emit(samples, hostTime: hostTime(atMs: 1_162))
+        systemAudio.emit(samples, hostTime: hostTime(atMs: 1162))
         for _ in 0 ..< 50 where coordinator.systemStartOffsetMs == nil {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }

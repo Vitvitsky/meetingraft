@@ -41,7 +41,7 @@ final class CaptureStepTimerTests: XCTestCase {
         XCTAssertEqual(timer.steps, [
             CaptureStartStep(name: "create_tap", elapsedMs: 5),
             CaptureStartStep(name: "aggregate", elapsedMs: 7),
-            CaptureStartStep(name: "device_start", elapsedMs: 1_000),
+            CaptureStartStep(name: "device_start", elapsedMs: 1000),
         ])
     }
 
