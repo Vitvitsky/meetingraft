@@ -576,7 +576,7 @@ fn apply_prints(
     let accept = accept_threshold();
 
     let mut worked = 0usize;
-    let mut spans: Vec<(AudioChannel, Vec<(u64, u64)>)> = Vec::new();
+    let mut spans: Vec<(AudioChannel, Vec<Span>)> = Vec::new();
     for (channel, pcm) in tracks {
         println!("\n  Дорожка {}", channel.code());
         spans.push((
@@ -682,12 +682,20 @@ fn apply_prints(
     Ok(())
 }
 
-/// Границы реплик Final по каналу — для сверки каналов между собой.
+/// Реплика для сверки каналов: границы и текст.
+#[derive(Debug, Clone)]
+pub struct Span {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+
+/// Границы и текст реплик Final по каналу — для сверки каналов.
 fn segment_spans(
     store: &AudioManifestStore,
     meeting_id: &str,
     channel: AudioChannel,
-) -> Result<Vec<(u64, u64)>, String> {
+) -> Result<Vec<Span>, String> {
     let versions = store
         .list_final_transcripts(meeting_id)
         .map_err(|error| error.to_string())?;
@@ -699,19 +707,90 @@ fn segment_spans(
         .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|segment| segment.channel == channel)
-        .map(|segment| (segment.start_ms, segment.end_ms))
+        .map(|segment| Span {
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            text: segment.text,
+        })
         .collect())
 }
+
+/// Насколько два текста — один и тот же.
+///
+/// Доля общих слов от большего множества. Не по буквам и не точным
+/// равенством: распознавание одного и того же звука дважды даёт почти
+/// одинаковый текст, но редко буква в букву — разойдётся пунктуация,
+/// заглавная буква, одно слово из десяти.
+fn text_likeness(first: &str, second: &str) -> f32 {
+    let words = |text: &str| -> Vec<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let (mut mine, mut theirs) = (words(first), words(second));
+    if mine.is_empty() || theirs.is_empty() {
+        return 0.0;
+    }
+    mine.sort();
+    mine.dedup();
+    theirs.sort();
+    theirs.dedup();
+
+    let shared = mine.iter().filter(|word| theirs.contains(word)).count();
+    shared as f32 / mine.len().max(theirs.len()) as f32
+}
+
+/// Реплики, у которых на другой дорожке есть почти такая же и в то же
+/// время.
+///
+/// Отвечает на вопрос, который со временем звучания не совпадает.
+/// Пересечение по времени означало бы, что **звук** попал в оба канала —
+/// дефект захвата. Одинаковый текст в одно и то же время означает, что
+/// одно и то же **распознано дважды**, и это может быть как следствием
+/// первого, так и артефактом распознавания. Различить их можно только
+/// имея обе величины рядом.
+///
+/// Возвращает число таких реплик и их суммарную длительность.
+fn doubled_text(first: &[Span], second: &[Span], likeness: f32) -> (usize, u64) {
+    let mut count = 0usize;
+    let mut ms = 0u64;
+    for one in first {
+        let doubled = second.iter().any(|other| {
+            let overlap = one
+                .end_ms
+                .min(other.end_ms)
+                .saturating_sub(one.start_ms.max(other.start_ms));
+            overlap > 0 && text_likeness(&one.text, &other.text) >= likeness
+        });
+        if doubled {
+            count += 1;
+            ms += one.end_ms.saturating_sub(one.start_ms);
+        }
+    }
+    (count, ms)
+}
+
+/// Насколько похожими считаются два текста, чтобы счесть их одним.
+///
+/// 0.8 — восемь общих слов из десяти. Ниже начинают склеиваться разные
+/// реплики на общую тему, выше — не ловится расхождение в одно слово,
+/// а распознавание одного звука дважды буква в букву совпадает редко.
+const SAME_TEXT: f32 = 0.8;
 
 /// Сколько времени два набора отрезков звучат одновременно.
 ///
 /// Вынесено отдельно ради теста: величина, живущая только внутри печати,
 /// не проверяется ничем и молча уезжает при первой же правке.
-fn shared_ms(first: &[(u64, u64)], second: &[(u64, u64)]) -> u64 {
+fn shared_ms(first: &[Span], second: &[Span]) -> u64 {
     let mut shared = 0u64;
-    for (from, to) in first {
-        for (other_from, other_to) in second {
-            shared += to.min(other_to).saturating_sub((*from).max(*other_from));
+    for one in first {
+        for other in second {
+            shared += one
+                .end_ms
+                .min(other.end_ms)
+                .saturating_sub(one.start_ms.max(other.start_ms));
         }
     }
     shared
@@ -729,15 +808,15 @@ fn shared_ms(first: &[(u64, u64)], second: &[(u64, u64)]) -> u64 {
 /// и короткие наложения — норма. Тревожно другое — когда пересечение
 /// **велико по доле**: разговор, где половина времени звучит сразу в двух
 /// каналах, разговором двух каналов не является.
-fn report_channel_overlap(spans: &[(AudioChannel, Vec<(u64, u64)>)]) {
+fn report_channel_overlap(spans: &[(AudioChannel, Vec<Span>)]) {
     if spans.len() < 2 {
         return;
     }
     let (first, second) = (&spans[0], &spans[1]);
-    let total = |segments: &[(u64, u64)]| -> u64 {
+    let total = |segments: &[Span]| -> u64 {
         segments
             .iter()
-            .map(|(from, to)| to.saturating_sub(*from))
+            .map(|span| span.end_ms.saturating_sub(span.start_ms))
             .sum()
     };
     let (mine, theirs) = (total(&first.1), total(&second.1));
@@ -747,9 +826,9 @@ fn report_channel_overlap(spans: &[(AudioChannel, Vec<(u64, u64)>)]) {
 
     let shared = shared_ms(&first.1, &second.1);
 
-    let span = |segments: &[(u64, u64)]| -> u64 {
-        let start = segments.iter().map(|(from, _)| *from).min().unwrap_or(0);
-        let end = segments.iter().map(|(_, to)| *to).max().unwrap_or(0);
+    let span = |segments: &[Span]| -> u64 {
+        let start = segments.iter().map(|s| s.start_ms).min().unwrap_or(0);
+        let end = segments.iter().map(|s| s.end_ms).max().unwrap_or(0);
         end.saturating_sub(start)
     };
     let wall = span(&first.1).max(span(&second.1));
@@ -768,6 +847,30 @@ fn report_channel_overlap(spans: &[(AudioChannel, Vec<(u64, u64)>)]) {
         "    звучат одновременно {:.1} с — {:.0}% от меньшего канала",
         shared as f64 / 1_000.0,
         percent(shared, mine.min(theirs)),
+    );
+
+    // Две разные величины, и путать их нельзя. Общее время означает, что
+    // звук попал в оба канала. Одинаковый текст в это же время означает,
+    // что одно и то же распознано дважды. Первое — дефект захвата, второе
+    // может быть и его следствием, и артефактом распознавания.
+    let (doubled_here, doubled_ms) = doubled_text(&first.1, &second.1, SAME_TEXT);
+    let (doubled_there, _) = doubled_text(&second.1, &first.1, SAME_TEXT);
+    println!(
+        "    повторено текстом: {} реплик из {} на {} ({:.0}%) и {} из {} на {} ({:.0}%)",
+        doubled_here,
+        first.1.len(),
+        first.0.code(),
+        percent(doubled_here as u64, first.1.len() as u64),
+        doubled_there,
+        second.1.len(),
+        second.0.code(),
+        percent(doubled_there as u64, second.1.len() as u64),
+    );
+    println!(
+        "    это {:.1} с — {:.0}% речи канала {}",
+        doubled_ms as f64 / 1_000.0,
+        percent(doubled_ms, mine),
+        first.0.code(),
     );
 
     // Порог назван вслух и выбран по смыслу, а не по этим данным: половина
@@ -2550,21 +2653,91 @@ mod tests {
     /// совпадение даёт всю длину, разнесённые отрезки — ноль.
     #[test]
     fn overlapping_channels_are_measured_in_time() {
-        let same = vec![(0, 10_000)];
+        let same = vec![span(0, 10_000, "речь")];
         assert_eq!(shared_ms(&same, &same), 10_000);
 
-        let apart = vec![(20_000, 30_000)];
+        let apart = vec![span(20_000, 30_000, "речь")];
         assert_eq!(shared_ms(&same, &apart), 0);
 
         // Частичное наложение: 8000..10000.
-        assert_eq!(shared_ms(&same, &[(8_000, 12_000)]), 2_000);
+        assert_eq!(shared_ms(&same, &[span(8_000, 12_000, "речь")]), 2_000);
     }
 
     /// Касание границами пересечением не является: конец одного отрезка и
     /// начало другого — ноль, а не отрицательная величина.
     #[test]
     fn touching_segments_do_not_overlap() {
-        assert_eq!(shared_ms(&[(0, 5_000)], &[(5_000, 9_000)]), 0);
+        assert_eq!(
+            shared_ms(&[span(0, 5_000, "речь")], &[span(5_000, 9_000, "речь")]),
+            0
+        );
+    }
+
+    fn span(start_ms: u64, end_ms: u64, text: &str) -> Span {
+        Span {
+            start_ms,
+            end_ms,
+            text: text.to_string(),
+        }
+    }
+
+    /// Похожесть текстов считается по словам, а не по буквам: одно и то же
+    /// распознанное дважды расходится пунктуацией и словом из десяти.
+    #[test]
+    fn the_same_phrase_recognised_twice_reads_as_the_same() {
+        assert!(
+            text_likeness("Давайте начнём, коллеги", "давайте начнем коллеги") >= 0.6,
+            "{}",
+            text_likeness("Давайте начнём, коллеги", "давайте начнем коллеги")
+        );
+        assert!(text_likeness("совершенно другая реплика", "давайте начнём") < 0.2);
+        assert_eq!(
+            text_likeness("", "что-то"),
+            0.0,
+            "пустое ни на что не похоже"
+        );
+    }
+
+    /// Повтор засчитывается только при пересечении **и** по времени, и по
+    /// тексту.
+    ///
+    /// Одного текста мало: в разговоре «да» и «угу» повторяются постоянно
+    /// в разных местах, и считать их дублированием каналов значило бы
+    /// объявить дефектом обычную речь.
+    #[test]
+    fn a_repeat_needs_both_the_time_and_the_words() {
+        let mic = vec![span(0, 2_000, "давайте начнём коллеги")];
+
+        // Тот же текст, но в другом месте записи — не повтор канала.
+        let elsewhere = vec![span(60_000, 62_000, "давайте начнём коллеги")];
+        assert_eq!(doubled_text(&mic, &elsewhere, SAME_TEXT), (0, 0));
+
+        // Пересекается по времени, но говорят разное — тоже не повтор.
+        let different = vec![span(1_000, 3_000, "совсем про другое речь")];
+        assert_eq!(doubled_text(&mic, &different, SAME_TEXT), (0, 0));
+
+        // И то и другое — повтор, с длительностью своей реплики.
+        let same = vec![span(1_000, 3_000, "давайте начнём, коллеги")];
+        assert_eq!(doubled_text(&mic, &same, SAME_TEXT), (1, 2_000));
+    }
+
+    /// Заведомо чистый случай: разные реплики в разное время — ноль.
+    ///
+    /// Без него «повторов не найдено» было бы неотличимо от прибора,
+    /// который не ищет вовсе.
+    #[test]
+    fn two_honest_channels_show_no_repeats() {
+        let mic = vec![
+            span(0, 2_000, "я скажу первым"),
+            span(5_000, 7_000, "и добавлю"),
+        ];
+        let system = vec![
+            span(2_500, 4_000, "а я отвечу"),
+            span(8_000, 9_000, "и я тоже"),
+        ];
+
+        assert_eq!(doubled_text(&mic, &system, SAME_TEXT), (0, 0));
+        assert_eq!(shared_ms(&mic, &system), 0, "каналы не должны пересекаться");
     }
 
     /// Пустая сессия — отказ, а не отчёт с нулями.
