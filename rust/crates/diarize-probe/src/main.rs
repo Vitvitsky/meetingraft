@@ -577,7 +577,9 @@ fn apply_prints(
 
     let mut worked = 0usize;
     let mut spans: Vec<(AudioChannel, Vec<Span>)> = Vec::new();
+    let mut raw: Vec<(AudioChannel, Vec<i16>)> = Vec::new();
     for (channel, pcm) in tracks {
+        raw.push((channel, pcm.clone()));
         println!("\n  Дорожка {}", channel.code());
         spans.push((
             channel,
@@ -675,11 +677,76 @@ fn apply_prints(
     }
 
     report_channel_overlap(&spans);
+    report_envelope_match(&raw);
 
     if worked == 0 {
         return Err("подписывать нечем ни на одной дорожке".to_string());
     }
     Ok(())
+}
+
+/// Насколько сдвиг может уехать при поиске совпадения.
+///
+/// Полсекунды: сетевая задержка Zoom до динамиков и обратно в микрофон
+/// укладывается в неё с запасом, а дальше начинают случайно совпадать
+/// разные события речи.
+const MAX_ENVELOPE_LAG_MS: u64 = 500;
+
+/// Порог, выше которого совпадение громкости считается одним событием.
+///
+/// 0.5 — не подгонка: у независимых разговоров корреляция громкости
+/// болтается около нуля, а у одного звука, попавшего в оба канала, она
+/// высока даже при сильном приглушении, потому что тихое и громкое
+/// чередуются одинаково.
+const SAME_SOUND: f32 = 0.5;
+
+/// Слышит ли микрофон то же, что системный канал.
+///
+/// Заведён по разбору 2026-08-13. На `mic` должен был попадать только
+/// владелец машины и его комната — коллеги были в Zoom, — а разметка
+/// человека назвала на этой дорожке всех шестерых. Значит звук созвона в
+/// микрофонный канал попадает.
+///
+/// Повторов текстом при этом всего 12%, и это не возражение: копия в
+/// микрофоне глухая, и Whisper распознаёт её **другими словами**. Текст
+/// расходится, звук — нет, и мерить надо звук.
+fn report_envelope_match(raw: &[(AudioChannel, Vec<i16>)]) {
+    if raw.len() < 2 {
+        return;
+    }
+    let (first, second) = (&raw[0], &raw[1]);
+    if first.1.is_empty() || second.1.is_empty() {
+        return;
+    }
+
+    let (value, lag) = envelope_match(&first.1, &second.1, RATE, MAX_ENVELOPE_LAG_MS);
+    println!("\n  Звучит ли в одном канале то же, что в другом");
+    println!(
+        "    громкость {} и {} совпадает на {value:.2} при сдвиге {lag} мс",
+        first.0.code(),
+        second.0.code(),
+    );
+
+    if value >= SAME_SOUND {
+        println!(
+            "    ! это один и тот же звук в двух дорожках. Если на {} должен был\n\
+             \x20     попадать только владелец машины, то микрофон слышит созвон —\n\
+             \x20     дефект захвата, который удваивает и распознавание, и место на\n\
+             \x20     диске, и проходы Whisper при пересборе",
+            first.0.code()
+        );
+        println!(
+            "      `echo-probe` этого не ловит по построению: он ищет **задержанную**\n\
+             \x20     копию в пределах 250 мс и меряет, сколько её снимает фильтр\n\
+             \x20     отклика. Совпадение на малом сдвиге для него не улика"
+        );
+    } else {
+        println!(
+            "    каналы несут разный звук: совпадения громкости нет. Тогда всё,\n\
+             \x20   что выше про дублирование, объясняется распознаванием, а не\n\
+             \x20   захватом"
+        );
+    }
 }
 
 /// Реплика для сверки каналов: границы и текст.
@@ -713,6 +780,85 @@ fn segment_spans(
             text: segment.text,
         })
         .collect())
+}
+
+/// Шаг огибающей: на нём считается громкость каждого канала.
+///
+/// 50 мс — короче слога и длиннее периода основного тона. Речь на таком
+/// шаге видна как чередование громкого и тихого, а сам тон уже не мешает.
+const ENVELOPE_MS: u64 = 50;
+
+/// Корреляция громкости двух дорожек и сдвиг, на котором она наибольшая.
+///
+/// Отвечает на вопрос, которого не задавал ни один прежний прибор:
+/// **звучит ли в микрофоне то же, что в системном канале**. Не «есть ли
+/// эхо с задержкой» — на это `echo-probe` отвечал и сказал «нет», — а
+/// просто одно ли это событие во времени.
+///
+/// Разница существенная. `echo-probe` ищет задержанную копию и меряет,
+/// сколько её вычитается фильтром отклика; если звук попадает в оба
+/// канала внутри программы, задержки нет вовсе, и та машинерия проходит
+/// мимо. Корреляция громкости слепа к этому не бывает: одно и то же
+/// событие громко в обоих каналах одновременно, каким бы путём оно туда
+/// ни попало.
+///
+/// Возвращает `(корреляция, сдвиг в мс)`.
+fn envelope_match(mic: &[i16], system: &[i16], sample_rate: u32, max_lag_ms: u64) -> (f32, i64) {
+    let step = (sample_rate as u64 * ENVELOPE_MS / 1_000) as usize;
+    if step == 0 {
+        return (0.0, 0);
+    }
+    let envelope = |pcm: &[i16]| -> Vec<f32> {
+        pcm.chunks(step)
+            .map(|frame| {
+                let sum: f64 = frame.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
+                ((sum / frame.len().max(1) as f64).sqrt()) as f32
+            })
+            .collect()
+    };
+    let (mine, theirs) = (envelope(mic), envelope(system));
+    let max_lag = (max_lag_ms / ENVELOPE_MS) as i64;
+
+    let mut best = (0.0f32, 0i64);
+    for lag in -max_lag..=max_lag {
+        let value = correlation(&mine, &theirs, lag);
+        if value > best.0 {
+            best = (value, lag * ENVELOPE_MS as i64);
+        }
+    }
+    best
+}
+
+/// Корреляция Пирсона двух рядов при сдвиге второго на `lag` шагов.
+fn correlation(first: &[f32], second: &[f32], lag: i64) -> f32 {
+    let mut pairs: Vec<(f32, f32)> = Vec::new();
+    for (index, value) in first.iter().enumerate() {
+        let other = index as i64 + lag;
+        if other < 0 {
+            continue;
+        }
+        if let Some(theirs) = second.get(other as usize) {
+            pairs.push((*value, *theirs));
+        }
+    }
+    if pairs.len() < 2 {
+        return 0.0;
+    }
+    let count = pairs.len() as f32;
+    let mean_a = pairs.iter().map(|(a, _)| a).sum::<f32>() / count;
+    let mean_b = pairs.iter().map(|(_, b)| b).sum::<f32>() / count;
+    let mut top = 0.0f32;
+    let (mut left, mut right) = (0.0f32, 0.0f32);
+    for (a, b) in &pairs {
+        let (da, db) = (a - mean_a, b - mean_b);
+        top += da * db;
+        left += da * da;
+        right += db * db;
+    }
+    if left <= f32::EPSILON || right <= f32::EPSILON {
+        return 0.0;
+    }
+    (top / (left.sqrt() * right.sqrt())).clamp(-1.0, 1.0)
 }
 
 /// Сколько времени каналы звучали бы вместе от одной лишь плотности речи.
@@ -2833,6 +2979,61 @@ mod tests {
     #[test]
     fn an_empty_meeting_expects_nothing() {
         assert_eq!(expected_shared_ms(100, 100, 0), 0);
+    }
+
+    /// Заведомо один и тот же звук: та же дорожка, приглушённая и
+    /// сдвинутая. Совпадение обязано найтись, и сдвиг — назваться.
+    ///
+    /// Приглушение здесь несущее: в микрофон копия попадает тихой, и
+    /// прибор, который ловит только равные по громкости дорожки, на
+    /// настоящих данных промолчал бы.
+    #[test]
+    fn the_same_sound_is_found_even_when_quiet_and_late() {
+        // Слоги: громко-тихо по 200 мс, две секунды.
+        let loud: Vec<i16> = (0..32_000)
+            .map(|i| if (i / 3_200) % 2 == 0 { 6_000 } else { 60 })
+            .collect();
+        // Копия впятеро тише, сдвинутая на 100 мс (1600 отсчётов).
+        let mut quiet = vec![30i16; 1_600];
+        quiet.extend(loud.iter().map(|s| s / 5));
+
+        let (value, lag) = envelope_match(&loud, &quiet, 16_000, MAX_ENVELOPE_LAG_MS);
+
+        assert!(value >= SAME_SOUND, "тихая копия не найдена: {value:.2}");
+        assert_eq!(lag, 100, "сдвиг назван неверно");
+    }
+
+    /// Заведомо разный звук: слоги идут вразнобой. Совпадения быть не
+    /// должно, иначе прибор объявит дефектом любой разговор.
+    #[test]
+    fn different_speech_does_not_look_like_one_sound() {
+        let one: Vec<i16> = (0..32_000)
+            .map(|i| if (i / 3_200) % 2 == 0 { 6_000 } else { 60 })
+            .collect();
+        // Втрое более длинные слоги — те же уровни, другой ритм.
+        let other: Vec<i16> = (0..32_000)
+            .map(|i| if (i / 9_600) % 2 == 0 { 60 } else { 6_000 })
+            .collect();
+
+        let (value, _) = envelope_match(&one, &other, 16_000, MAX_ENVELOPE_LAG_MS);
+
+        assert!(
+            value < SAME_SOUND,
+            "разная речь принята за один звук: {value:.2}"
+        );
+    }
+
+    /// Тишина ни на что не похожа: постоянный уровень корреляции не
+    /// создаёт, иначе две молчащие дорожки читались бы как одна.
+    #[test]
+    fn silence_matches_nothing() {
+        let quiet = vec![0i16; 32_000];
+        let speech: Vec<i16> = (0..32_000)
+            .map(|i| if (i / 3_200) % 2 == 0 { 6_000 } else { 60 })
+            .collect();
+
+        assert_eq!(envelope_match(&quiet, &speech, 16_000, 500).0, 0.0);
+        assert_eq!(envelope_match(&quiet, &quiet, 16_000, 500).0, 0.0);
     }
 
     /// Пустая сессия — отказ, а не отчёт с нулями.
