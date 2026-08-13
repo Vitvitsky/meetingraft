@@ -32,6 +32,15 @@ protocol SpeakerAttributionCoreProviding: AnyObject {
         endMs: UInt64
     ) -> FfiAudioFragment
     func meetingAudioBytes(meetingId: String) -> UInt64
+    func listVoiceprints(meetingId: String) -> [FfiVoicePrint]
+    func recomputeVoiceprints(
+        meetingId: String,
+        version: UInt32,
+        accept: Float,
+        margin: Float
+    ) -> FfiVoicePrintPass
+    func voiceprintDefaultAccept() -> Float
+    func voiceprintDefaultMargin() -> Float
 }
 
 extension MeetingCore: SpeakerAttributionCoreProviding {}
@@ -119,6 +128,14 @@ final class SpeakerAttributionViewModel {
     /// клавиши. Кнопка прослушивания при удалённой записи (Epic 22) не
     /// показывается вовсе: нерабочая кнопка — это заглушка в интерфейсе.
     private(set) var audioAvailable = false
+    /// Слепки голоса участников этой встречи (ADR-013).
+    private(set) var voicePrints: [FfiVoicePrint] = []
+    /// Итог последнего пересчёта; `nil` — в этой сессии не запускали.
+    ///
+    /// Держится в модели, а не выбрасывается в `errorMessage`: «пересчитал
+    /// и ничего не изменилось» — законный ответ, и показывать его надо
+    /// числами, а не тишиной.
+    private(set) var lastPass: FfiVoicePrintPass?
 
     private let core: any SpeakerAttributionCoreProviding
     private var meetingId = ""
@@ -230,6 +247,54 @@ final class SpeakerAttributionViewModel {
             return ""
         }
         return speakers.first(where: { $0.id == winner.key })?.displayName ?? ""
+    }
+
+    /// Реплики, до которых имя не дотянулось.
+    ///
+    /// Не «голоса, которых не узнали»: голосов как отдельных сущностей в
+    /// схеме со слепками нет вовсе (ADR-013). Есть люди со слепками и
+    /// реплики, оставшиеся без подписи, — и это законный исход, а не сбой.
+    var unidentifiedSegments: [FfiFinalSegment] {
+        segments.filter { $0.speakerId.isEmpty }
+    }
+
+    /// Сколько реплик подписал человек. Ровно из них складываются слепки.
+    var humanLabelledCount: Int {
+        segments.filter { $0.source == .human && !$0.speakerId.isEmpty }.count
+    }
+
+    /// Есть ли чем пересчитывать.
+    ///
+    /// Без единой ручной подписи слепок сложить не из чего, и пересчёт
+    /// вернул бы ноль. Кнопка в этом случае не нажимается, а рядом с ней
+    /// сказано, почему: «не работает молча» здесь означает «не работает
+    /// заметно».
+    var canRecomputeVoicePrints: Bool {
+        version != nil && !segments.isEmpty && humanLabelledCount > 0
+    }
+
+    /// Сменилась ли модель под уже сложенными слепками.
+    ///
+    /// Векторы разных моделей несравнимы. Слепки при этом не выбрасываются
+    /// и не используются: человеку говорится пересчитать.
+    var voicePrintsNeedRecompute: Bool {
+        voicePrints.contains { !$0.modelMatches }
+    }
+
+    /// Пересчитать слепки и разнести неподписанные реплики.
+    func recomputeVoicePrints() {
+        guard let version else { return }
+        let pass = core.recomputeVoiceprints(
+            meetingId: meetingId,
+            version: version,
+            accept: core.voiceprintDefaultAccept(),
+            margin: core.voiceprintDefaultMargin()
+        )
+        lastPass = pass
+        // Отказ показывается как ошибка **и** остаётся в `lastPass`: без
+        // первого он потерялся бы среди чисел, без второго исчез бы при
+        // следующем действии.
+        finish(error: pass.error)
     }
 
     func dismissError() {
@@ -345,6 +410,7 @@ final class SpeakerAttributionViewModel {
     private func reload() {
         speakers = core.listSpeakers(meetingId: meetingId)
         audioAvailable = core.meetingAudioBytes(meetingId: meetingId) > 0
+        voicePrints = core.listVoiceprints(meetingId: meetingId)
         // Именно здесь, а не под `guard let version`: правка без версии —
         // как раз та, которую надо показать.
         unappliedEdits = core.listUnappliedEdits(meetingId: meetingId)
@@ -446,6 +512,35 @@ enum SpeakerFormat {
 
     static func segmentCountText(_ count: UInt32) -> String {
         "\(count) репл."
+    }
+
+    /// Из чего сложен слепок: сколько кусков и сколько в них секунд.
+    ///
+    /// Секунды показываются целыми и без округления вверх: слепок на 4.6 с
+    /// это «4 с», а не «5 с». Материала в нём столько, сколько есть, и
+    /// приписывать ему лишнюю секунду незачем — как раз по таким крохам
+    /// на замере и вышли самые тонкие места.
+    static func voicePrintText(_ print: FfiVoicePrint) -> String {
+        "голос: \(print.samples) репл., \(Int(print.seconds)) с"
+    }
+
+    /// Итог пересчёта числами.
+    ///
+    /// Неопознанные названы **отдельно** от «без звука»: первое — ответ
+    /// модели, второе — её молчание. Сложив их в одно число, мы выдали бы
+    /// нехватку материала за несходство голосов, и человек искал бы
+    /// причину не там.
+    static func passSummary(_ pass: FfiVoicePrintPass) -> String {
+        var parts = ["подписано \(pass.signed)"]
+        if pass.cleared > 0 {
+            parts.append("снято \(pass.cleared)")
+        }
+        parts.append("без имени \(pass.unknown)")
+        if pass.withoutVector > 0 {
+            parts.append("без звука \(pass.withoutVector)")
+        }
+        parts.append("слепков \(pass.prints)")
+        return parts.joined(separator: " · ")
     }
 
     /// Инициал для аватара; пусто — вопрос, а не пустой круг.
