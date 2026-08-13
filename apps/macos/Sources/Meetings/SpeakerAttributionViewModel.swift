@@ -255,7 +255,7 @@ final class SpeakerAttributionViewModel {
     /// схеме со слепками нет вовсе (ADR-013). Есть люди со слепками и
     /// реплики, оставшиеся без подписи, — и это законный исход, а не сбой.
     var unidentifiedSegments: [FfiFinalSegment] {
-        segments.filter { $0.speakerId.isEmpty }
+        segments.filter(\.speakerId.isEmpty)
     }
 
     /// Сколько реплик подписал человек. Ровно из них складываются слепки.
