@@ -28,6 +28,17 @@ final class AudioCaptureCoordinator {
     /// каждого своего нуля.
     private(set) var micStartOffsetMs: UInt64?
     private(set) var systemStartOffsetMs: UInt64?
+    /// Разрешение микрофона, как оно известно **без** запроса.
+    ///
+    /// Обновляется при открытии окна и после каждого запроса. До этого
+    /// приложение о разрешениях не говорило вовсе: узнать, что микрофон
+    /// запрещён, можно было только нажав «запись».
+    private(set) var microphonePermission: MicrophonePermission = .notAsked
+
+    /// Что мешает начать запись прямо сейчас. `ready` — ничего.
+    var readiness: CaptureReadiness {
+        CaptureReadiness.of(microphone: microphonePermission, systemAudio: systemAudioStatus)
+    }
 
     private let core: MeetingCore
     private let microphone: any AudioTapping
@@ -50,6 +61,9 @@ final class AudioCaptureCoordinator {
     /// Запрос разрешения вынесен в зависимость: в тестовом бандле
     /// системный промпт недоступен и подвесил бы тест.
     private let requestMicrophonePermission: @Sendable () async -> Bool
+    /// Чтение разрешения без запроса — тоже зависимость: в тестовом
+    /// бандле статус свой собственный, и подстроить его иначе нечем.
+    private let readMicrophonePermission: @Sendable () -> MicrophonePermission
 
     init(
         core: MeetingCore,
@@ -58,6 +72,9 @@ final class AudioCaptureCoordinator {
         clock: HostClock = .system,
         requestMicrophonePermission: @escaping @Sendable () async -> Bool = {
             await AudioPermissions.requestMicrophone()
+        },
+        readMicrophonePermission: @escaping @Sendable () -> MicrophonePermission = {
+            AudioPermissions.microphonePermission()
         }
     ) {
         self.core = core
@@ -65,6 +82,8 @@ final class AudioCaptureCoordinator {
         self.systemAudio = systemAudio
         self.clock = clock
         self.requestMicrophonePermission = requestMicrophonePermission
+        self.readMicrophonePermission = readMicrophonePermission
+        microphonePermission = readMicrophonePermission()
     }
 
     init(dataRoot: String? = nil) {
@@ -72,6 +91,8 @@ final class AudioCaptureCoordinator {
         systemAudio = SystemAudioCapture()
         clock = .system
         requestMicrophonePermission = { await AudioPermissions.requestMicrophone() }
+        readMicrophonePermission = { AudioPermissions.microphonePermission() }
+        microphonePermission = AudioPermissions.microphonePermission()
         if let dataRoot {
             core = MeetingCore.withDataRoot(dataRoot: dataRoot)
         } else {
@@ -110,6 +131,10 @@ final class AudioCaptureCoordinator {
     /// никогда, иначе tap утечёт в `coreaudiod` (Epic 24). Такую правку
     /// делать без Мака под рукой нельзя.
     func warmUpSystemAudio() {
+        // Разрешение микрофона перечитывается всегда: его могли выдать или
+        // отобрать в системных настройках, пока окно было закрыто, и
+        // показанное состояние обязано быть сегодняшним.
+        microphonePermission = readMicrophonePermission()
         guard !isRecording else { return }
         systemAudio.prepare()
         systemAudioAvailable = systemAudio.isAvailable
@@ -123,6 +148,10 @@ final class AudioCaptureCoordinator {
         captionEventCount = 0
         sttBackend = "idle"
         let granted = await requestMicrophonePermission()
+        // Ответ человека — новое состояние, и оно должно быть видно на
+        // экране, а не только в строке ошибки: после отказа плашка обязана
+        // показать, что запись невозможна, пока разрешение не выдано.
+        microphonePermission = readMicrophonePermission()
         guard granted else {
             lastError = "Доступ к микрофону запрещён"
             return

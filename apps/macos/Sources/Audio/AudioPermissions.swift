@@ -12,8 +12,18 @@ enum AudioPermissions {
         }
     }
 
-    /// Текущий статус микрофона без prompt.
-    static func microphoneAuthorized() -> Bool {
-        AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    /// Текущее разрешение микрофона — **без** запроса.
+    ///
+    /// Нужно до первой записи: иначе узнать, что микрофон запрещён, можно
+    /// только нажав «запись». Отказ и запрет политикой сведены в один
+    /// случай сознательно — оба означают «программа спросить не может, а
+    /// человек может открыть настройки», и разное будущее у них не
+    /// появляется.
+    static func microphonePermission() -> MicrophonePermission {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: .granted
+        case .notDetermined: .notAsked
+        default: .denied
+        }
     }
 }

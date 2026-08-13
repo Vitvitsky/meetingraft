@@ -49,10 +49,23 @@ enum SystemAudioSettingsLink {
         string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
     )
 
+    /// Панель микрофона — отдельная от системного звука.
+    static let microphoneUrl = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+    )
+
     static let fallbackUrl = URL(string: "x-apple.systempreferences:com.apple.preference.security")
 
     static func open() {
-        guard let target = url ?? fallbackUrl else { return }
+        open(url)
+    }
+
+    static func openMicrophone() {
+        open(microphoneUrl)
+    }
+
+    private static func open(_ pane: URL?) {
+        guard let target = pane ?? fallbackUrl else { return }
         if !NSWorkspace.shared.open(target), let fallbackUrl {
             NSWorkspace.shared.open(fallbackUrl)
         }
