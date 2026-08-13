@@ -107,6 +107,22 @@ final class AudioCaptureCoordinator {
         // разрешения — время человека, а не наша цена.
         var timer = CaptureStepTimer(clock: clock)
 
+        // Разведка системного канала — **до** открытия сессии. Первый её
+        // вызов поднимает системный запрос «System Audio Recording», и
+        // пока этот запрос на экране, звук не идёт ни по одному каналу:
+        // микрофон стартует ниже. Открытая сессия и `isRecording = true`
+        // означали бы в это время «идёт запись» при нуле записанного, а
+        // человек, уверенный, что встреча пишется, — худший исход из
+        // возможных.
+        //
+        // Разведка создаёт и сразу отпускает tap, поэтому её цена — цена
+        // ожидания перед записью. Платится она только за первую встречу
+        // после запуска приложения: удачная разведка запоминается.
+        systemAudio.prepare()
+        systemAudioAvailable = systemAudio.isAvailable
+        systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unknown
+        timer.step("system_prepare")
+
         let id = UUID().uuidString
         let err = core.startRecording(sessionId: id, title: MeetingTitle.forNewMeeting())
         guard err.isEmpty else {
@@ -122,19 +138,11 @@ final class AudioCaptureCoordinator {
         micStartedAt = nil
         systemStartedAt = nil
         sttBackend = core.sttBackend()
+        // Пока tap не запущен, микшер не должен ждать системный канал.
+        core.setSystemAudioExpected(expected: false)
         // До start mic: иначе ранние буферы отбрасываются в ingest.
         isRecording = true
         timer.step("session_open")
-
-        systemAudio.prepare()
-        systemAudioAvailable = systemAudio.isAvailable
-        systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unknown
-        // Пока tap не запущен, микшер не должен ждать системный канал.
-        core.setSystemAudioExpected(expected: false)
-        // Разведка создаёт и сразу отпускает tap, и её цена — это цена
-        // ожидания перед записью. Платится она только за первую встречу
-        // после запуска приложения: удачная разведка запоминается.
-        timer.step("system_prepare")
 
         // Начало записи — до запуска первого источника: якорь канала
         // отсчитывается от него, и буфер, записанный раньше собственного
