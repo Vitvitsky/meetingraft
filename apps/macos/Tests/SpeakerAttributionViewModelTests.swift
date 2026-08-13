@@ -879,7 +879,11 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
         return recomputeResult
     }
 
-    func voiceprintDefaultAccept() -> Float { 0.45 }
+    func voiceprintDefaultAccept() -> Float {
+        0.45
+    }
 
-    func voiceprintDefaultMargin() -> Float { 0.05 }
+    func voiceprintDefaultMargin() -> Float {
+        0.05
+    }
 }
