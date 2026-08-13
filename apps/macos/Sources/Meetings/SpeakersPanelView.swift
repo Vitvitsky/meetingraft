@@ -8,6 +8,9 @@ import SwiftUI
 struct SpeakersPanelView: View {
     @Bindable var viewModel: SpeakerAttributionViewModel
     let primaryLanguage: String
+    @State private var player = SegmentAudioPlayer()
+    /// Какая неопознанная реплика сейчас играет.
+    @State private var playingIndex: UInt32?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,14 +18,26 @@ struct SpeakersPanelView: View {
 
             Divider()
 
+            // У версии без сегментов разносить нечего, и панель тут была бы
+            // разговором ни о чём: реплик нет, подписывать нечего,
+            // пересчитывать тоже.
+            if viewModel.hasSegments {
+                VoicePrintBar(viewModel: viewModel)
+            }
+
             List {
                 ForEach(viewModel.rows) { row in
                     SpeakerStatRow(
                         row: row,
+                        printFor: { viewModel.voicePrints.first { $0.speakerId == row.id } },
                         onRename: { viewModel.rename(id: row.id, displayName: $0) },
                         onDelete: { viewModel.remove(id: row.id) }
                     )
                     .listRowSeparator(.hidden)
+                }
+
+                if !viewModel.unidentifiedSegments.isEmpty {
+                    unidentifiedSection
                 }
             }
             .overlay {
@@ -37,6 +52,47 @@ struct SpeakersPanelView: View {
                     )
                 }
             }
+        }
+    }
+
+    /// Реплики без имени — здесь же, а не на отдельном экране.
+    ///
+    /// Они и есть работа: человек подписывает несколько, пересчёт разносит
+    /// остальные, неразнесённые снова оказываются тут. Уводить этот
+    /// список в другое место значило бы разрывать цикл пополам.
+    private var unidentifiedSection: some View {
+        Section {
+            ForEach(viewModel.unidentifiedSegments, id: \.index) { segment in
+                UnidentifiedReplyRow(
+                    segment: segment,
+                    speakers: viewModel.speakers,
+                    audioAvailable: viewModel.audioAvailable,
+                    isPlaying: player.isPlaying && playingIndex == segment.index,
+                    loadFragment: { viewModel.audioFragment(for: segment) },
+                    onPlay: {
+                        playingIndex = segment.index
+                        player.play(fragment: $0)
+                    },
+                    onStopPlayback: {
+                        playingIndex = nil
+                        player.stop()
+                    },
+                    onFragmentMissing: { viewModel.reportMissingFragment() },
+                    onAssign: { viewModel.assignSegment(index: segment.index, to: $0) }
+                )
+                .listRowSeparator(.hidden)
+            }
+        } header: {
+            Text("Без имени · \(viewModel.unidentifiedSegments.count)")
+                .font(Theme.Text.bodySmall.weight(.semibold))
+                .foregroundStyle(Theme.textSecondary)
+        } footer: {
+            Text(
+                "Подпишите несколько — по ним складываются слепки, "
+                    + "и пересчёт разнесёт похожие."
+            )
+            .font(Theme.Text.caption)
+            .foregroundStyle(Theme.textTertiary)
         }
     }
 
@@ -84,9 +140,156 @@ struct SpeakersPanelView: View {
     }
 }
 
+/// Пересчёт подписей по слепкам голоса (ADR-013).
+///
+/// Кнопка называет свою цену **до** нажатия: из скольки ручных подписей
+/// сложатся слепки и скольким репликам это может дать имя. Кнопка,
+/// молчащая о том, что сделает, ничем не лучше молчаливого отказа —
+/// человек нажимает вслепую и не может сказать, сработало ли.
+private struct VoicePrintBar: View {
+    let viewModel: SpeakerAttributionViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+            HStack(spacing: Theme.Space.sm) {
+                Button("Разнести по голосам", systemImage: "waveform.badge.person") {
+                    viewModel.recomputeVoicePrints()
+                }
+                .disabled(!viewModel.canRecomputeVoicePrints)
+                .help(
+                    "Сложить слепки по подписанным вручную репликам "
+                        + "и разнести по ним остальные"
+                )
+
+                Text(costText)
+                    .font(Theme.Text.caption)
+                    .foregroundStyle(Theme.textTertiary)
+
+                Spacer()
+            }
+
+            if viewModel.voicePrintsNeedRecompute {
+                // Не поломка и не повод выбросить слепки: сравнивать их с
+                // векторами другой модели нельзя, и это всё.
+                Label(
+                    "Модель голосов сменилась — слепки надо пересчитать, "
+                        + "сравнивать со старыми нечего",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(Theme.Text.caption)
+                .foregroundStyle(Theme.warning)
+            }
+
+            if let pass = viewModel.lastPass, pass.error.isEmpty {
+                Text(SpeakerFormat.passSummary(pass))
+                    .font(Theme.Text.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        }
+        .padding(.horizontal, Theme.Space.md)
+        .padding(.vertical, Theme.Space.sm)
+    }
+
+    /// Что произойдёт по нажатию — либо почему нажимать нечего.
+    private var costText: String {
+        guard viewModel.canRecomputeVoicePrints else {
+            return "Подпишите хотя бы одну реплику вручную — слепки складываются по ним"
+        }
+        let labelled = viewModel.humanLabelledCount
+        let candidates = viewModel.unidentifiedSegments.count
+        return "слепки по \(labelled) подписанным · без имени \(candidates)"
+    }
+}
+
+/// Реплика, оставшаяся без имени: послушать и подписать, не уходя с
+/// экрана.
+private struct UnidentifiedReplyRow: View {
+    let segment: FfiFinalSegment
+    let speakers: [FfiSpeaker]
+    let audioAvailable: Bool
+    let isPlaying: Bool
+    let loadFragment: () -> FfiAudioFragment
+    let onPlay: (FfiAudioFragment) -> Void
+    let onStopPlayback: () -> Void
+    let onFragmentMissing: () -> Void
+    let onAssign: (String) -> Void
+
+    /// Звука за этот кусок не нашлось — кнопка гаснет после попытки, а не
+    /// молча.
+    @State private var fragmentMissing = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Theme.Space.sm) {
+            VStack(spacing: Theme.Space.xxs) {
+                Text(SpeakerFormat.timecode(ms: segment.startMs))
+                    .font(Theme.Text.mono())
+                    .foregroundStyle(Theme.textTertiary)
+                if audioAvailable, !fragmentMissing {
+                    Button(action: toggle) {
+                        Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                            .font(.system(size: 9))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(isPlaying ? Theme.accent : Theme.textTertiary)
+                    .help("Послушать реплику — имя обычно определяют на слух")
+                    .accessibilityLabel(isPlaying ? "Остановить" : "Прослушать реплику")
+                }
+            }
+            .frame(width: 56)
+
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                Text(segment.text)
+                    .font(Theme.Text.body)
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(3)
+                HStack(spacing: Theme.Space.xs) {
+                    Chip(text: SpeakerFormat.channelLabel(segment.channel))
+                    Text(SpeakerFormat.durationText(ms: durationMs))
+                        .font(Theme.Text.mono())
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+
+            Spacer(minLength: Theme.Space.sm)
+
+            Menu("Подписать") {
+                ForEach(speakers, id: \.id) { speaker in
+                    Button(speaker.displayName) { onAssign(speaker.id) }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(speakers.isEmpty)
+        }
+        .padding(.vertical, Theme.Space.xxs)
+    }
+
+    /// Длительность реплики. Вычитание идёт с проверкой: `UInt64` при
+    /// перевёрнутых границах ушёл бы в огромное число, а не в минус.
+    private var durationMs: UInt64 {
+        segment.endMs > segment.startMs ? segment.endMs - segment.startMs : 0
+    }
+
+    private func toggle() {
+        if isPlaying {
+            onStopPlayback()
+            return
+        }
+        let fragment = loadFragment()
+        guard SegmentAudioPlayer.buffer(from: fragment) != nil else {
+            fragmentMissing = true
+            onFragmentMissing()
+            return
+        }
+        onPlay(fragment)
+    }
+}
+
 /// Строка участника: имя, дорожка, доля речи, число реплик.
 private struct SpeakerStatRow: View {
     let row: SpeakerRowModel
+    /// Слепок этого участника, если он сложен.
+    let printFor: () -> FfiVoicePrint?
     let onRename: (String) -> Void
     let onDelete: () -> Void
 
@@ -97,10 +300,12 @@ private struct SpeakerStatRow: View {
 
     init(
         row: SpeakerRowModel,
+        printFor: @escaping () -> FfiVoicePrint?,
         onRename: @escaping (String) -> Void,
         onDelete: @escaping () -> Void
     ) {
         self.row = row
+        self.printFor = printFor
         self.onRename = onRename
         self.onDelete = onDelete
         _displayName = State(initialValue: row.displayName)
@@ -155,6 +360,13 @@ private struct SpeakerStatRow: View {
                     Text(SpeakerFormat.segmentCountText(row.segmentCount))
                         .font(Theme.Text.bodySmall)
                         .foregroundStyle(Theme.textTertiary)
+                    // Из чего сложен слепок — не украшение: слепок на
+                    // четырёх секундах и слепок на четырёх минутах
+                    // подписывают по-разному, и знать это надо до того,
+                    // как поверить результату.
+                    if let print = printFor() {
+                        Chip(text: SpeakerFormat.voicePrintText(print))
+                    }
                 }
             }
 

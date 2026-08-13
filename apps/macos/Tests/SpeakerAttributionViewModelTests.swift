@@ -145,6 +145,166 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.channelSpeakerName("mic").isEmpty)
     }
 
+    // MARK: - Слепки голоса (ADR-013)
+
+    /// Неопознанные — это **реплики без имени**, а не «голоса, которых не
+    /// узнали»: голосов как отдельных сущностей в схеме со слепками нет.
+    ///
+    /// Заведомо положительный случай внутри: подписанные реплики в списке
+    /// быть не должны, иначе проверка проходила бы и на списке «все
+    /// реплики подряд».
+    func testUnidentifiedRepliesAreTheOnesWithoutAName() {
+        let core = AttributionCoreSpy(
+            speakers: [speaker("s1", "Пётр")],
+            segments: [
+                segment(0, channel: "mic", speakerId: "s1", source: "human"),
+                segment(1, channel: "mic", speakerId: ""),
+                segment(2, channel: "system", speakerId: "s1", source: "voiceprint"),
+                segment(3, channel: "system", speakerId: ""),
+            ]
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+
+        viewModel.load(meetingId: "m1", version: 1)
+
+        XCTAssertEqual(viewModel.unidentifiedSegments.map(\.index), [1, 3])
+    }
+
+    /// Без единой ручной подписи складывать слепок не из чего, и пересчёт
+    /// вернул бы ноль. Кнопка в этом случае не нажимается — «не работает
+    /// молча» здесь означало бы «нажал и ничего не понял».
+    func testRecomputeIsUnavailableUntilSomethingIsLabelledByHand() {
+        let core = AttributionCoreSpy(
+            speakers: [speaker("s1", "Пётр")],
+            segments: [
+                segment(0, channel: "mic", speakerId: "s1", source: "channel"),
+                segment(1, channel: "mic", speakerId: ""),
+            ]
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        XCTAssertFalse(viewModel.canRecomputeVoicePrints, "подпись по каналу слепка не даёт")
+        XCTAssertEqual(viewModel.humanLabelledCount, 0)
+
+        core.segments[0] = segment(0, channel: "mic", speakerId: "s1", source: "human")
+        viewModel.load(meetingId: "m1", version: 1)
+
+        XCTAssertTrue(viewModel.canRecomputeVoicePrints)
+        XCTAssertEqual(viewModel.humanLabelledCount, 1)
+    }
+
+    func testRecomputeUsesTheDefaultThresholdsAndKeepsTheResult() {
+        let core = AttributionCoreSpy(
+            speakers: [speaker("s1", "Пётр")],
+            segments: [segment(0, channel: "mic", speakerId: "s1", source: "human")]
+        )
+        core.recomputeResult = FfiVoicePrintPass(
+            error: "",
+            prints: 1,
+            signed: 7,
+            cleared: 0,
+            unknown: 3,
+            withoutVector: 2,
+            modelId: "cam++"
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.recomputeVoicePrints()
+
+        XCTAssertEqual(
+            core.recomputeCalls,
+            [AttributionCoreSpy.Thresholds(accept: 0.45, margin: 0.05)]
+        )
+        XCTAssertEqual(viewModel.lastPass?.signed, 7)
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    /// Отказ обязан быть виден **и** остаться числом отчёта: без первого
+    /// он потерялся бы, без второго исчез бы при следующем действии.
+    ///
+    /// Худший исход здесь — «готово, 0 подписано»: человек прочтёт это как
+    /// «голоса не разошлись» и поверит.
+    func testRefusalToRecomputeIsShownNotSwallowed() {
+        let core = AttributionCoreSpy(
+            speakers: [speaker("s1", "Пётр")],
+            segments: [segment(0, channel: "mic", speakerId: "s1", source: "human")]
+        )
+        core.recomputeResult = FfiVoicePrintPass(
+            error: "разделение голосов не собрано",
+            prints: 0,
+            signed: 0,
+            cleared: 0,
+            unknown: 0,
+            withoutVector: 0,
+            modelId: ""
+        )
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.recomputeVoicePrints()
+
+        XCTAssertEqual(viewModel.errorMessage, "разделение голосов не собрано")
+        XCTAssertEqual(viewModel.lastPass?.error, "разделение голосов не собрано")
+    }
+
+    /// Смена модели — не поломка: слепки не выбрасываются и не
+    /// используются, а человеку говорится пересчитать.
+    func testAPrintFromAnotherModelAsksToBeRecomputed() {
+        let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
+        core.voicePrints = [voicePrint("s1", modelMatches: true)]
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        XCTAssertFalse(viewModel.voicePrintsNeedRecompute)
+
+        core.voicePrints = [voicePrint("s1", modelMatches: false)]
+        viewModel.load(meetingId: "m1", version: 1)
+
+        XCTAssertTrue(viewModel.voicePrintsNeedRecompute)
+    }
+
+    /// «Померили и не узнали» и «мерить было нечего» — разные ответы, и в
+    /// отчёте они разные числа. Сложенные в одно, они выдали бы нехватку
+    /// материала за несходство голосов.
+    func testPassSummaryKeepsUnknownApartFromWithoutAudio() {
+        let summary = SpeakerFormat.passSummary(
+            FfiVoicePrintPass(
+                error: "",
+                prints: 2,
+                signed: 10,
+                cleared: 1,
+                unknown: 4,
+                withoutVector: 3,
+                modelId: "cam++"
+            )
+        )
+
+        XCTAssertTrue(summary.contains("без имени 4"), summary)
+        XCTAssertTrue(summary.contains("без звука 3"), summary)
+        XCTAssertTrue(summary.contains("снято 1"), summary)
+    }
+
+    /// Ноль реплик без звука не показывается вовсе: строка отчёта должна
+    /// называть случившееся, а не перечислять все возможные исходы.
+    func testPassSummaryStaysSilentAboutZeroes() {
+        let summary = SpeakerFormat.passSummary(
+            FfiVoicePrintPass(
+                error: "",
+                prints: 1,
+                signed: 5,
+                cleared: 0,
+                unknown: 2,
+                withoutVector: 0,
+                modelId: "cam++"
+            )
+        )
+
+        XCTAssertFalse(summary.contains("без звука"), summary)
+        XCTAssertFalse(summary.contains("снято"), summary)
+    }
+
     // MARK: - Спикеры
 
     func testAddSpeakerUsesLanguageOfInterface() {
@@ -472,6 +632,17 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         FfiSpeaker(id: id, meetingId: "m1", displayName: name, sortIndex: 0)
     }
 
+    private func voicePrint(_ speakerId: String, modelMatches: Bool) -> FfiVoicePrint {
+        FfiVoicePrint(
+            speakerId: speakerId,
+            speakerName: "Пётр",
+            modelId: modelMatches ? "cam++" : "english",
+            samples: 3,
+            seconds: 12.5,
+            modelMatches: modelMatches
+        )
+    }
+
     private func stat(
         _ id: String,
         name: String,
@@ -542,9 +713,25 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
         let speakerId: String
     }
 
+    struct Thresholds: Equatable {
+        let accept: Float
+        let margin: Float
+    }
+
     var speakers: [FfiSpeaker]
     var segments: [FfiFinalSegment]
     var stats: [FfiSpeakerStat]
+    var voicePrints: [FfiVoicePrint] = []
+    var recomputeResult = FfiVoicePrintPass(
+        error: "",
+        prints: 0,
+        signed: 0,
+        cleared: 0,
+        unknown: 0,
+        withoutVector: 0,
+        modelId: ""
+    )
+    private(set) var recomputeCalls: [Thresholds] = []
     var assignSegmentError = ""
     var deleteError = ""
     var unapplied: [FfiSegmentEdit] = []
@@ -675,4 +862,24 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
     func meetingAudioBytes(meetingId _: String) -> UInt64 {
         audioBytes
     }
+
+    // MARK: - Слепки голоса (ADR-013)
+
+    func listVoiceprints(meetingId _: String) -> [FfiVoicePrint] {
+        voicePrints
+    }
+
+    func recomputeVoiceprints(
+        meetingId _: String,
+        version _: UInt32,
+        accept: Float,
+        margin: Float
+    ) -> FfiVoicePrintPass {
+        recomputeCalls.append(Thresholds(accept: accept, margin: margin))
+        return recomputeResult
+    }
+
+    func voiceprintDefaultAccept() -> Float { 0.45 }
+
+    func voiceprintDefaultMargin() -> Float { 0.05 }
 }
