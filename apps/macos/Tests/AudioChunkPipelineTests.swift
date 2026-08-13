@@ -43,6 +43,37 @@ final class AudioChunkPipelineTests: XCTestCase {
         XCTAssertEqual(chunks.map { $0.timestampMs() }, [0, 100, 200])
     }
 
+    /// Привязка канала уезжает в метку каждого чанка.
+    ///
+    /// Без неё оба канала заявляли бы одно и то же время на звук,
+    /// записанный с разницей около секунды: счётчик кадров у каждого свой
+    /// и оба начинаются с нуля. Именно так на встрече `6CE19EC5` дорожки,
+    /// разошедшиеся на 1150 мс, выглядели одновременными.
+    func testAnchorShiftsEveryTimestampWithoutTouchingFrames() {
+        var pipeline = AudioChunkPipeline()
+        pipeline.anchor(startOffsetMs: 1_150)
+        let chunks = pipeline.push(samples: Array(repeating: Float(0.2), count: framesPerChunk * 3))
+
+        XCTAssertEqual(chunks.count, 3, "вход непуст, иначе проверять нечего")
+        XCTAssertEqual(chunks.map { $0.timestampMs() }, [1_150, 1_250, 1_350])
+        XCTAssertEqual(
+            chunks.map(\.startFrame),
+            (0 ..< 3).map { UInt64($0 * framesPerChunk) },
+            "счёт кадров внутри канала остаётся от нуля"
+        )
+    }
+
+    /// Непривязанный канал — это ноль, а не мусор от прошлой записи.
+    func testResetDropsAnchor() {
+        var pipeline = AudioChunkPipeline()
+        pipeline.anchor(startOffsetMs: 1_150)
+        _ = pipeline.push(samples: Array(repeating: Float(0.2), count: framesPerChunk))
+        pipeline.reset()
+
+        let chunks = pipeline.push(samples: Array(repeating: Float(0.2), count: framesPerChunk))
+        XCTAssertEqual(chunks.first?.timestampMs(), 0)
+    }
+
     func testResetRewindsFrameCounter() {
         var pipeline = AudioChunkPipeline()
         _ = pipeline.push(samples: Array(repeating: Float(0.2), count: framesPerChunk * 2))

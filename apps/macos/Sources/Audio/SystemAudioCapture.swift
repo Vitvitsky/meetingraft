@@ -19,7 +19,7 @@ final class SystemAudioCapture: AudioTapping {
     private var aggregateId: AudioObjectID = kAudioObjectUnknown
     private var ioProcId: AudioDeviceIOProcID?
     private var downmixer: PCMDownmixer?
-    private var onSamples: (([Float]) -> Void)?
+    private var onSamples: SamplesHandler?
     /// Разведка уже проходила успешно — повторять её не нужно.
     private var didProbeSuccessfully = false
 
@@ -70,7 +70,7 @@ final class SystemAudioCapture: AudioTapping {
         }
     }
 
-    func start(onSamples: @escaping ([Float]) -> Void) throws {
+    func start(onSamples: @escaping SamplesHandler) throws {
         stop()
 
         let tap: AudioObjectID
@@ -112,8 +112,8 @@ final class SystemAudioCapture: AudioTapping {
             &procId,
             aggregate,
             nil
-        ) { [weak self] _, inputData, _, _, _ in
-            self?.handle(inputData: inputData, format: format)
+        ) { [weak self] _, inputData, inputTime, _, _ in
+            self?.handle(inputData: inputData, inputTime: inputTime, format: format)
         }
         guard createStatus == noErr, let procId else {
             stop()
@@ -233,7 +233,11 @@ final class SystemAudioCapture: AudioTapping {
         return result == noErr ? uid as String : nil
     }
 
-    private func handle(inputData: UnsafePointer<AudioBufferList>, format: AVAudioFormat) {
+    private func handle(
+        inputData: UnsafePointer<AudioBufferList>,
+        inputTime: UnsafePointer<AudioTimeStamp>,
+        format: AVAudioFormat
+    ) {
         guard let downmixer, let onSamples else { return }
         let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
         guard let first = list.first, first.mDataByteSize > 0 else { return }
@@ -257,7 +261,24 @@ final class SystemAudioCapture: AudioTapping {
 
         let samples = downmixer.convert(buffer)
         guard !samples.isEmpty else { return }
-        onSamples(samples)
+        onSamples(samples, hostTime(of: inputTime))
+    }
+
+    /// Момент записи входных данных в тиках общих часов.
+    ///
+    /// `mHostTime` у IOProc идёт от `mach_absolute_time` — тех же часов,
+    /// что `AVAudioTime.hostTime` у микрофона. Только поэтому два канала
+    /// вообще можно свести к одному времени.
+    ///
+    /// Невалидную метку не подставляем молча: без неё канал получил бы
+    /// начало по времени приёма, и это надо видеть в логе.
+    private func hostTime(of inputTime: UnsafePointer<AudioTimeStamp>) -> UInt64 {
+        let stamp = inputTime.pointee
+        guard stamp.mFlags.contains(.hostTimeValid) else {
+            log.error("у буфера системного канала нет mHostTime — метка взята по времени приёма")
+            return HostClock.system.now()
+        }
+        return stamp.mHostTime
     }
 
     private static func tapUid(of tapId: AudioObjectID) -> String? {
