@@ -92,6 +92,7 @@ A feature is not done until:
   (`.xcodeproj` генерируется, в git не трекается — источник `project.yml`)
 - macOS tests: `xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft -configuration Debug test CODE_SIGNING_ALLOWED=NO`
 - Lint Swift: `cd apps/macos && swiftformat Sources Tests --lint`
+  (правила, невидимые на Linux, — ниже отдельным разделом)
 - Pre-commit (локально, зеркало быстрых CI-линтов): `brew install pre-commit`
   (или `pipx install pre-commit`), затем из корня репо `pre-commit install`;
   разовый прогон `pre-commit run --all-files`. Хуки: `cargo fmt --check`,
@@ -110,13 +111,44 @@ A feature is not done until:
   `docs/architecture-and-install.md`
 - OpenAPI: `shared/openapi.yaml`
 
+## swiftformat rules that Linux cannot see
+
+Swift собирается только на Mac, поэтому `swiftformat --lint` — шаг 5
+`scripts/verify-mac.sh` — единственное место, где эти правила
+обнаруживаются. Каждое стоит целого прогона, если ловить их по очереди,
+поэтому список ведётся: пойманное сюда дописывается.
+
+Правил в `apps/macos/.swiftformat` не перечислено вовсе — там один
+`--swiftversion 6.0`, — значит действует то, что включено в установленной
+версии. Предполагать по памяти, что рулится, а что нет, здесь не выходит;
+только этот список и прогон.
+
+- **Разделители в числах.** По умолчанию `--decimalgrouping 3,6`: до пяти
+  цифр — **без** `_` (`50000`, `16000`), от шести — группами по три
+  (`1_150_000`). Написанное на глаз `1_150` и `50_000` роняет шаг целиком.
+  Сверяется по уже лежащим файлам:
+  `grep -rnoP '(?<![_0-9.])[0-9]{5}(?![_0-9.])' apps/macos` показывает
+  пятизначные без разделителей — так и надо.
+- **`redundantAsync`.** `func … async` без единого `await` в теле —
+  ошибка. Легко получается в тестах, где `await` убрался вместе с
+  последней асинхронной строкой.
+- **`preferKeyPath`.** `filter { $0.foo }` и `map { $0.foo }` обязаны быть
+  `filter(\.foo)`. Только тривиальные: замыкания, которые сравнивают
+  (`first { $0.id == other }`) или отрицают (`contains { !$0.ok }`), под
+  правило не попадают.
+- **`wrapFunctionBodies`.** Тело функции в одну строку
+  (`func f() -> Float { 0.45 }`) — ошибка, включая тестовые заглушки.
+
 ## Stack & conventions
 
 - Stack: SwiftUI + AVFoundation (macOS shell), Rust + UniFFI (domain core), backend workers/API (post-call)
 - Comments/docstrings: Russian; identifiers: English
 - Prefer explicit types and small DTOs across UniFFI; keep state machines testable
 - SQL (when present): keywords UPPERCASE, identifiers lowercase
-- Commits: Conventional Commits with Russian subject (`feat:`, `fix:`, `docs:`, …)
+- Commits: Conventional Commits, **English** subject and body (`feat:`, `fix:`,
+  `docs:`, …). До 2026-08-04 они были русскими; старую историю не переписывать.
+  Комментарии в коде и `docs/` при этом остаются русскими — язык кода и язык
+  истории здесь разные намеренно
 
 ## Skills & tooling
 
