@@ -17,8 +17,14 @@ private final class FakeTap: AudioTapping {
         self.isAvailable = isAvailable
     }
 
+    /// Что делать во время разведки. Настоящая разведка держит на экране
+    /// системный запрос разрешения, и тест подсматривает состояние ровно
+    /// в этот момент.
+    var onPrepare: (() -> Void)?
+
     func prepare() {
         prepareCalls += 1
+        onPrepare?()
     }
 
     func start(onSamples: @escaping SamplesHandler) throws {
@@ -159,6 +165,77 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
         coordinator.stopRecording()
         XCTAssertEqual(microphone.stopCalls, 1)
         XCTAssertEqual(systemAudio.stopCalls, 1)
+    }
+
+    /// Разведка идёт при открытии окна, а не по нажатию записи.
+    ///
+    /// Ноль вызовов до неё — заведомо отрицательный случай: без него
+    /// «разведка была» выполнялось бы и тем, что её делает `startRecording`.
+    func testWarmUpProbesSystemAudioBeforeAnyRecording() async {
+        let microphone = FakeTap()
+        let systemAudio = FakeTap(isAvailable: true)
+        let coordinator = makeCoordinator(microphone: microphone, systemAudio: systemAudio)
+
+        XCTAssertEqual(systemAudio.prepareCalls, 0, "до открытия окна разведки быть не должно")
+
+        coordinator.warmUpSystemAudio()
+
+        XCTAssertEqual(systemAudio.prepareCalls, 1)
+        XCTAssertTrue(coordinator.systemAudioAvailable, "доступность известна до записи")
+        XCTAssertFalse(coordinator.isRecording, "разведка сама записи не начинает")
+    }
+
+    /// Во время записи разведка не трогает уже поднятый tap.
+    ///
+    /// Окно может открыться посреди сессии — запись живёт вне экрана
+    /// субтитров, — и повторная разведка полезла бы в работающий tap.
+    func testWarmUpDoesNothingWhileRecording() async {
+        let microphone = FakeTap()
+        let systemAudio = FakeTap(isAvailable: true)
+        let coordinator = makeCoordinator(microphone: microphone, systemAudio: systemAudio)
+        await coordinator.startRecording()
+        XCTAssertTrue(coordinator.isRecording)
+        let probes = systemAudio.prepareCalls
+        XCTAssertGreaterThan(probes, 0, "запись обязана была разведать сама")
+
+        coordinator.warmUpSystemAudio()
+
+        XCTAssertEqual(systemAudio.prepareCalls, probes, "разведка полезла в работающий tap")
+        coordinator.stopRecording()
+    }
+
+    /// Пока на экране запрос разрешения, приложение не заявляет запись.
+    ///
+    /// Первый вызов разведки поднимает системный запрос «System Audio
+    /// Recording», и до её конца звук не идёт ни по одному каналу —
+    /// микрофон стартует после. Открытая сессия и `isRecording` в это
+    /// время означали бы «идёт запись» при нуле записанного.
+    ///
+    /// Проверяется именно состояние **внутри** разведки: после неё оно
+    /// уже правильное само собой, и утверждение про «после» прошло бы и
+    /// на старом порядке вызовов.
+    func testNothingClaimsRecordingWhileThePermissionDialogIsUp() async {
+        let microphone = FakeTap()
+        let systemAudio = FakeTap(isAvailable: true)
+        let coordinator = makeCoordinator(microphone: microphone, systemAudio: systemAudio)
+
+        var claimedRecording: Bool?
+        var hadSession: Bool?
+        systemAudio.onPrepare = {
+            // Разведка зовётся синхронно из `startRecording()`, то есть с
+            // главного актора: читать его состояние здесь безопасно.
+            MainActor.assumeIsolated {
+                claimedRecording = coordinator.isRecording
+                hadSession = coordinator.sessionId != nil
+            }
+        }
+
+        await coordinator.startRecording()
+
+        XCTAssertEqual(systemAudio.prepareCalls, 1, "разведки не было — проверять нечего")
+        XCTAssertEqual(claimedRecording, false, "заявлена запись, пока звука нет ни на одном канале")
+        XCTAssertEqual(hadSession, false, "сессия открыта раньше, чем начался захват")
+        XCTAssertTrue(coordinator.isRecording, "после разведки запись обязана идти")
     }
 
     /// У каналов одно общее начало отсчёта, а не по своему нулю у каждого.

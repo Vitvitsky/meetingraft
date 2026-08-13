@@ -91,6 +91,31 @@ final class AudioCaptureCoordinator {
         core.modelsDirectory()
     }
 
+    /// Разведать системный канал заранее — при открытии окна.
+    ///
+    /// Первый вызов поднимает системный запрос «System Audio Recording».
+    /// Пусть он приходит при открытии приложения, а не по нажатию
+    /// «запись»: там он ложится в самое начало встречи, и первые слова
+    /// созвона в системный канал не попадают вовсе.
+    ///
+    /// Идемпотентно: удачная разведка запоминается внутри источника, и
+    /// повторный вызов tap'а не создаёт. Во время записи не делает ничего
+    /// — tap уже поднят, и лезть в него незачем.
+    ///
+    /// **Главный поток при этом занят**, пока запрос на экране: вызов
+    /// `AudioHardwareCreateProcessTap` синхронный. Это цена не выросла, а
+    /// переехала — раньше окно замирало на нажатии записи. Убрать её
+    /// целиком значит звать разведку вне главного актора, а это требует
+    /// точки сериализации: `prepare()` и `start()` не должны пересекаться
+    /// никогда, иначе tap утечёт в `coreaudiod` (Epic 24). Такую правку
+    /// делать без Мака под рукой нельзя.
+    func warmUpSystemAudio() {
+        guard !isRecording else { return }
+        systemAudio.prepare()
+        systemAudioAvailable = systemAudio.isAvailable
+        systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unknown
+    }
+
     /// Старт recording: permission → Rust session → taps.
     func startRecording() async {
         lastError = nil
@@ -107,6 +132,22 @@ final class AudioCaptureCoordinator {
         // разрешения — время человека, а не наша цена.
         var timer = CaptureStepTimer(clock: clock)
 
+        // Разведка системного канала — **до** открытия сессии. Первый её
+        // вызов поднимает системный запрос «System Audio Recording», и
+        // пока этот запрос на экране, звук не идёт ни по одному каналу:
+        // микрофон стартует ниже. Открытая сессия и `isRecording = true`
+        // означали бы в это время «идёт запись» при нуле записанного, а
+        // человек, уверенный, что встреча пишется, — худший исход из
+        // возможных.
+        //
+        // Разведка создаёт и сразу отпускает tap, поэтому её цена — цена
+        // ожидания перед записью. Платится она только за первую встречу
+        // после запуска приложения: удачная разведка запоминается.
+        systemAudio.prepare()
+        systemAudioAvailable = systemAudio.isAvailable
+        systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unknown
+        timer.step("system_prepare")
+
         let id = UUID().uuidString
         let err = core.startRecording(sessionId: id, title: MeetingTitle.forNewMeeting())
         guard err.isEmpty else {
@@ -122,19 +163,11 @@ final class AudioCaptureCoordinator {
         micStartedAt = nil
         systemStartedAt = nil
         sttBackend = core.sttBackend()
+        // Пока tap не запущен, микшер не должен ждать системный канал.
+        core.setSystemAudioExpected(expected: false)
         // До start mic: иначе ранние буферы отбрасываются в ingest.
         isRecording = true
         timer.step("session_open")
-
-        systemAudio.prepare()
-        systemAudioAvailable = systemAudio.isAvailable
-        systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unknown
-        // Пока tap не запущен, микшер не должен ждать системный канал.
-        core.setSystemAudioExpected(expected: false)
-        // Разведка создаёт и сразу отпускает tap, и её цена — это цена
-        // ожидания перед записью. Платится она только за первую встречу
-        // после запуска приложения: удачная разведка запоминается.
-        timer.step("system_prepare")
 
         // Начало записи — до запуска первого источника: якорь канала
         // отсчитывается от него, и буфер, записанный раньше собственного

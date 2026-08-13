@@ -87,6 +87,12 @@ struct AppShellView: View {
             captionsViewModel.applyTranslationSettings(translationStore)
         }
         .task {
+            // Разрешение на системный звук спрашивается при открытии окна,
+            // а не по нажатию «запись»: там запрос ложится в начало
+            // встречи, и первые слова созвона теряются целиком. Заодно к
+            // моменту записи tap уже разведан, и нажатие не ждёт
+            // `coreaudiod`.
+            captureCoordinator.warmUpSystemAudio()
             // Модель качается на старте, а не при заходе в Settings.
             await modelBootstrap.ensureModel(core: core)
         }
