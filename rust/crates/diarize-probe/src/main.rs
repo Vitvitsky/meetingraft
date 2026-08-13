@@ -693,7 +693,7 @@ fn apply_prints(
 /// всего диапазона. Начала теперь выравниваются по манифесту, а запас
 /// оставлен вдвое шире прежнего — на то, что метки чанков сами по себе
 /// не идеальны.
-const MAX_ENVELOPE_LAG_MS: u64 = 1_000;
+const MAX_ENVELOPE_LAG_MS: u64 = 2_000;
 
 /// Порог, выше которого совпадение громкости считается одним событием.
 ///
@@ -702,6 +702,55 @@ const MAX_ENVELOPE_LAG_MS: u64 = 1_000;
 /// высока даже при сильном приглушении, потому что тихое и громкое
 /// чередуются одинаково.
 const SAME_SOUND: f32 = 0.5;
+
+/// Окно, в котором совпадение считается отдельно.
+///
+/// Минута: короче — и в окно попадает слишком мало речи, чтобы
+/// корреляция что-то значила; длиннее — и снова получается одно число на
+/// всю встречу, то есть та же ошибка, ради которой окна и заводились.
+const MATCH_WINDOW_MS: u64 = 60_000;
+
+/// Совпадение по окнам: где во встрече каналы звучат одинаково.
+///
+/// Заведено по замечанию пользователя: микрофон в Zoom был включён не всё
+/// время. Одно число на двадцать две минуты такую картину усредняет в
+/// ничто — если полвстречи каналы несут одно и то же, а полвстречи разное,
+/// общая корреляция выйдет средней и не будет означать ни того, ни
+/// другого.
+///
+/// Тот же урок, что уже записан в беклоге про микшер: **величина,
+/// усредняющая ровно то место, о котором вопрос, отвечает не на него.**
+///
+/// Второе, что показывают окна, — расхождение хода часов. У микрофона и
+/// системного tap'а источники тактирования разные, и за двадцать минут
+/// даже сотая доля процента даёт больше секунды. Тогда лучший сдвиг будет
+/// расти от окна к окну, а одно общее число не подойдёт нигде.
+fn match_by_window(
+    mic: &[i16],
+    system: &[i16],
+    sample_rate: u32,
+    skew_ms: i64,
+) -> Vec<(u64, f32, i64)> {
+    let step = (u64::from(sample_rate) * MATCH_WINDOW_MS / 1_000) as usize;
+    if step == 0 {
+        return Vec::new();
+    }
+    let windows = mic.len().min(system.len()) / step;
+    (0..windows)
+        .map(|index| {
+            let from = index * step;
+            let to = from + step;
+            let (value, lag) = envelope_match(
+                &mic[from..to.min(mic.len())],
+                &system[from..to.min(system.len())],
+                sample_rate,
+                MAX_ENVELOPE_LAG_MS,
+                skew_ms,
+            );
+            (index as u64 * MATCH_WINDOW_MS, value, lag)
+        })
+        .collect()
+}
 
 /// Слышит ли микрофон то же, что системный канал.
 ///
@@ -752,6 +801,55 @@ fn report_envelope_match(raw: &[(AudioChannel, Vec<i16>)], starts: &BTreeMap<Str
             "    ! сдвиг лёг ровно на край поиска — значит настоящий может быть\n\
              \x20     дальше, и число выше за ответ брать нельзя"
         );
+    }
+
+    // Одно число на всю встречу усредняет то, о чём спрашивали. Окна
+    // показывают, было ли совпадение местами.
+    let windows = match_by_window(&first.1, &second.1, RATE, skew);
+    if windows.len() > 1 {
+        let matched: Vec<&(u64, f32, i64)> = windows
+            .iter()
+            .filter(|(_, value, _)| *value >= SAME_SOUND)
+            .collect();
+        println!(
+            "    по минутам: совпало {} окон из {}",
+            matched.len(),
+            windows.len()
+        );
+        println!("      минута  совпадение  сдвиг, мс");
+        for (at, value, lag) in &windows {
+            println!(
+                "      {:>6} {:>11.2} {:>10}{}",
+                at / 60_000,
+                value,
+                lag,
+                if *value >= SAME_SOUND { "  <-" } else { "" }
+            );
+        }
+
+        if !matched.is_empty() && matched.len() < windows.len() {
+            println!(
+                "    ! совпадение есть местами, а не везде. Это ровно то, чего ждёшь,\n\
+                 \x20     когда микрофон включён не всю встречу: там, где он включён,\n\
+                 \x20     в него попадает и созвон"
+            );
+        }
+
+        // Сдвиг, растущий от окна к окну, — расхождение хода часов у двух
+        // источников, а не свойство звука. Общего сдвига тогда нет вовсе.
+        let lags: Vec<i64> = matched.iter().map(|(_, _, lag)| *lag).collect();
+        if lags.len() >= 3 {
+            let growing = lags.windows(2).filter(|pair| pair[1] >= pair[0]).count();
+            if growing * 4 >= (lags.len() - 1) * 3 {
+                println!(
+                    "    ! сдвиг растёт от окна к окну ({} → {} мс). Это расходятся часы\n\
+                     \x20     двух источников, и одного общего сдвига на всю встречу не\n\
+                     \x20     существует",
+                    lags[0],
+                    lags[lags.len() - 1]
+                );
+            }
+        }
     }
 
     if value >= SAME_SOUND {
@@ -3123,6 +3221,56 @@ mod tests {
             "выравнивание не помогло: {aligned:.2}"
         );
         assert_eq!(lag, 0, "после выравнивания сдвиг обязан быть нулевым");
+    }
+
+    /// Совпадение местами: половина встречи — один звук, половина —
+    /// разный. Одно общее число такую картину усредняет в ничто.
+    ///
+    /// Ровно случай, о котором сказал пользователь: микрофон в Zoom был
+    /// включён не всю встречу.
+    #[test]
+    fn a_match_that_comes_and_goes_is_visible_by_window() {
+        let rate = 16_000usize;
+        let mine = speechlike(1, rate);
+        let other = speechlike(999, rate);
+        // Первая минута: одно и то же (тише впятеро). Вторая: разное.
+        let minute = rate * 60;
+        let mut mic: Vec<i16> = Vec::new();
+        let mut system: Vec<i16> = Vec::new();
+        while mic.len() < minute {
+            mic.extend(&mine);
+            system.extend(mine.iter().map(|s| s / 5));
+        }
+        mic.truncate(minute);
+        system.truncate(minute);
+        while mic.len() < minute * 2 {
+            mic.extend(&mine);
+            system.extend(&other);
+        }
+        mic.truncate(minute * 2);
+        system.truncate(minute * 2);
+
+        let windows = match_by_window(&mic, &system, rate as u32, 0);
+
+        assert_eq!(windows.len(), 2, "окон вышло не два");
+        assert!(
+            windows[0].1 >= SAME_SOUND,
+            "первая минута не совпала: {:.2}",
+            windows[0].1
+        );
+        assert!(
+            windows[1].1 < SAME_SOUND,
+            "вторая минута совпала, хотя звук разный: {:.2}",
+            windows[1].1
+        );
+
+        // И главное: одно число на обе минуты не сказало бы ни того, ни
+        // другого — ради этого окна и заведены.
+        let (whole, _) = envelope_match(&mic, &system, rate as u32, MAX_ENVELOPE_LAG_MS, 0);
+        assert!(
+            whole < windows[0].1,
+            "общее число не ниже оконного: усреднения не произошло"
+        );
     }
 
     /// Заведомо разный звук: слоги идут вразнобой. Совпадения быть не
