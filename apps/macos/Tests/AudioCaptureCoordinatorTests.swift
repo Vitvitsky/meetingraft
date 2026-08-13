@@ -171,7 +171,7 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
     ///
     /// Ноль вызовов до неё — заведомо отрицательный случай: без него
     /// «разведка была» выполнялось бы и тем, что её делает `startRecording`.
-    func testWarmUpProbesSystemAudioBeforeAnyRecording() async {
+    func testWarmUpProbesSystemAudioBeforeAnyRecording() {
         let microphone = FakeTap()
         let systemAudio = FakeTap(isAvailable: true)
         let coordinator = makeCoordinator(microphone: microphone, systemAudio: systemAudio)
