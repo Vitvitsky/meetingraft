@@ -278,7 +278,7 @@ private struct FinalSegmentRow: View {
                 ForEach(speakers, id: \.id) { speaker in
                     Button(speaker.displayName) { onAssign(speaker.id) }
                 }
-                if segment.speakerPinned {
+                if segment.source == .human {
                     Divider()
                     Button("Вернуть под дорожку") { onUnpin() }
                 }
@@ -293,8 +293,14 @@ private struct FinalSegmentRow: View {
 
             // Правку помечаем: иначе непонятно, почему смена имени
             // дорожки эту реплику не задела.
-            if segment.speakerPinned {
+            if segment.source == .human {
                 Chip(text: "правка")
+            }
+            // Подпись слепком отличается от подписи человеком (ADR-013).
+            // Одинаковые они выглядели бы одинаково достоверными, и
+            // доверие к именам пришлось бы строить на вере.
+            if segment.source == .voiceprint {
+                Chip(text: "голос")
             }
             // Две пометки различаются словом: «правка» уже занята
             // ручным назначением спикера, и одинаковые чипы рядом были

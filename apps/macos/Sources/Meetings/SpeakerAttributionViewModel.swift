@@ -36,6 +36,29 @@ protocol SpeakerAttributionCoreProviding: AnyObject {
 
 extension MeetingCore: SpeakerAttributionCoreProviding {}
 
+/// Откуда у реплики взялось имя (ADR-013).
+///
+/// Зеркало `domain::SpeakerSource`, а не второе решение: коды приходят с
+/// границы строками, и разбор их держится в одном месте. Незнакомый код —
+/// от более новой версии ядра — читается как отсутствие подписи, потому
+/// что защищать от перезаписи то, о чём мы ничего не знаем, нельзя.
+enum SpeakerSource: String {
+    case none = ""
+    case channel
+    case human
+    case voiceprint
+
+    init(code: String) {
+        self = SpeakerSource(rawValue: code) ?? .none
+    }
+}
+
+extension FfiFinalSegment {
+    var source: SpeakerSource {
+        SpeakerSource(code: speakerSource)
+    }
+}
+
 /// Строка экрана Speakers: участник и его вклад в разговор.
 struct SpeakerRowModel: Identifiable, Equatable {
     let id: String
@@ -196,7 +219,7 @@ final class SpeakerAttributionViewModel {
         var counts: [String: Int] = [:]
         for segment in segments
             where segment.channel == channelCode
-            && !segment.speakerPinned
+            && segment.source == .channel
             && !segment.speakerId.isEmpty
         {
             counts[segment.speakerId, default: 0] += 1
