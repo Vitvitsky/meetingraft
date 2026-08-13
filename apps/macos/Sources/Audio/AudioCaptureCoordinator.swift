@@ -91,6 +91,31 @@ final class AudioCaptureCoordinator {
         core.modelsDirectory()
     }
 
+    /// Разведать системный канал заранее — при открытии окна.
+    ///
+    /// Первый вызов поднимает системный запрос «System Audio Recording».
+    /// Пусть он приходит при открытии приложения, а не по нажатию
+    /// «запись»: там он ложится в самое начало встречи, и первые слова
+    /// созвона в системный канал не попадают вовсе.
+    ///
+    /// Идемпотентно: удачная разведка запоминается внутри источника, и
+    /// повторный вызов tap'а не создаёт. Во время записи не делает ничего
+    /// — tap уже поднят, и лезть в него незачем.
+    ///
+    /// **Главный поток при этом занят**, пока запрос на экране: вызов
+    /// `AudioHardwareCreateProcessTap` синхронный. Это цена не выросла, а
+    /// переехала — раньше окно замирало на нажатии записи. Убрать её
+    /// целиком значит звать разведку вне главного актора, а это требует
+    /// точки сериализации: `prepare()` и `start()` не должны пересекаться
+    /// никогда, иначе tap утечёт в `coreaudiod` (Epic 24). Такую правку
+    /// делать без Мака под рукой нельзя.
+    func warmUpSystemAudio() {
+        guard !isRecording else { return }
+        systemAudio.prepare()
+        systemAudioAvailable = systemAudio.isAvailable
+        systemAudioStatus = (systemAudio as? SystemAudioCapture)?.status ?? .unknown
+    }
+
     /// Старт recording: permission → Rust session → taps.
     func startRecording() async {
         lastError = nil

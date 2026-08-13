@@ -167,6 +167,43 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
         XCTAssertEqual(systemAudio.stopCalls, 1)
     }
 
+    /// Разведка идёт при открытии окна, а не по нажатию записи.
+    ///
+    /// Ноль вызовов до неё — заведомо отрицательный случай: без него
+    /// «разведка была» выполнялось бы и тем, что её делает `startRecording`.
+    func testWarmUpProbesSystemAudioBeforeAnyRecording() async {
+        let microphone = FakeTap()
+        let systemAudio = FakeTap(isAvailable: true)
+        let coordinator = makeCoordinator(microphone: microphone, systemAudio: systemAudio)
+
+        XCTAssertEqual(systemAudio.prepareCalls, 0, "до открытия окна разведки быть не должно")
+
+        coordinator.warmUpSystemAudio()
+
+        XCTAssertEqual(systemAudio.prepareCalls, 1)
+        XCTAssertTrue(coordinator.systemAudioAvailable, "доступность известна до записи")
+        XCTAssertFalse(coordinator.isRecording, "разведка сама записи не начинает")
+    }
+
+    /// Во время записи разведка не трогает уже поднятый tap.
+    ///
+    /// Окно может открыться посреди сессии — запись живёт вне экрана
+    /// субтитров, — и повторная разведка полезла бы в работающий tap.
+    func testWarmUpDoesNothingWhileRecording() async {
+        let microphone = FakeTap()
+        let systemAudio = FakeTap(isAvailable: true)
+        let coordinator = makeCoordinator(microphone: microphone, systemAudio: systemAudio)
+        await coordinator.startRecording()
+        XCTAssertTrue(coordinator.isRecording)
+        let probes = systemAudio.prepareCalls
+        XCTAssertGreaterThan(probes, 0, "запись обязана была разведать сама")
+
+        coordinator.warmUpSystemAudio()
+
+        XCTAssertEqual(systemAudio.prepareCalls, probes, "разведка полезла в работающий tap")
+        coordinator.stopRecording()
+    }
+
     /// Пока на экране запрос разрешения, приложение не заявляет запись.
     ///
     /// Первый вызов разведки поднимает системный запрос «System Audio
