@@ -49,6 +49,18 @@ private final class FakeTap: AudioTapping {
 
 private struct FakeTapError: Error {}
 
+/// Ответ системы про разрешение, который тест меняет по ходу.
+///
+/// Класс, а не переменная: читает его `@Sendable`-замыкание, и захватить
+/// изменяемое значение иначе нельзя.
+private final class PermissionAnswer: @unchecked Sendable {
+    var value: MicrophonePermission
+
+    init(_ value: MicrophonePermission) {
+        self.value = value
+    }
+}
+
 /// Начало записи в тиках подменных часов. Тик = наносекунда, поэтому
 /// смещения буферов в тестах читаются как миллисекунды × 1e6.
 ///
@@ -67,7 +79,11 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
     private func makeCoordinator(
         microphone: FakeTap,
         systemAudio: FakeTap,
-        core: MeetingCore? = nil
+        core: MeetingCore? = nil,
+        granted: Bool = true,
+        // Умолчание своё, а не настоящее: статус машины, на которой идёт
+        // тест, сделал бы результат зависящим от чужих разрешений.
+        permission: @escaping @Sendable () -> MicrophonePermission = { .granted }
     ) -> AudioCaptureCoordinator {
         let core = core ?? makeCore()
         return AudioCaptureCoordinator(
@@ -75,7 +91,8 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
             microphone: microphone,
             systemAudio: systemAudio,
             clock: HostClock(numerator: 1, denominator: 1, now: { anchorTicks }),
-            requestMicrophonePermission: { true }
+            requestMicrophonePermission: { granted },
+            readMicrophonePermission: permission
         )
     }
 
@@ -165,6 +182,49 @@ final class AudioCaptureCoordinatorTests: XCTestCase {
         coordinator.stopRecording()
         XCTAssertEqual(microphone.stopCalls, 1)
         XCTAssertEqual(systemAudio.stopCalls, 1)
+    }
+
+    /// Состояние разрешения микрофона видно **до** записи и обновляется
+    /// при открытии окна.
+    ///
+    /// Разрешение могли выдать или отобрать в системных настройках, пока
+    /// окно было закрыто; показанное состояние обязано быть сегодняшним.
+    func testMicrophonePermissionIsKnownBeforeRecordingAndRefreshed() {
+        let answer = PermissionAnswer(.notAsked)
+        let coordinator = makeCoordinator(
+            microphone: FakeTap(),
+            systemAudio: FakeTap(isAvailable: true),
+            permission: { answer.value }
+        )
+
+        XCTAssertEqual(coordinator.microphonePermission, .notAsked, "статус читается сразу")
+        XCTAssertEqual(coordinator.readiness, .microphoneWillBeAsked)
+
+        answer.value = .denied
+        coordinator.warmUpSystemAudio()
+
+        XCTAssertEqual(coordinator.microphonePermission, .denied, "статус не перечитан")
+        XCTAssertEqual(coordinator.readiness, .microphoneDenied)
+    }
+
+    /// После отказа состояние видно на экране, а не только в строке
+    /// ошибки: строку легко пропустить, а плашка держится.
+    func testDenialUpdatesTheVisibleStateNotOnlyTheError() async {
+        let answer = PermissionAnswer(.notAsked)
+        let coordinator = makeCoordinator(
+            microphone: FakeTap(),
+            systemAudio: FakeTap(isAvailable: true),
+            granted: false,
+            permission: { answer.value }
+        )
+        // Так ответит система после «Не разрешать».
+        answer.value = .denied
+
+        await coordinator.startRecording()
+
+        XCTAssertFalse(coordinator.isRecording)
+        XCTAssertNotNil(coordinator.lastError)
+        XCTAssertEqual(coordinator.readiness, .microphoneDenied, "плашка осталась бы пустой")
     }
 
     /// Разведка идёт при открытии окна, а не по нажатию записи.

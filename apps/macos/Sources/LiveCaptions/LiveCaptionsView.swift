@@ -73,6 +73,12 @@ struct LiveCaptionsView: View {
             if !capture.systemAudioAvailable, isLive {
                 SystemAudioUnavailableBadge(status: capture.systemAudioStatus)
             }
+            // До записи здесь же говорится о разрешениях — и только если
+            // есть что сказать. Место то же, что у плашки во время
+            // записи: состояние захвата человек ищет в одном углу.
+            if !isLive {
+                CaptureReadinessBadge(readiness: capture.readiness)
+            }
         }
         .padding(.horizontal, Theme.Space.md)
         .padding(.vertical, Theme.Space.sm)
