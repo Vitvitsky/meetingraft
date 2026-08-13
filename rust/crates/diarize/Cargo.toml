@@ -19,6 +19,9 @@ default = []
 model = ["dep:sherpa-onnx"]
 
 [dependencies]
+# Лист графа: типы подписи говорящего общие с хранилищем и пересбором, и
+# заводить их здесь второй раз значило бы развести две правды об одном.
+meetingraft-domain = { path = "../domain" }
 sherpa-onnx = { version = "1.13", optional = true }
 
 [lib]

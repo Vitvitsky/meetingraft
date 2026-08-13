@@ -5,7 +5,7 @@
 //! live (ADR-009). Ради этого ADR-004 и держит дорожки раздельными на
 //! диске; здесь это окупается.
 
-use domain::{AudioChannel, FinalSegment, Speaker, TranscriptSegment};
+use domain::{AudioChannel, FinalSegment, Speaker, SpeakerSource, TranscriptSegment};
 
 /// Свести дорожки микрофона и системного звука в один список по времени.
 ///
@@ -46,7 +46,7 @@ pub fn merge_channels(
             channel,
             // Заполняется назначением по каналу (Phase 11).
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: segment.text,
             text_edited: false,
             original_text: String::new(),

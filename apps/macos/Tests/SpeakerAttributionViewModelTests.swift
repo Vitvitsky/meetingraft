@@ -80,7 +80,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
     func testAssignChannelForwardsVersionAndReloads() {
         let core = AttributionCoreSpy(
             speakers: [speaker("s1", "Пётр")],
-            segments: [segment(0, channel: "system", speakerId: "", pinned: false)]
+            segments: [segment(0, channel: "system", speakerId: "")]
         )
         let viewModel = SpeakerAttributionViewModel(core: core)
         viewModel.load(meetingId: "m1", version: 3)
@@ -113,7 +113,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
     func testAssignSegmentSurfacesCoreError() {
         let core = AttributionCoreSpy(
             speakers: [speaker("s1", "Пётр")],
-            segments: [segment(0, channel: "mic", speakerId: "", pinned: false)]
+            segments: [segment(0, channel: "mic", speakerId: "")]
         )
         core.assignSegmentError = "boom"
         let viewModel = SpeakerAttributionViewModel(core: core)
@@ -133,9 +133,9 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         let core = AttributionCoreSpy(
             speakers: [speaker("s1", "Пётр"), speaker("s2", "Гость")],
             segments: [
-                segment(0, channel: "system", speakerId: "s1", pinned: false),
-                segment(1, channel: "system", speakerId: "s1", pinned: false),
-                segment(2, channel: "system", speakerId: "s2", pinned: true),
+                segment(0, channel: "system", speakerId: "s1", source: "channel"),
+                segment(1, channel: "system", speakerId: "s1", source: "channel"),
+                segment(2, channel: "system", speakerId: "s2", source: "human"),
             ]
         )
         let viewModel = SpeakerAttributionViewModel(core: core)
@@ -494,7 +494,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         _ index: UInt32,
         channel: String = "mic",
         speakerId: String = "",
-        pinned: Bool = false,
+        source: String = "",
         text: String = "текст",
         originalText: String = "",
         promotableTermId: String = ""
@@ -506,7 +506,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
             channel: channel,
             speakerId: speakerId,
             speakerName: "",
-            speakerPinned: pinned,
+            speakerSource: source,
             text: text,
             textEdited: !originalText.isEmpty,
             originalText: originalText,

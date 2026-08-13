@@ -11,8 +11,13 @@ crate-type = ["cdylib", "lib"]
 default = []
 # Прокинуть Metal Whisper в dylib (локальная macOS-сборка / generate-ffi).
 whisper = ["meetingraft-stt/whisper"]
+# Настоящая модель эмбеддинга голоса (ADR-013). Без неё пересчёт слепков
+# отказывается вслух, а не подписывает наугад: движка нет, и считать
+# похожесть нечем.
+diarize = ["meetingraft-diarize/model"]
 
 [dependencies]
+meetingraft-diarize = { path = "../diarize" }
 meetingraft-domain = { path = "../domain" }
 meetingraft-glossary = { path = "../glossary" }
 meetingraft-postcall = { path = "../postcall" }

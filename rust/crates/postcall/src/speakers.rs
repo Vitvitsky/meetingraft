@@ -77,6 +77,7 @@ pub fn speaker_stats(segments: &[FinalSegment], speakers: &[Speaker]) -> Vec<Spe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::SpeakerSource;
 
     fn segment(index: u32, speaker: &str, channel: AudioChannel, duration_ms: u64) -> FinalSegment {
         let start = u64::from(index) * 10_000;
@@ -86,7 +87,7 @@ mod tests {
             end_ms: start + duration_ms,
             channel,
             speaker_id: speaker.to_string(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: "текст".to_string(),
             text_edited: false,
             original_text: String::new(),

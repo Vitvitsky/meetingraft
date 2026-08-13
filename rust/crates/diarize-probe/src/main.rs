@@ -81,7 +81,7 @@ use diarize::{
     DiarizeReport, Diarizer, Match, VoiceEmbedder, VoicePrint, best_match, build_print,
     diarize_backend, diarize_models_dir,
 };
-use domain::AudioChannel;
+use domain::{AudioChannel, SpeakerSource};
 use storage::AudioManifestStore;
 
 /// Частота живого пути; ею же пишутся чанки на диск (ADR-005).
@@ -1370,7 +1370,7 @@ fn read_replies(
                     .get(&segment.speaker_id)
                     .cloned()
                     .unwrap_or(segment.speaker_id),
-                pinned: segment.speaker_pinned,
+                pinned: segment.speaker_source == SpeakerSource::Human,
                 vector,
             }),
             Err(_) => short += 1,
@@ -1968,8 +1968,8 @@ fn print_against_labels(
 
 /// Реплики, которым спикера поставил **человек**, а не канал.
 ///
-/// `speaker_pinned` — тот самый признак: массовое назначение по каналу
-/// такие сегменты не трогает (миграция 6). Брать вместо него все
+/// `SpeakerSource::Human` — тот самый признак: массовое назначение по
+/// каналу такие сегменты не трогает. Брать вместо него все
 /// назначенные было бы самообманом: подпись по каналу повторяет то, что
 /// и так известно из дорожки, и совпадение с ней ничего не проверяет.
 fn human_labels(
@@ -2003,7 +2003,9 @@ fn human_labels(
     Ok(segments
         .into_iter()
         .filter(|segment| {
-            segment.channel == channel && segment.speaker_pinned && !segment.speaker_id.is_empty()
+            segment.channel == channel
+                && segment.speaker_source == SpeakerSource::Human
+                && !segment.speaker_id.is_empty()
         })
         .map(|segment| compare::Labelled {
             speaker: names
@@ -2664,7 +2666,11 @@ mod tests {
             end_ms,
             channel,
             speaker_id: speaker_id.to_string(),
-            speaker_pinned: pinned,
+            speaker_source: if pinned {
+                SpeakerSource::Human
+            } else {
+                SpeakerSource::Channel
+            },
             text: "реплика".to_string(),
             text_edited: false,
             original_text: String::new(),

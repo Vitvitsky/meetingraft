@@ -8,10 +8,15 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use diarize::{
+    DEFAULT_ACCEPT, DEFAULT_MARGIN, EnrollPlan, Reply as EnrollReply, VoicePrint,
+    embedding_model_id, plan_enrollment,
+};
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryKind,
     GlossaryScope, GlossaryTerm, LanguagePolicy, MeetingSummary, SearchHit, SessionState, Speaker,
-    SpeechLanguage, SttDiagnostic, SttDiagnosticKind, body_fingerprint, edits_by_position,
+    SpeakerSource, SpeechLanguage, StoredVoicePrint, SttDiagnostic, SttDiagnosticKind,
+    body_fingerprint, edits_by_position,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
@@ -142,6 +147,55 @@ pub struct FfiAudioSweepResult {
     pub skipped: Vec<String>,
 }
 
+/// Слепок голоса участника для Swift (ADR-013).
+///
+/// Вектора здесь нет и не будет: за границу едет то, что человеку
+/// показывают, а вектор — биометрический идентификатор, и Swift с ним
+/// делать нечего.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiVoicePrint {
+    pub speaker_id: String,
+    /// Разрешённое имя; пусто, если спикера удалили, а слепок остался.
+    pub speaker_name: String,
+    /// Какой моделью посчитан.
+    pub model_id: String,
+    /// Из скольки реплик сложен.
+    pub samples: u32,
+    /// Сколько секунд материала в нём. Слепок на четырёх секундах и
+    /// слепок на четырёх минутах — разной надёжности, и это показывают.
+    pub seconds: f32,
+    /// Совпадает ли модель слепка с той, что стоит сейчас.
+    ///
+    /// Расхождение — не поломка и не повод молча выкинуть слепок:
+    /// сравнение просто не выполняется, а человеку говорится пересчитать.
+    pub model_matches: bool,
+}
+
+/// Итог пересчёта подписей по слепкам.
+///
+/// Числа едут вместе с ошибкой, а не вместо неё: «пересчитал и ничего не
+/// изменилось» и «не смог пересчитать» — разные ответы, и человеку,
+/// нажавшему кнопку, различать их обязательно.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiVoicePrintPass {
+    /// Пусто — успех; иначе текст отказа.
+    pub error: String,
+    /// Сложено слепков.
+    pub prints: u32,
+    /// Реплик получило имя.
+    pub signed: u32,
+    /// Реплик потеряло имя, поставленное прошлым пересчётом.
+    pub cleared: u32,
+    /// Реплик померено и не узнано — законный исход (ADR-013).
+    pub unknown: u32,
+    /// Реплик, у которых вектор посчитать не удалось: слишком короткие
+    /// либо звук за них удалён. Это молчание прибора, а не его ответ, и
+    /// в `unknown` они не входят.
+    pub without_vector: u32,
+    /// Отпечаток модели, которой считали.
+    pub model_id: String,
+}
+
 /// Сегмент финального транскрипта для Swift.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiFinalSegment {
@@ -153,9 +207,14 @@ pub struct FfiFinalSegment {
     pub speaker_id: String,
     /// Разрешённое имя; пусто, если спикер не назначен или удалён.
     pub speaker_name: String,
-    /// Спикера поставил человек: массовое назначение по каналу такую
-    /// реплику не тронет.
-    pub speaker_pinned: bool,
+    /// Откуда взялась подпись: `""` — ниоткуда, `channel`, `human`,
+    /// `voiceprint` (ADR-013).
+    ///
+    /// Строкой, а не булевым «поставлено рукой»: источников три, и
+    /// порядок между ними жёсткий. Интерфейсу это нужно, чтобы подпись,
+    /// поставленная моделью, отличалась от поставленной человеком —
+    /// иначе доверие к именам придётся строить на вере.
+    pub speaker_source: String,
     pub text: String,
     /// Текст заменён ручной правкой из журнала (Epic 19).
     pub text_edited: bool,
@@ -469,6 +528,29 @@ fn store_and_enqueue(inner: &mut MeetingCoreInner, events: Vec<domain::CaptionEv
 /// Свободная функция, а не метод: приватные методы внутри
 /// `#[uniffi::export]`-блока всё равно пытаются пройти через границу, а
 /// хранилище через неё не проходит.
+/// Каталог данных ядра.
+fn data_root(core: &MeetingCore) -> PathBuf {
+    let guard = core.inner.lock().expect("meeting core poisoned");
+    guard.data_root.clone()
+}
+
+/// Движок эмбеддинга голоса — или отказ, называющий причину.
+///
+/// Без фичи `diarize` модели нет вовсе, и это единственный честный ответ.
+/// Тихо вернуть «ноль подписанных» значило бы показать пустой результат
+/// там, где работа не выполнялась, — то же самое, что заглушка,
+/// притворяющаяся движком.
+#[cfg(feature = "diarize")]
+fn open_voice_embedder(root: &std::path::Path) -> Result<Box<dyn diarize::VoiceEmbedder>, String> {
+    diarize::voice_embedder(root)
+        .map(|embedder| Box::new(embedder) as Box<dyn diarize::VoiceEmbedder>)
+}
+
+#[cfg(not(feature = "diarize"))]
+fn open_voice_embedder(_root: &std::path::Path) -> Result<Box<dyn diarize::VoiceEmbedder>, String> {
+    Err("разделение голосов не собрано: нужна сборка с фичей diarize".to_string())
+}
+
 fn open_store(core: &MeetingCore) -> Option<AudioManifestStore> {
     let guard = core.inner.lock().expect("meeting core poisoned");
     let root = guard.data_root.clone();
@@ -1671,7 +1753,7 @@ impl MeetingCore {
                     channel: segment.channel.code().to_string(),
                     speaker_id: segment.speaker_id,
                     speaker_name,
-                    speaker_pinned: segment.speaker_pinned,
+                    speaker_source: segment.speaker_source.code().to_string(),
                     text: segment.text,
                     text_edited: segment.text_edited,
                     original_text: segment.original_text,
@@ -1991,6 +2073,184 @@ impl MeetingCore {
             }
         }
         rerender_final_bodies(&mut store, &meeting_id)
+    }
+
+    /// Порог похожести по умолчанию (ADR-013).
+    pub fn voiceprint_default_accept(&self) -> f32 {
+        DEFAULT_ACCEPT
+    }
+
+    /// Отрыв от следующего кандидата по умолчанию (ADR-013).
+    pub fn voiceprint_default_margin(&self) -> f32 {
+        DEFAULT_MARGIN
+    }
+
+    /// Слепки встречи — то, что о них показывают человеку.
+    pub fn list_voiceprints(&self, meeting_id: String) -> Vec<FfiVoicePrint> {
+        let Some(store) = open_store(self) else {
+            return Vec::new();
+        };
+        let Ok(prints) = store.list_voiceprints(&meeting_id) else {
+            return Vec::new();
+        };
+        let names: std::collections::HashMap<String, String> = store
+            .list_speakers(&meeting_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|speaker| (speaker.id, speaker.display_name))
+            .collect();
+        // Модели может не быть вовсе — тогда сравнивать не с чем, и
+        // совпадением это не считается.
+        let current = embedding_model_id(data_root(self)).ok();
+        prints
+            .into_iter()
+            .map(|print| FfiVoicePrint {
+                speaker_name: names.get(&print.speaker_id).cloned().unwrap_or_default(),
+                model_matches: current.as_deref() == Some(print.model_id.as_str()),
+                speaker_id: print.speaker_id,
+                model_id: print.model_id,
+                samples: print.samples,
+                seconds: print.seconds,
+            })
+            .collect()
+    }
+
+    /// Пересчитать слепки по ручным подписям и разнести остальные реплики.
+    ///
+    /// Отдельная операция, а не часть пересбора (ADR-011): пересбор идёт
+    /// минутами, а это — секундами, и связывать их значит платить за
+    /// дешёвое цену дорогого. Человек размечает несколько реплик, жмёт
+    /// пересчёт, смотрит, размечает ещё — цикл должен быть коротким.
+    pub fn recompute_voiceprints(
+        &self,
+        meeting_id: String,
+        version: u32,
+        accept: f32,
+        margin: f32,
+    ) -> FfiVoicePrintPass {
+        let root = data_root(self);
+        let refuse = |error: String| FfiVoicePrintPass {
+            error,
+            prints: 0,
+            signed: 0,
+            cleared: 0,
+            unknown: 0,
+            without_vector: 0,
+            model_id: String::new(),
+        };
+
+        let Some(mut store) = open_store(self) else {
+            return refuse("storage unavailable".to_string());
+        };
+        // Отпечаток модели снимается **до** прохода: слепок без него
+        // сравнивался бы с чем угодно, а это уже стоило одного замера
+        // прежней моделью.
+        let model_id = match embedding_model_id(&root) {
+            Ok(id) => id,
+            Err(error) => return refuse(error),
+        };
+        let mut embedder = match open_voice_embedder(&root) {
+            Ok(embedder) => embedder,
+            Err(error) => return refuse(error),
+        };
+        let segments = match store.list_final_segments(&meeting_id, version) {
+            Ok(segments) => segments,
+            Err(error) => return refuse(error.to_string()),
+        };
+        if segments.is_empty() {
+            return refuse(format!("у версии {version} нет сегментов"));
+        }
+
+        let mut replies = Vec::with_capacity(segments.len());
+        for channel in [AudioChannel::Mic, AudioChannel::System] {
+            // Дорожки нет вовсе — не отказ: встреча могла идти без
+            // системного звука, и микрофонная половина считается.
+            let Ok(pcm) = store.read_session_pcm(&meeting_id, channel) else {
+                continue;
+            };
+            for segment in segments.iter().filter(|s| s.channel == channel) {
+                let rate = SAMPLE_RATE_HZ as usize;
+                let from = (segment.start_ms as usize * rate / 1_000).min(pcm.len());
+                let to = (segment.end_ms as usize * rate / 1_000).min(pcm.len());
+                let vector = if to > from {
+                    embedder
+                        .embed(&pcm[from..to], SAMPLE_RATE_HZ)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                replies.push(EnrollReply {
+                    index: segment.index,
+                    speaker_id: segment.speaker_id.clone(),
+                    source: segment.speaker_source,
+                    vector,
+                    seconds: segment.duration_ms() as f32 / 1_000.0,
+                });
+            }
+        }
+
+        let EnrollPlan {
+            prints,
+            assignments,
+            unknown,
+            without_vector,
+        } = plan_enrollment(&replies, accept, margin);
+
+        let mut signed = 0u32;
+        let mut cleared = 0u32;
+        for assignment in &assignments {
+            if let Err(error) = store.set_segment_speaker_from(
+                &meeting_id,
+                version,
+                assignment.index,
+                &assignment.speaker_id,
+                SpeakerSource::VoicePrint,
+            ) {
+                return refuse(error.to_string());
+            }
+            if assignment.speaker_id.is_empty() {
+                cleared += 1;
+            } else {
+                signed += 1;
+            }
+        }
+
+        // Слепки заменяются целиком: участник, у которого человек снял
+        // все подписи, слепка иметь не должен, а точечное удаление
+        // оставило бы его до следующего совпадения имён.
+        if let Err(error) = store.clear_voiceprints(&meeting_id) {
+            return refuse(error.to_string());
+        }
+        let now = now_ms();
+        for (speaker_id, print) in &prints {
+            let VoicePrint {
+                vector,
+                samples,
+                seconds,
+            } = print;
+            if let Err(error) = store.save_voiceprint(&StoredVoicePrint {
+                meeting_id: meeting_id.clone(),
+                speaker_id: speaker_id.clone(),
+                model_id: model_id.clone(),
+                vector: vector.clone(),
+                samples: *samples as u32,
+                seconds: *seconds,
+                updated_at_ms: now,
+            }) {
+                return refuse(error.to_string());
+            }
+        }
+
+        let error = rerender_final_bodies(&mut store, &meeting_id);
+        FfiVoicePrintPass {
+            error,
+            prints: prints.len() as u32,
+            signed,
+            cleared,
+            unknown: unknown as u32,
+            without_vector: without_vector as u32,
+            model_id,
+        }
     }
 
     /// Вернуть реплику под назначение по каналу.
@@ -3042,7 +3302,7 @@ mod tests {
                 end_ms: *end_ms,
                 channel: AudioChannel::Mic,
                 speaker_id: String::new(),
-                speaker_pinned: false,
+                speaker_source: SpeakerSource::None,
                 text: (*text).to_owned(),
                 text_edited: false,
                 original_text: String::new(),
@@ -3545,7 +3805,7 @@ mod tests {
                     end_ms: 3_000,
                     channel: AudioChannel::Mic,
                     speaker_id: String::new(),
-                    speaker_pinned: false,
+                    speaker_source: SpeakerSource::None,
                     text: "я говорю".into(),
                     text_edited: false,
                     original_text: String::new(),
@@ -3556,7 +3816,7 @@ mod tests {
                     end_ms: 4_000,
                     channel: AudioChannel::System,
                     speaker_id: String::new(),
-                    speaker_pinned: false,
+                    speaker_source: SpeakerSource::None,
                     text: "они отвечают".into(),
                     text_edited: false,
                     original_text: String::new(),
@@ -3585,7 +3845,7 @@ mod tests {
         assert_eq!(segments.len(), 2);
         assert!(segments[0].speaker_name.is_empty(), "микрофон не тронут");
         assert_eq!(segments[1].speaker_name, "Пётр");
-        assert!(!segments[1].speaker_pinned);
+        assert_eq!(segments[1].speaker_source, "channel");
 
         // Точечная правка перекрывает канал и переживает его повторное
         // назначение.
@@ -3599,7 +3859,7 @@ mod tests {
         );
         let after = core.list_final_segments(meeting_id.clone(), 1);
         assert!(after[1].speaker_id.is_empty(), "правка затёрта");
-        assert!(after[1].speaker_pinned);
+        assert_eq!(after[1].speaker_source, "human");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3626,7 +3886,7 @@ mod tests {
                         end_ms: 2_000,
                         channel: AudioChannel::System,
                         speaker_id: String::new(),
-                        speaker_pinned: false,
+                        speaker_source: SpeakerSource::None,
                         text: "нужно решить к пятнице".into(),
                         text_edited: false,
                         original_text: String::new(),
@@ -3828,6 +4088,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Без собранной модели пересчёт **отказывается вслух**.
+    ///
+    /// Худший исход здесь — не ошибка, а ноль подписанных, выданный за
+    /// работу: человек нажал кнопку, увидел «готово, 0 реплик» и решил,
+    /// что голоса не разошлись. Отказ виден, молчание — нет.
+    #[test]
+    fn recomputing_without_a_model_refuses_out_loud() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-prints-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-prints".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store.begin_session(&meeting_id, 1, "").expect("session");
+            store.end_session(2).expect("end");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let pass = core.recompute_voiceprints(
+            meeting_id.clone(),
+            1,
+            core.voiceprint_default_accept(),
+            core.voiceprint_default_margin(),
+        );
+
+        assert!(!pass.error.is_empty(), "отказ обязан назвать причину");
+        assert_eq!(pass.signed, 0);
+        assert!(core.list_voiceprints(meeting_id).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Порог по умолчанию — середина измеренного окна 0.40…0.50, а не
+    /// его край (ADR-013). Число живое: оно снято на одной встрече, и
+    /// подпирать его тестом стоит именно затем, чтобы смена была
+    /// осознанной, а не случайной.
+    #[test]
+    fn the_default_threshold_is_the_middle_of_the_measured_window() {
+        let core = MeetingCore::with_data_root(std::env::temp_dir().to_string_lossy().into_owned());
+
+        assert!((core.voiceprint_default_accept() - 0.45).abs() < f32::EPSILON);
+        assert!(core.voiceprint_default_margin() > 0.0, "отрыв обязателен");
+    }
+
     #[test]
     fn speaker_stats_report_share_of_speech() {
         let root = std::env::temp_dir().join(format!(
@@ -3848,7 +4153,7 @@ mod tests {
                         end_ms: 4_000,
                         channel: AudioChannel::Mic,
                         speaker_id: "sp".into(),
-                        speaker_pinned: false,
+                        speaker_source: SpeakerSource::None,
                         text: "текст".into(),
                         text_edited: false,
                         original_text: String::new(),

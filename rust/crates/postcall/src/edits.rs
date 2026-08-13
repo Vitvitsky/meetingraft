@@ -101,7 +101,9 @@ fn overlap_ms(edit: &SegmentEdit, segment: &FinalSegment) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use domain::{AudioChannel, EditOrigin, FinalSegment, SegmentEdit, edits_by_position};
+    use domain::{
+        AudioChannel, EditOrigin, FinalSegment, SegmentEdit, SpeakerSource, edits_by_position,
+    };
 
     use super::reattach_edits;
 
@@ -112,7 +114,7 @@ mod tests {
             end_ms,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: text.into(),
             text_edited: false,
             original_text: String::new(),

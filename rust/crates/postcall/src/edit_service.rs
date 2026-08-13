@@ -238,7 +238,7 @@ pub fn occurrences_to_edit(
 mod bulk_origin_tests {
     use domain::{
         AudioChannel, EditOrigin, FinalSegment, GlossaryKind, GlossaryScope, GlossaryTerm,
-        SegmentEdit, SpeechLanguage,
+        SegmentEdit, SpeakerSource, SpeechLanguage,
     };
 
     use super::{occurrences_to_edit, plan_edit};
@@ -263,7 +263,7 @@ mod bulk_origin_tests {
             end_ms: 100,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: text.into(),
             text_edited: false,
             original_text: String::new(),
@@ -359,7 +359,8 @@ mod bulk_origin_tests {
 #[cfg(test)]
 mod tests {
     use domain::{
-        AudioChannel, FinalSegment, GlossaryKind, GlossaryScope, GlossaryTerm, SpeechLanguage,
+        AudioChannel, FinalSegment, GlossaryKind, GlossaryScope, GlossaryTerm, SpeakerSource,
+        SpeechLanguage,
     };
 
     use super::plan_edit;
@@ -371,7 +372,7 @@ mod tests {
             end_ms: 2000,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: "зашли на интра ру".into(),
             text_edited: false,
             original_text: String::new(),
@@ -762,7 +763,7 @@ mod tests {
                 end_ms: 100,
                 channel: AudioChannel::Mic,
                 speaker_id: String::new(),
-                speaker_pinned: false,
+                speaker_source: SpeakerSource::None,
                 text: "открой интра ру".into(),
                 text_edited: false,
                 original_text: String::new(),
@@ -773,7 +774,7 @@ mod tests {
                 end_ms: 200,
                 channel: AudioChannel::Mic,
                 speaker_id: String::new(),
-                speaker_pinned: false,
+                speaker_source: SpeakerSource::None,
                 text: "тут ничего нет".into(),
                 text_edited: false,
                 original_text: String::new(),
@@ -810,7 +811,7 @@ mod tests {
             end_ms: 100,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: "открой интра ру".into(),
             text_edited: false,
             original_text: String::new(),
@@ -861,7 +862,7 @@ mod tests {
             end_ms: 100,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: "открой интра ру".into(),
             text_edited: false,
             original_text: String::new(),
@@ -914,7 +915,7 @@ mod tests {
             end_ms: 100,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: "открой интра ру".into(),
             text_edited: false,
             original_text: String::new(),
@@ -954,7 +955,7 @@ mod tests {
             end_ms: 100,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: "Интра ру открывается медленно".into(),
             text_edited: false,
             original_text: String::new(),
@@ -993,7 +994,7 @@ mod tests {
             end_ms: 100,
             channel: AudioChannel::Mic,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: "открой интра ру, а потом снова интра ру".into(),
             text_edited: false,
             original_text: String::new(),

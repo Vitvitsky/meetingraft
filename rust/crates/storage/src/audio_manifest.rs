@@ -7,7 +7,7 @@ use domain::FinalSegment;
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionEvent, CaptionPhase, FinalTranscript,
     GlossaryKind, GlossaryScope, GlossaryTerm, MeetingSummary, SearchHit, SearchHitKind, Speaker,
-    SpeechLanguage, edits_by_position,
+    SpeakerSource, SpeechLanguage, StoredVoicePrint, edits_by_position,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
@@ -41,6 +41,12 @@ pub enum AudioManifestError {
     /// после неё: раньше страя байт портил один файл в 100 мс, теперь — 2 с.
     #[error("pcm length must be even (i16 frames), got {0}")]
     OddPcmLength(usize),
+    #[error("voiceprint {meeting_id}/{speaker_id}: vector blob of {bytes} bytes is not f32")]
+    VoicePrintBlob {
+        meeting_id: String,
+        speaker_id: String,
+        bytes: usize,
+    },
     #[error("chunk {path} truncated: expected {expected_frames} frames, got {actual_frames}")]
     ChunkTruncated {
         path: String,
@@ -851,7 +857,7 @@ impl AudioManifestStore {
             let mut statement = transaction.prepare(
                 "INSERT INTO final_segments
                  (meeting_id, version, idx, start_ms, end_ms, channel, speaker_id,
-                  speaker_pinned, text)
+                  speaker_source, text)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for segment in segments {
@@ -863,7 +869,7 @@ impl AudioManifestStore {
                     segment.end_ms as i64,
                     segment.channel.code(),
                     segment.speaker_id,
-                    segment.speaker_pinned,
+                    segment.speaker_source.code(),
                     segment.text
                 ])?;
             }
@@ -882,7 +888,7 @@ impl AudioManifestStore {
         version: u32,
     ) -> Result<Vec<FinalSegment>, AudioManifestError> {
         let mut statement = self.conn.prepare(
-            "SELECT idx, start_ms, end_ms, channel, speaker_id, speaker_pinned, text
+            "SELECT idx, start_ms, end_ms, channel, speaker_id, speaker_source, text
              FROM final_segments
              WHERE meeting_id = ?1 AND version = ?2
              ORDER BY idx",
@@ -895,7 +901,7 @@ impl AudioManifestStore {
                 end_ms: row.get::<_, i64>(2)? as u64,
                 channel: AudioChannel::from_code(&channel),
                 speaker_id: row.get(4)?,
-                speaker_pinned: row.get(5)?,
+                speaker_source: SpeakerSource::from_code(&row.get::<_, String>(5)?),
                 text: row.get(6)?,
                 text_edited: false,
                 original_text: String::new(),
@@ -933,7 +939,8 @@ impl AudioManifestStore {
     ///
     /// Сегменты с ручной правкой не трогаются: иначе человек терял бы
     /// свои исправления при каждом переназначении, ничего об этом не
-    /// узнав.
+    /// узнав. Подписанное слепком канал перебивает — порядок задан
+    /// `SpeakerSource::may_overwrite` (ADR-013).
     pub fn set_channel_speaker(
         &mut self,
         meeting_id: &str,
@@ -943,10 +950,16 @@ impl AudioManifestStore {
     ) -> Result<u64, AudioManifestError> {
         let updated = self.conn.execute(
             "UPDATE final_segments
-             SET speaker_id = ?4
+             SET speaker_id = ?4, speaker_source = ?5
              WHERE meeting_id = ?1 AND version = ?2 AND channel = ?3
-               AND speaker_pinned = 0",
-            params![meeting_id, version, channel.code(), speaker_id],
+               AND speaker_source <> 'human'",
+            params![
+                meeting_id,
+                version,
+                channel.code(),
+                speaker_id,
+                SpeakerSource::Channel.code()
+            ],
         )?;
         Ok(updated as u64)
     }
@@ -959,11 +972,29 @@ impl AudioManifestStore {
         index: u32,
         speaker_id: &str,
     ) -> Result<(), AudioManifestError> {
+        self.set_segment_speaker_from(meeting_id, version, index, speaker_id, SpeakerSource::Human)
+    }
+
+    /// Назначить спикера одной реплике от имени указанного источника.
+    ///
+    /// Порядок здесь **не проверяется**: решение «кто кого вправе
+    /// переписать» принимает `SpeakerSource::may_overwrite` до вызова, у
+    /// того, кто видит обе стороны. Отдельная проверка тут завела бы
+    /// второе место с тем же правилом, а два места одного правила
+    /// расходятся.
+    pub fn set_segment_speaker_from(
+        &mut self,
+        meeting_id: &str,
+        version: u32,
+        index: u32,
+        speaker_id: &str,
+        source: SpeakerSource,
+    ) -> Result<(), AudioManifestError> {
         let updated = self.conn.execute(
             "UPDATE final_segments
-             SET speaker_id = ?4, speaker_pinned = 1
+             SET speaker_id = ?4, speaker_source = ?5
              WHERE meeting_id = ?1 AND version = ?2 AND idx = ?3",
-            params![meeting_id, version, index, speaker_id],
+            params![meeting_id, version, index, speaker_id, source.code()],
         )?;
         if updated == 0 {
             return Err(AudioManifestError::SegmentNotFound {
@@ -976,6 +1007,13 @@ impl AudioManifestStore {
     }
 
     /// Снять ручную правку, вернув реплику под назначение по каналу.
+    ///
+    /// Источник становится `channel`, а не «никто»: имя остаётся на месте,
+    /// и следующее массовое назначение его перепишет — ровно то, чем
+    /// снятие признака было до ADR-013. Чем реплика была подписана **до**
+    /// руки, нигде не записано, и придумывать это нельзя: поставив сюда
+    /// `voiceprint`, мы дали бы пересчёту слепков стереть имя, которого он
+    /// не ставил.
     pub fn unpin_segment_speaker(
         &mut self,
         meeting_id: &str,
@@ -984,9 +1022,119 @@ impl AudioManifestStore {
     ) -> Result<(), AudioManifestError> {
         self.conn.execute(
             "UPDATE final_segments
-             SET speaker_pinned = 0
+             SET speaker_source = ?4
              WHERE meeting_id = ?1 AND version = ?2 AND idx = ?3",
-            params![meeting_id, version, index],
+            params![meeting_id, version, index, SpeakerSource::Channel.code()],
+        )?;
+        Ok(())
+    }
+
+    /// Сохранить слепок голоса участника; повторный вызов заменяет.
+    ///
+    /// Замена, а не накопление версий: слепок — среднее по всем кускам,
+    /// которые человек подписал, и пересчёт даёт его целиком. Хранить
+    /// историю средних незачем, а «слепок при каждом пересчёте» рос бы без
+    /// границы и без пользы.
+    pub fn save_voiceprint(&mut self, print: &StoredVoicePrint) -> Result<(), AudioManifestError> {
+        let mut blob = Vec::with_capacity(print.vector.len() * 4);
+        for value in &print.vector {
+            blob.extend_from_slice(&value.to_le_bytes());
+        }
+        self.conn.execute(
+            "INSERT INTO voiceprints
+             (meeting_id, speaker_id, model_id, vector, samples, seconds, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(meeting_id, speaker_id) DO UPDATE SET
+                 model_id = excluded.model_id,
+                 vector = excluded.vector,
+                 samples = excluded.samples,
+                 seconds = excluded.seconds,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![
+                print.meeting_id,
+                print.speaker_id,
+                print.model_id,
+                blob,
+                print.samples,
+                print.seconds,
+                print.updated_at_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Слепки встречи в порядке идентификаторов участников.
+    ///
+    /// Модель не фильтруется здесь: чужой `model_id` — не мусор, а повод
+    /// сказать человеку «пересчитайте», и решение об этом принимается
+    /// выше. Молча выкинуть такие слепки значило бы показать пустой
+    /// список там, где работа человека цела.
+    pub fn list_voiceprints(
+        &self,
+        meeting_id: &str,
+    ) -> Result<Vec<StoredVoicePrint>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT speaker_id, model_id, vector, samples, seconds, updated_at_ms
+             FROM voiceprints
+             WHERE meeting_id = ?1
+             ORDER BY speaker_id",
+        )?;
+        let rows = statement.query_map(params![meeting_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+
+        let mut prints = Vec::new();
+        for row in rows {
+            let (speaker_id, model_id, blob, samples, seconds, updated_at_ms) = row?;
+            if blob.len() % 4 != 0 || blob.is_empty() {
+                return Err(AudioManifestError::VoicePrintBlob {
+                    meeting_id: meeting_id.to_owned(),
+                    speaker_id,
+                    bytes: blob.len(),
+                });
+            }
+            prints.push(StoredVoicePrint {
+                meeting_id: meeting_id.to_owned(),
+                speaker_id,
+                model_id,
+                vector: blob
+                    .chunks_exact(4)
+                    .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                    .collect(),
+                samples: samples.max(0) as u32,
+                seconds: seconds as f32,
+                updated_at_ms: updated_at_ms.max(0) as u64,
+            });
+        }
+        Ok(prints)
+    }
+
+    /// Удалить слепок участника — одним действием и без остатков
+    /// (ADR-013).
+    pub fn delete_voiceprint(
+        &mut self,
+        meeting_id: &str,
+        speaker_id: &str,
+    ) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "DELETE FROM voiceprints WHERE meeting_id = ?1 AND speaker_id = ?2",
+            params![meeting_id, speaker_id],
+        )?;
+        Ok(())
+    }
+
+    /// Убрать все слепки встречи.
+    pub fn clear_voiceprints(&mut self, meeting_id: &str) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "DELETE FROM voiceprints WHERE meeting_id = ?1",
+            params![meeting_id],
         )?;
         Ok(())
     }
@@ -1228,6 +1376,11 @@ impl AudioManifestStore {
             "DELETE FROM segment_edits WHERE meeting_id = ?1",
             "DELETE FROM artifacts WHERE meeting_id = ?1",
             "DELETE FROM speakers WHERE meeting_id = ?1",
+            // Слепок голоса — биометрический идентификатор, и переживать
+            // удаление встречи он не должен ни при каких условиях
+            // (ADR-013). Между встречами слепки живут отдельным решением
+            // и отдельной настройкой; эти привязаны к встрече.
+            "DELETE FROM voiceprints WHERE meeting_id = ?1",
             "DELETE FROM meeting_fts WHERE meeting_id = ?1",
         ] {
             transaction.execute(statement, params![meeting_id])?;
@@ -2462,7 +2615,7 @@ pub(crate) mod tests {
             end_ms: start_ms + 500,
             channel,
             speaker_id: String::new(),
-            speaker_pinned: false,
+            speaker_source: SpeakerSource::None,
             text: text.to_string(),
             text_edited: false,
             original_text: String::new(),
@@ -2519,7 +2672,7 @@ pub(crate) mod tests {
             let read = store.list_final_segments("m1", 1).unwrap();
             assert_eq!(read[1].speaker_id, "sp-peter");
             assert_eq!(read[2].speaker_id, "sp-anna", "правка затёрта");
-            assert!(read[2].speaker_pinned);
+            assert_eq!(read[2].speaker_source, SpeakerSource::Human);
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -2539,7 +2692,114 @@ pub(crate) mod tests {
 
             let read = store.list_final_segments("m1", 1).unwrap();
             assert_eq!(read[2].speaker_id, "sp-peter");
-            assert!(!read[2].speaker_pinned);
+            assert_eq!(read[2].speaker_source, SpeakerSource::Channel);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn a_print(speaker_id: &str, vector: Vec<f32>) -> StoredVoicePrint {
+        StoredVoicePrint {
+            meeting_id: "m1".to_owned(),
+            speaker_id: speaker_id.to_owned(),
+            model_id: "cam++ multilingual".to_owned(),
+            vector,
+            samples: 3,
+            seconds: 12.5,
+            updated_at_ms: 1_700_000,
+        }
+    }
+
+    /// Вектор обязан вернуться тем же до бита: слепок сравнивается
+    /// косинусом, и потерянная точность сдвинула бы похожесть, не сказав
+    /// об этом ничего.
+    #[test]
+    fn a_voiceprint_survives_the_round_trip_unchanged() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            let print = a_print("sp-anna", vec![0.5, -0.25, 0.125, 0.0]);
+            store.save_voiceprint(&print).unwrap();
+
+            let read = store.list_voiceprints("m1").unwrap();
+
+            assert_eq!(read, vec![print]);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Пересчёт заменяет слепок, а не кладёт рядом второй. Накопление
+    /// показало бы в списке двух Анн, и человек не смог бы сказать, какая
+    /// из них считает.
+    #[test]
+    fn saving_a_voiceprint_twice_replaces_it() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store
+                .save_voiceprint(&a_print("sp-anna", vec![1.0, 0.0]))
+                .unwrap();
+            let mut fresher = a_print("sp-anna", vec![0.0, 1.0]);
+            fresher.samples = 9;
+            store.save_voiceprint(&fresher).unwrap();
+
+            let read = store.list_voiceprints("m1").unwrap();
+
+            assert_eq!(read.len(), 1);
+            assert_eq!(read[0].vector, vec![0.0, 1.0]);
+            assert_eq!(read[0].samples, 9);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Слепок голоса — биометрический идентификатор, и переживать
+    /// удаление встречи он не имеет права (ADR-013).
+    ///
+    /// Утверждение о непустоте стоит **до** утверждения о пустоте:
+    /// «слепков нет» выполнялось бы и на встрече, где их не было вовсе.
+    #[test]
+    fn deleting_a_meeting_takes_its_voiceprints_with_it() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 0, "Встреча").unwrap();
+            store.end_session(1_000).unwrap();
+            store
+                .save_voiceprint(&a_print("sp-anna", vec![1.0, 0.0]))
+                .unwrap();
+            assert_eq!(store.list_voiceprints("m1").unwrap().len(), 1, "слепок лёг");
+
+            store.delete_meeting("m1").unwrap();
+
+            assert!(store.list_voiceprints("m1").unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Испорченный вектор — ошибка, а не короткий вектор из того, что
+    /// удалось прочесть. Обрезанный слепок сравнивался бы молча и давал
+    /// бы уверенные неверные подписи.
+    #[test]
+    fn a_broken_vector_blob_is_refused_not_trimmed() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store
+                .save_voiceprint(&a_print("sp-anna", vec![1.0, 0.0]))
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "UPDATE voiceprints SET vector = ?1 WHERE speaker_id = 'sp-anna'",
+                    params![vec![1_u8, 2, 3]],
+                )
+                .unwrap();
+
+            let error = store.list_voiceprints("m1").unwrap_err();
+
+            assert!(
+                matches!(error, AudioManifestError::VoicePrintBlob { bytes: 3, .. }),
+                "неожиданная ошибка: {error}"
+            );
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -2700,7 +2960,7 @@ pub(crate) mod tests {
                         end_ms: 1_000,
                         channel: AudioChannel::Mic,
                         speaker_id: String::new(),
-                        speaker_pinned: false,
+                        speaker_source: SpeakerSource::None,
                         text: "упирается в юни-эф-эф-ай".to_string(),
                         text_edited: false,
                         original_text: String::new(),
@@ -2746,7 +3006,7 @@ pub(crate) mod tests {
                         end_ms: 1_000,
                         channel: AudioChannel::Mic,
                         speaker_id: String::new(),
-                        speaker_pinned: false,
+                        speaker_source: SpeakerSource::None,
                         text: "обычная реплика".to_string(),
                         text_edited: false,
                         original_text: String::new(),
