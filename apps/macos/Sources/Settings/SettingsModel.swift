@@ -30,6 +30,9 @@ final class SettingsModel {
     // Память на голоса (ADR-013, задача 7). Признак читается из ядра, а
     // не хранится здесь: настройки этого окна живут в памяти и умирают с
     // запуском, а биометрия обязана оставаться выключенной и после него.
+    /// Собран ли движок голосов. Нет — раздела памяти на голоса не
+    /// существует: запоминать было бы нечего и нечем.
+    private(set) var voiceEngineAvailable = false
     private(set) var voiceMemoryEnabled = false
     private(set) var knownVoices: [FfiKnownVoice] = []
     private(set) var voiceMemoryError = ""
@@ -75,6 +78,7 @@ final class SettingsModel {
 
     func refreshVoiceMemory() {
         guard let core else { return }
+        voiceEngineAvailable = core.isVoiceEngineAvailable()
         voiceMemoryEnabled = core.isVoiceMemoryEnabled()
         knownVoices = core.listKnownVoices()
     }

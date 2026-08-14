@@ -424,7 +424,11 @@ struct DataSettingsSection: View {
 
             Divider().overlay(Theme.borderSubtle)
 
-            VoiceMemorySection(model: model)
+            // Без движка голосов запоминать нечего и нечем: раздела не
+            // существует, а не показывается пустым.
+            if model.voiceEngineAvailable {
+                VoiceMemorySection(model: model)
+            }
         }
     }
 

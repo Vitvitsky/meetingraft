@@ -2181,6 +2181,21 @@ impl MeetingCore {
         rerender_final_bodies(&mut store, &meeting_id)
     }
 
+    /// Собран ли движок голосов вообще.
+    ///
+    /// Отличается от «модель не скачана» тем, что человек не может это
+    /// исправить: фичи нет в бинаре, и никакое его действие её туда не
+    /// добавит. Отсутствие модели — видимый отказ с понятным следующим
+    /// шагом; отсутствие движка — повод не показывать функцию вовсе
+    /// (`CLAUDE.md`: «если функция не работает — она не показывается, а не
+    /// показывается сломанной»).
+    ///
+    /// Отказ в `recompute_voiceprints` при этом остаётся: он последняя
+    /// линия, а не первая.
+    pub fn is_voice_engine_available(&self) -> bool {
+        cfg!(feature = "diarize")
+    }
+
     /// Порог похожести по умолчанию (ADR-013).
     pub fn voiceprint_default_accept(&self) -> f32 {
         DEFAULT_ACCEPT
@@ -4381,6 +4396,22 @@ mod tests {
         assert_eq!(pass.signed, 0);
         assert!(core.list_voiceprints(meeting_id).is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Без фичи движка вся ветка слепков обязана прятаться, а не
+    /// отказывать по нажатию: кнопка, отказывающая всегда, — заглушка.
+    ///
+    /// Ассерт написан от `cfg!`, а не от константы: тест обязан краснеть
+    /// при сборке с фичей, если ответ перестанет от неё зависеть.
+    #[test]
+    fn the_voice_engine_is_reported_absent_without_its_feature() {
+        let core = MeetingCore::with_data_root(std::env::temp_dir().to_string_lossy().into_owned());
+
+        assert_eq!(
+            core.is_voice_engine_available(),
+            cfg!(feature = "diarize"),
+            "наличие движка обязано следовать за фичей, а не за настроением"
+        );
     }
 
     /// Порог по умолчанию — середина измеренного окна 0.40…0.50, а не
