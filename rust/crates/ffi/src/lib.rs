@@ -3283,13 +3283,16 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    /// Тело Final, из которого собираются backend-джобы в тестах.
+    const BACKEND_TRANSCRIPT: &str = "Обсудили backend-генерацию.";
+
     fn seed_final_transcript(root: &std::path::Path, meeting_id: &str) {
         let mut store = AudioManifestStore::open(root).expect("test store должен открыться");
         store
             .upsert_final_transcript(&FinalTranscript {
                 meeting_id: meeting_id.to_owned(),
                 version: 1,
-                body_markdown: "Обсудили backend-генерацию.".into(),
+                body_markdown: BACKEND_TRANSCRIPT.into(),
                 created_at_ms: 1_785_628_800_000,
             })
             .expect("final transcript должен сохраниться");
@@ -3665,6 +3668,77 @@ mod tests {
             generated.artifact.body_markdown.contains("не выполнена"),
             "включённая свёртка, которая не сработала, обязана сказать об этом: {}",
             generated.artifact.body_markdown
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Backend-джоб несёт **свёрнутую** расшифровку, а не тело Final.
+    ///
+    /// У артефакта три пути — backend (ADR-007), локальная LLM,
+    /// встроенные шаблоны, — и разойдись они, свёртка была бы то
+    /// включена, то нет в зависимости от выбранного движка. Проверять
+    /// это надо именно здесь: остальные тесты свёртки идут по
+    /// встроенному шаблону и о backend не говорят ничего.
+    #[test]
+    fn a_backend_job_carries_the_collapsed_transcript() {
+        let root = edits_root("dedup-backend");
+        let meeting_id = "m-dedup-backend".to_string();
+        seed_doubled_meeting(&root, &meeting_id);
+
+        let collapsed_body =
+            "Значит, переносим релиз на следующую среду.\n\nЯ тогда соберу цифры и покажу вечером";
+        let (system_prompt, user_prompt) = brief_prompts(collapsed_body, SpeechLanguage::Ru);
+
+        let mut server = Server::new();
+        let _post = server
+            .mock("POST", "/v1/jobs")
+            .match_body(Matcher::Json(serde_json::json!({
+                "meeting_id": meeting_id,
+                "kind": "brief",
+                "primary_language": "ru",
+                "allowed_languages": ["ru", "en", "es"],
+                "payload": {
+                    "model": "gemma2",
+                    "provider_id": "default",
+                    "system": system_prompt,
+                    "user": user_prompt,
+                }
+            })))
+            .with_status(201)
+            .with_body(
+                r#"{"id":"j3","meeting_id":"m-dedup-backend","kind":"brief","status":"succeeded","error":null,"artifact_ids":["a3"]}"#,
+            )
+            .create();
+        let _artifact = server
+            .mock("GET", "/v1/artifacts/a3")
+            .with_status(200)
+            .with_body(
+                r##"{"id":"a3","kind":"brief","body_markdown":"# Бриф","created_at":"2026-08-14T00:00:00Z"}"##,
+            )
+            .create();
+
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        core.set_api_config(server.url(), "dev-token".into());
+        core.set_llm_config(
+            "backend".into(),
+            "gemma2".into(),
+            String::new(),
+            "default".into(),
+        );
+        assert!(core.set_artifact_dedup_threshold(Some(0.5)).is_empty());
+
+        let result = core.generate_artifact(meeting_id, FfiArtifactKind::Brief);
+
+        // Промах по телу запроса mockito отдаёт как HTTP 501: если сюда
+        // уехало тело Final с обеими копиями, тест краснеет здесь.
+        assert!(result.error.is_empty(), "{}", result.error);
+        assert!(
+            result
+                .artifact
+                .body_markdown
+                .contains("свёрнуто удвоенных: 1"),
+            "отчёт обязан быть и на backend-пути: {}",
+            result.artifact.body_markdown
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -5975,10 +6049,24 @@ mod tests {
         let mut server = Server::new();
         let _post = server
             .mock("POST", "/v1/jobs")
-            .match_body(Matcher::Exact(
-                r#"{"meeting_id":"m-backend","kind":"brief","primary_language":"ru","allowed_languages":["ru","en","es"],"payload":{"model":"Google/gemma-4-12b-it","provider_id":"default","system":"Create a concise meeting brief in language `ru`. Return Markdown with a summary, decisions, and key discussion points. Do not invent facts absent from the transcript.","user":"Create the meeting brief from this final transcript:\n\n<transcript>\nОбсудили backend-генерацию.\n</transcript>"}}"#
-                    .into(),
-            ))
+            // Промпт берётся из той же функции, что и на локальном пути:
+            // проверяется, что backend-джоб несёт **те же** инструкции
+            // (ADR-007), а не то, какими они были в день написания теста.
+            // Замороженной строкой это стоило бы правки теста на каждое
+            // слово в промпте — и первая же такая правка сделала бы тест
+            // отражением кода вместо утверждения о нём.
+            .match_body(Matcher::Json(serde_json::json!({
+                "meeting_id": "m-backend",
+                "kind": "brief",
+                "primary_language": "ru",
+                "allowed_languages": ["ru", "en", "es"],
+                "payload": {
+                    "model": "Google/gemma-4-12b-it",
+                    "provider_id": "default",
+                    "system": brief_prompts(BACKEND_TRANSCRIPT, SpeechLanguage::Ru).0,
+                    "user": brief_prompts(BACKEND_TRANSCRIPT, SpeechLanguage::Ru).1,
+                }
+            })))
             .with_status(201)
             .with_body(
                 r#"{"id":"j1","meeting_id":"m-backend","kind":"brief","status":"succeeded","error":null,"artifact_ids":["a1"]}"#,
@@ -6020,10 +6108,18 @@ mod tests {
         let mut server = Server::new();
         let _post = server
             .mock("POST", "/v1/jobs")
-            .match_body(Matcher::Exact(
-                r#"{"meeting_id":"m-backend-error","kind":"follow_up","primary_language":"ru","allowed_languages":["ru","en","es"],"payload":{"model":"Google/gemma-4-12b-it","provider_id":"default","system":"You are a meeting assistant. Draft a follow-up email in language `ru` as Markdown. Start with the subject line in an HTML comment, then include a greeting, a concise meeting summary, explicitly stated next steps, and a closing. Do not invent facts, assignments, or deadlines absent from the transcript.","user":"Draft a follow-up email from this final transcript:\n\n<transcript>\nОбсудили backend-генерацию.\n</transcript>"}}"#
-                    .into(),
-            ))
+            .match_body(Matcher::Json(serde_json::json!({
+                "meeting_id": "m-backend-error",
+                "kind": "follow_up",
+                "primary_language": "ru",
+                "allowed_languages": ["ru", "en", "es"],
+                "payload": {
+                    "model": "Google/gemma-4-12b-it",
+                    "provider_id": "default",
+                    "system": follow_up_prompts(BACKEND_TRANSCRIPT, SpeechLanguage::Ru).0,
+                    "user": follow_up_prompts(BACKEND_TRANSCRIPT, SpeechLanguage::Ru).1,
+                }
+            })))
             .with_status(201)
             .with_body(
                 r#"{"id":"j2","meeting_id":"m-backend-error","kind":"follow_up","status":"failed","error":"model unavailable","artifact_ids":[]}"#,
