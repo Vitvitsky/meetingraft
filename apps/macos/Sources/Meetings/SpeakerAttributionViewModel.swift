@@ -41,6 +41,7 @@ protocol SpeakerAttributionCoreProviding: AnyObject {
     ) -> FfiVoicePrintPass
     func voiceprintDefaultAccept() -> Float
     func voiceprintDefaultMargin() -> Float
+    func isVoiceEngineAvailable() -> Bool
     func isVoiceMemoryEnabled() -> Bool
     func rememberVoice(meetingId: String, speakerId: String) -> String
 }
@@ -138,6 +139,12 @@ final class SpeakerAttributionViewModel {
     /// и ничего не изменилось» — законный ответ, и показывать его надо
     /// числами, а не тишиной.
     private(set) var lastPass: FfiVoicePrintPass?
+    /// Собран ли движок голосов.
+    ///
+    /// Нет — вся ветка слепков не показывается. Это не то же, что
+    /// «модель не скачана»: то человек исправит, а фичи, которой нет в
+    /// бинаре, он не добавит ничем, и кнопка была бы заглушкой.
+    private(set) var voiceEngineAvailable = false
     /// Включена ли память на голоса между встречами (ADR-013, задача 7).
     ///
     /// Читается из ядра, а не хранится здесь: признак живёт рядом с
@@ -277,7 +284,7 @@ final class SpeakerAttributionViewModel {
     /// сказано, почему: «не работает молча» здесь означает «не работает
     /// заметно».
     var canRecomputeVoicePrints: Bool {
-        version != nil && !segments.isEmpty && humanLabelledCount > 0
+        voiceEngineAvailable && version != nil && !segments.isEmpty && humanLabelledCount > 0
     }
 
     /// Сменилась ли модель под уже сложенными слепками.
@@ -310,7 +317,7 @@ final class SpeakerAttributionViewModel {
     /// выключена, слепка нет, имени нет. Кнопка без любого из них
     /// показывала бы действие, которое не сработает.
     func canRememberVoice(speakerId: String) -> Bool {
-        guard voiceMemoryEnabled else { return false }
+        guard voiceEngineAvailable, voiceMemoryEnabled else { return false }
         guard voicePrints.contains(where: { $0.speakerId == speakerId }) else { return false }
         return speakers
             .first(where: { $0.id == speakerId })
@@ -437,6 +444,7 @@ final class SpeakerAttributionViewModel {
         speakers = core.listSpeakers(meetingId: meetingId)
         audioAvailable = core.meetingAudioBytes(meetingId: meetingId) > 0
         voicePrints = core.listVoiceprints(meetingId: meetingId)
+        voiceEngineAvailable = core.isVoiceEngineAvailable()
         voiceMemoryEnabled = core.isVoiceMemoryEnabled()
         // Именно здесь, а не под `guard let version`: правка без версии —
         // как раз та, которую надо показать.

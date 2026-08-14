@@ -14,8 +14,13 @@ mkdir -p "$OUT_DIR"
 cd "$RUST_DIR"
 export CARGO_TARGET_DIR="$TARGET_DIR"
 
-# Whisper Metal по умолчанию; CI: MEETINGRAFT_FFI_FEATURES= ./generate-ffi.sh
-FEATURES="${MEETINGRAFT_FFI_FEATURES-whisper}"
+# Whisper Metal и движок голосов по умолчанию; CI: MEETINGRAFT_FFI_FEATURES= ./generate-ffi.sh
+#
+# `diarize` здесь не роскошь: без него подпись по слепкам в приложении не
+# работает вовсе, и вкладка Speakers прячет её целиком. Цена известна и
+# велика — sherpa качает готовый тулкит и линкует его весь, порядка 34 МБ
+# в бинаре; ужать это до одной модели эмбеддинга — задача 5.1 плана.
+FEATURES="${MEETINGRAFT_FFI_FEATURES-whisper,diarize}"
 if [[ -n "$FEATURES" ]]; then
   cargo build -p meetingraft-ffi --features "$FEATURES"
 else

@@ -309,6 +309,37 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         XCTAssertFalse(summary.contains("снято"), summary)
     }
 
+    /// Без собранного движка вся ветка слепков не показывается.
+    ///
+    /// Это не «модель не скачана» — то человек исправит. Фичи, которой нет
+    /// в бинаре, он не добавит ничем, и кнопка, отказывающая всегда, — та
+    /// самая заглушка в интерфейсе, которой в этом продукте быть не должно.
+    ///
+    /// Заведомо положительный случай рядом: с движком та же встреча
+    /// пересчитывается. Без него проверка проходила бы и у модели, которая
+    /// запрещает всё подряд.
+    func testWithoutTheEngineTheWholeVoiceprintBranchIsHidden() {
+        let core = AttributionCoreSpy(
+            speakers: [speaker("s1", "Пётр")],
+            segments: [segment(0, channel: "mic", speakerId: "s1", source: "human")]
+        )
+        core.voiceMemoryEnabled = true
+        core.voicePrints = [voicePrint("s1", modelMatches: true)]
+        let viewModel = SpeakerAttributionViewModel(core: core)
+
+        viewModel.load(meetingId: "m1", version: 1)
+        XCTAssertTrue(viewModel.voiceEngineAvailable)
+        XCTAssertTrue(viewModel.canRecomputeVoicePrints, "с движком пересчёт доступен")
+        XCTAssertTrue(viewModel.canRememberVoice(speakerId: "s1"))
+
+        core.voiceEngineAvailable = false
+        viewModel.load(meetingId: "m1", version: 1)
+
+        XCTAssertFalse(viewModel.voiceEngineAvailable)
+        XCTAssertFalse(viewModel.canRecomputeVoicePrints)
+        XCTAssertFalse(viewModel.canRememberVoice(speakerId: "s1"))
+    }
+
     // MARK: - Память на голоса (задача 7)
 
     /// Три условия сразу, и каждое отказывает по своей причине. Кнопка
@@ -819,6 +850,7 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
         modelId: ""
     )
     private(set) var recomputeCalls: [Thresholds] = []
+    var voiceEngineAvailable = true
     var voiceMemoryEnabled = false
     var rememberError = ""
     private(set) var rememberedSpeakerIds: [String] = []
@@ -975,6 +1007,10 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
 
     func voiceprintDefaultMargin() -> Float {
         0.05
+    }
+
+    func isVoiceEngineAvailable() -> Bool {
+        voiceEngineAvailable
     }
 
     func isVoiceMemoryEnabled() -> Bool {
