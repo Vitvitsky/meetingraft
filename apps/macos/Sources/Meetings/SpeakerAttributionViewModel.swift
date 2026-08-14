@@ -585,7 +585,11 @@ enum SpeakerFormat {
         if pass.cleared > 0 {
             parts.append("снято \(pass.cleared)")
         }
-        parts.append("без имени \(pass.unknown)")
+        // «Не узнано», а не «без имени»: реплика, которую слепок не
+        // опознал, сохраняет подпись по каналу и на экране имя имеет.
+        // Пока оба числа звались «без имени», отчёт спорил с тем, что
+        // человек видит в списке.
+        parts.append("не узнано \(pass.unknown)")
         if pass.withoutVector > 0 {
             parts.append("без звука \(pass.withoutVector)")
         }

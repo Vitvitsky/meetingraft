@@ -284,7 +284,11 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
             )
         )
 
-        XCTAssertTrue(summary.contains("без имени 4"), summary)
+        XCTAssertTrue(summary.contains("не узнано 4"), summary)
+        XCTAssertFalse(
+            summary.contains("без имени"),
+            "не узнанная реплика сохраняет подпись по каналу и без имени не остаётся: \(summary)"
+        )
         XCTAssertTrue(summary.contains("без звука 3"), summary)
         XCTAssertTrue(summary.contains("снято 1"), summary)
     }
