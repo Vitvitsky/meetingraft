@@ -65,3 +65,4 @@ graphify-out/
 # Local agent / worktree scratch
 .worktrees/
 .superpowers/
+test_result/

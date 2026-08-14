@@ -19,11 +19,15 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use domain::AudioChannel;
+use domain::{AudioChannel, SpeakerSource};
 use storage::AudioManifestStore;
 use stt::{EchoReport, detect_echo};
 
 /// Частота живого пути; ею же пишутся чанки на диск (ADR-005).
+/// Ниже этого RMS окно считается тихим: решение по нему предопределено, и
+/// в зазоре оно только размывает обе группы.
+const LOUD_RMS: f32 = 120.0;
+
 const SELF_CHECK_RATE: u32 = 16_000;
 /// Задержка синтетического эха: 75 мс, как в тестах `stt`.
 const SELF_CHECK_DELAY: usize = 1_200;
@@ -209,6 +213,24 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
     }
 
     print_report(&analysis.report);
+
+    // Зазор — отдельным разделом и после отчёта: он требует разметки, и
+    // его отказ не должен выглядеть отказом всего прибора.
+    match labelled_speech(&store, session_id) {
+        Ok(speech) => {
+            let loud: Vec<&stt::EchoWindow> = analysis
+                .report
+                .windows
+                .iter()
+                .filter(|window| window.mic_rms >= LOUD_RMS)
+                .collect();
+            print_gap(&loud, &speech);
+        }
+        Err(reason) => {
+            println!("\n  Зазор между эхом и своей речью не построен");
+            println!("    {reason}");
+        }
+    }
     Ok(())
 }
 
@@ -362,7 +384,7 @@ fn print_report(report: &EchoReport) {
     let loud: Vec<_> = report
         .windows
         .iter()
-        .filter(|window| window.mic_rms >= 120.0)
+        .filter(|window| window.mic_rms >= LOUD_RMS)
         .collect();
     println!(
         "  окон {}, из них громких {}, помечено эхом {}",
@@ -398,6 +420,225 @@ fn print_report(report: &EchoReport) {
          \x20 собеседник, explained обязан быть высоким, где владелец — низким.\n\
          \x20 Граница между этими группами и есть настоящий порог; сейчас в коде\n\
          \x20 стоит 0.50, взятое по синтетике."
+    );
+}
+
+/// Отрезки речи, размеченные человеком: владельца отдельно от остальных.
+///
+/// Ради этого разделения раздел и существует. Медиана `explained` по всем
+/// громким окнам смешивает две разные вещи — эхо чужой речи и настоящую
+/// речь владельца, — и потому не значит ничего. Настоящий порог живёт в
+/// **зазоре** между ними, а зазор без разметки не построить.
+#[derive(Debug, Default, PartialEq)]
+struct LabelledSpeech {
+    /// Имя владельца машины.
+    owner: String,
+    /// Куски, где говорил владелец, — в них `mic` несёт его речь.
+    owner_spans: Vec<(u64, u64)>,
+    /// Куски, где говорили остальные, — в них `mic` несёт эхо динамиков.
+    others_spans: Vec<(u64, u64)>,
+}
+
+/// Кто из размеченных — владелец машины.
+///
+/// Выводится, а не спрашивается: в системный tap попадает **только**
+/// устройство вывода (`SystemAudioCapture.createAggregate`), микрофона в
+/// нём нет по построению. Значит человек, размеченный на `mic` и ни разу
+/// на `system`, физически не может быть участником созвона — он в комнате.
+///
+/// Кандидатов не ровно один — **отказ, а не выбор большинством**. Двое
+/// означают, что кого-то из удалённых просто не разметили на `system`, и
+/// тогда любой ответ здесь будет угадыванием: прибор, угадавший владельца,
+/// померит зазор между не теми группами и напечатает уверенное число.
+fn derive_owner(on_mic: &[String], on_system: &[String]) -> Result<String, String> {
+    let mut candidates: Vec<&String> = on_mic
+        .iter()
+        .filter(|name| !on_system.contains(name))
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+
+    match candidates.as_slice() {
+        [owner] => Ok((*owner).clone()),
+        [] => Err(
+            "владельца не видно: все размеченные на mic встречаются и на system.\n\
+             \x20   Так выглядит встреча, где владелец не сказал ни слова, либо\n\
+             \x20   разметка на mic не покрывает его реплик"
+                .to_string(),
+        ),
+        many => Err(format!(
+            "кандидатов в владельцы {}: {}. Их не может быть двое — микрофона в\n\
+             \x20   системном tap'е нет по построению, и каждый удалённый участник\n\
+             \x20   обязан быть размечен на system. Значит кого-то там не разметили,\n\
+             \x20   и делить окна пока не на что",
+            many.len(),
+            many.iter()
+                .map(|name| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Разложить громкие окна по двум группам.
+///
+/// Окно, попавшее и туда и сюда, **не относится ни к одной**: там говорили
+/// оба, и `explained` в нём смешан ровно так же, как в общей медиане.
+/// Отнести его к большей доле значило бы вернуть ту же болезнь под другим
+/// именем.
+fn split_windows<'a>(
+    windows: &[&'a stt::EchoWindow],
+    speech: &LabelledSpeech,
+) -> (Vec<&'a stt::EchoWindow>, Vec<&'a stt::EchoWindow>, usize) {
+    let overlaps = |spans: &[(u64, u64)], window: &stt::EchoWindow| {
+        spans
+            .iter()
+            .any(|(from, to)| window.start_ms < *to && *from < window.end_ms)
+    };
+
+    let mut owner = Vec::new();
+    let mut others = Vec::new();
+    let mut both = 0usize;
+    for window in windows {
+        match (
+            overlaps(&speech.owner_spans, window),
+            overlaps(&speech.others_spans, window),
+        ) {
+            (true, true) => both += 1,
+            (true, false) => owner.push(*window),
+            (false, true) => others.push(*window),
+            (false, false) => {}
+        }
+    }
+    (owner, others, both)
+}
+
+/// Размеченные человеком реплики последней версии Final.
+///
+/// Берётся только `SpeakerSource::Human`: подпись по каналу повторяет то,
+/// что и так известно из дорожки, а подпись слепком — догадка модели.
+/// Строить по ним зазор значило бы мерить прибор прибором.
+fn labelled_speech(store: &AudioManifestStore, session_id: &str) -> Result<LabelledSpeech, String> {
+    let versions = store
+        .list_final_transcripts(session_id)
+        .map_err(|error| error.to_string())?;
+    let latest = versions
+        .first()
+        .ok_or_else(|| "у встречи нет собранного Final — размечать было негде".to_string())?;
+    let names: std::collections::HashMap<String, String> = store
+        .list_speakers(session_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|speaker| (speaker.id, speaker.display_name))
+        .collect();
+    let segments = store
+        .list_final_segments(session_id, latest.version)
+        .map_err(|error| error.to_string())?;
+
+    let named = |segment: &domain::FinalSegment| -> Option<String> {
+        if segment.speaker_source != SpeakerSource::Human {
+            return None;
+        }
+        names
+            .get(&segment.speaker_id)
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+    };
+
+    let on_mic: Vec<String> = segments
+        .iter()
+        .filter(|segment| segment.channel == AudioChannel::Mic)
+        .filter_map(named)
+        .collect();
+    if on_mic.is_empty() {
+        return Err(
+            "на дорожке mic нет ни одной реплики, подписанной человеком — делить\n\
+             \x20   окна нечем"
+                .to_string(),
+        );
+    }
+    let on_system: Vec<String> = segments
+        .iter()
+        .filter(|segment| segment.channel == AudioChannel::System)
+        .filter_map(named)
+        .collect();
+
+    let owner = derive_owner(&on_mic, &on_system)?;
+    let mut speech = LabelledSpeech {
+        owner: owner.clone(),
+        ..LabelledSpeech::default()
+    };
+    for segment in segments
+        .iter()
+        .filter(|segment| segment.channel == AudioChannel::Mic)
+    {
+        let Some(name) = named(segment) else { continue };
+        let span = (segment.start_ms, segment.end_ms);
+        if name == owner {
+            speech.owner_spans.push(span);
+        } else {
+            speech.others_spans.push(span);
+        }
+    }
+    Ok(speech)
+}
+
+/// Напечатать зазор — то, ради чего прибор и заводился.
+fn print_gap(windows: &[&stt::EchoWindow], speech: &LabelledSpeech) {
+    let (owner, others, both) = split_windows(windows, speech);
+    println!("\n  Зазор между эхом и своей речью (по разметке человека)");
+    println!(
+        "    владелец: «{}» — размечен на mic и ни разу на system",
+        speech.owner
+    );
+    if owner.is_empty() || others.is_empty() {
+        // Одна группа пуста — зазора нет по построению, и печатать вместо
+        // него медиану второй группы значило бы выдать половину за целое.
+        println!(
+            "    делить нечего: окон со речью владельца {}, окон с речью остальных {}.\n\
+             \x20   Зазор строится между двумя группами, и одной из них нет",
+            owner.len(),
+            others.len()
+        );
+        return;
+    }
+
+    let owner_median = median(owner.iter().map(|w| w.explained));
+    let others_median = median(others.iter().map(|w| w.explained));
+    println!(
+        "    речь владельца:   {:>4} окон, explained медиана {:.2}",
+        owner.len(),
+        owner_median
+    );
+    println!(
+        "    речь остальных:   {:>4} окон, explained медиана {:.2}",
+        others.len(),
+        others_median
+    );
+    println!("    смешанных окон:   {both:>4} — говорили оба, в счёт не идут");
+    println!(
+        "    зазор {:+.2} (остальные минус владелец)",
+        others_median - owner_median
+    );
+
+    // Порог решает не медиана, а то, чем платят за ошибку. Цена
+    // несимметрична (ADR-014): лишний текст человек видит и стирает, а не
+    // распознанную реплику владельца он не увидит никогда. Поэтому таблица
+    // называет обе ошибки раздельно, а не одну «точность».
+    println!("\n     порог  речи владельца съедено  эха осталось");
+    for threshold in [0.10_f32, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80] {
+        let eaten = owner.iter().filter(|w| w.explained >= threshold).count();
+        let missed = others.iter().filter(|w| w.explained < threshold).count();
+        println!(
+            "      {threshold:.2} {:>21} {:>13}",
+            format!("{:.0}%", 100.0 * eaten as f64 / owner.len() as f64),
+            format!("{:.0}%", 100.0 * missed as f64 / others.len() as f64),
+        );
+    }
+    println!(
+        "    Левый столбец — дорогая ошибка: речь владельца, выброшенная как\n\
+         \x20   эхо, не восстановится ничем. Правый — дешёвая: лишний текст видно\n\
+         \x20   и его стирают. Порог берётся там, где левый ещё ноль."
     );
 }
 
@@ -662,6 +903,110 @@ mod tests {
             analysis.report.windows.len()
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn window(start_ms: u64, end_ms: u64, explained: f32) -> stt::EchoWindow {
+        stt::EchoWindow {
+            start_ms,
+            end_ms,
+            explained,
+            mic_rms: 500.0,
+            is_echo: false,
+        }
+    }
+
+    /// Заведомо положительный случай: окна внутри реплик владельца идут в
+    /// одну группу, внутри чужих — в другую.
+    ///
+    /// Без него все проверки ниже выполнялись бы и на функции, которая не
+    /// раскладывает ничего.
+    #[test]
+    fn windows_go_to_the_group_of_the_reply_they_fall_into() {
+        let speech = LabelledSpeech {
+            owner: "Я".to_string(),
+            owner_spans: vec![(0, 1_000)],
+            others_spans: vec![(2_000, 3_000)],
+        };
+        let windows = [window(100, 400, 0.01), window(2_100, 2_400, 0.80)];
+        let refs: Vec<&stt::EchoWindow> = windows.iter().collect();
+
+        let (owner, others, both) = split_windows(&refs, &speech);
+
+        assert_eq!(owner.len(), 1);
+        assert_eq!(others.len(), 1);
+        assert_eq!(both, 0);
+        assert!((owner[0].explained - 0.01).abs() < f32::EPSILON);
+    }
+
+    /// Окно, накрывающее реплики обоих, не идёт никуда. Отнести его к
+    /// большей доле значило бы вернуть в зазор ту самую смесь, ради
+    /// избавления от которой он и считается.
+    #[test]
+    fn a_window_covering_both_belongs_to_neither() {
+        let speech = LabelledSpeech {
+            owner: "Я".to_string(),
+            owner_spans: vec![(0, 1_000)],
+            others_spans: vec![(900, 2_000)],
+        };
+        let windows = [window(800, 1_100, 0.5)];
+        let refs: Vec<&stt::EchoWindow> = windows.iter().collect();
+
+        let (owner, others, both) = split_windows(&refs, &speech);
+
+        assert!(owner.is_empty());
+        assert!(others.is_empty());
+        assert_eq!(both, 1);
+    }
+
+    /// Окно, не попавшее ни в одну размеченную реплику, тоже не в счёт:
+    /// разметка покрывает часть встречи, и остальное про зазор молчит.
+    #[test]
+    fn a_window_outside_every_labelled_reply_is_ignored() {
+        let speech = LabelledSpeech {
+            owner: "Я".to_string(),
+            owner_spans: vec![(0, 1_000)],
+            others_spans: vec![(2_000, 3_000)],
+        };
+        let windows = [window(5_000, 5_300, 0.9)];
+        let refs: Vec<&stt::EchoWindow> = windows.iter().collect();
+
+        let (owner, others, both) = split_windows(&refs, &speech);
+
+        assert!(owner.is_empty() && others.is_empty());
+        assert_eq!(both, 0);
+    }
+
+    /// Владелец — тот, кого нет на системной дорожке: микрофона в
+    /// системном tap'е нет по построению.
+    #[test]
+    fn the_owner_is_the_one_absent_from_the_system_track() {
+        let owner = derive_owner(
+            &["Я".into(), "Дима".into(), "Румия".into()],
+            &["Дима".into(), "Румия".into()],
+        );
+
+        assert_eq!(owner.as_deref(), Ok("Я"));
+    }
+
+    /// Двое кандидатов — отказ, а не выбор большинством. Второй кандидат
+    /// означает, что кого-то из удалённых не разметили на `system`, и
+    /// зазор построился бы между не теми группами — уверенно и неверно.
+    #[test]
+    fn two_candidates_are_a_refusal_not_a_guess() {
+        let error = derive_owner(
+            &["Я".into(), "Гость".into(), "Дима".into()],
+            &["Дима".into()],
+        )
+        .expect_err("двое кандидатов обязаны быть отказом");
+
+        assert!(error.contains("Я") && error.contains("Гость"), "{error}");
+    }
+
+    /// Владельца не видно вовсе — тоже отказ: встреча, где он не сказал ни
+    /// слова, зазора не даёт.
+    #[test]
+    fn no_candidate_is_a_refusal_too() {
+        assert!(derive_owner(&["Дима".into()], &["Дима".into()]).is_err());
     }
 
     /// Заведомо положительный случай для самого вердикта прибора.
