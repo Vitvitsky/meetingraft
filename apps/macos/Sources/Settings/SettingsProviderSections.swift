@@ -457,11 +457,11 @@ struct VoiceMemorySection: View {
         VStack(alignment: .leading, spacing: Theme.Space.md) {
             SettingsRow(
                 title: String(localized: "Remember voices between meetings"),
-                caption: String(
-                    localized: "Приложение сохранит на этом Маке слепок голоса каждого, "
-                        + "кого вы назвали, и будет узнавать его в следующих записях. "
-                        + "Слепок остаётся, даже если запись удалить."
-                )
+                // Одним литералом, а не склейкой: `String(localized:)`
+                // принимает `String.LocalizationValue`, и та строится
+                // только из литерала. Склеенное `+` — уже `String`, и
+                // компилятор отказывается молча его принять.
+                caption: String(localized: "Приложение сохранит на этом Маке слепок голоса каждого, кого вы назвали, и будет узнавать его в следующих записях. Слепок остаётся, даже если запись удалить.")
             ) {
                 Toggle(
                     "",
