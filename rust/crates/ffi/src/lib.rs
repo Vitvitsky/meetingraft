@@ -21,8 +21,9 @@ use domain::{
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
     LlmClient, LlmError, OllamaNativeClient, OpenAiCompatLlmClient, assemble_final, brief_prompts,
-    follow_up_prompts, make_artifact, occurrences_to_edit, plan_edit, promotable_term,
-    reattach_edits, render_brief, render_follow_up,
+    collapse_doubles, collapse_note, collapse_skipped_note, follow_up_prompts, make_artifact,
+    occurrences_to_edit, plan_edit, promotable_term, reattach_edits, render_brief,
+    render_follow_up,
 };
 mod rebuild;
 
@@ -434,6 +435,13 @@ struct MeetingCoreInner {
     /// Модель для post-call прохода; отдельная от live, скачивается по
     /// требованию при первом пересборе.
     post_call_whisper_model: String,
+    /// Порог свёртки удвоенных реплик на входе артефакта (Epic 8).
+    ///
+    /// `None` — свёртка **выключена**, и это умолчание. Порог берётся из
+    /// распределения, которое печатает `dup-probe`; пока его не измерили,
+    /// включать свёртку нечем, а подставить своё значение значило бы
+    /// решить за человека, сколько его речи выбросить.
+    artifact_dedup_threshold: Option<f32>,
 }
 
 /// Фасад сессии для macOS shell.
@@ -963,16 +971,104 @@ impl fmt::Display for CoreError {
     }
 }
 
+/// Вход артефакта: расшифровка, из которой строится промпт, и строка
+/// отчёта для человека.
+struct ArtifactInput {
+    body: String,
+    /// Что сказать человеку о свёртке; `None` — она выключена, и
+    /// говорить не о чем.
+    note: Option<String>,
+}
+
+/// Собрать вход артефакта: свернуть удвоенные реплики, если порог задан.
+///
+/// **Свёртка выключена, пока порога нет** (Epic 8). Умолчания у порога не
+/// бывает: его берут из распределения, которое печатает `dup-probe`, а
+/// подставить своё значило бы решить за человека, сколько его встречи
+/// выбросить. Без порога артефакт собирается ровно как раньше — из
+/// `body_markdown`.
+///
+/// Версия Final без реплик (собранная из live-субтитров, ADR-011) —
+/// не отказ: сворачивать там нечего, и артефакт строится из тела. Но
+/// молчать об этом нельзя, иначе включённая свёртка выглядела бы
+/// сработавшей.
+fn artifact_input(
+    inner: &MeetingCoreInner,
+    meeting_id: &str,
+    final_transcript: &FinalTranscript,
+    language: SpeechLanguage,
+) -> Result<ArtifactInput, AudioManifestError> {
+    let Some(threshold) = inner.artifact_dedup_threshold else {
+        return Ok(ArtifactInput {
+            body: final_transcript.body_markdown.clone(),
+            note: None,
+        });
+    };
+
+    let version = final_transcript.version;
+    let segments = read_store(inner, |store| {
+        store.list_final_segments(meeting_id, version)
+    })?;
+    if segments.is_empty() {
+        return Ok(ArtifactInput {
+            body: final_transcript.body_markdown.clone(),
+            note: Some(collapse_skipped_note(language)),
+        });
+    }
+    let speakers = read_store(inner, |store| store.list_speakers(meeting_id))?;
+
+    match collapse_doubles(&segments, threshold) {
+        Ok(collapsed) => Ok(ArtifactInput {
+            body: render_segments(&collapsed.segments, &speakers),
+            note: Some(collapse_note(&collapsed.report, language)),
+        }),
+        // Порог проверяется при установке, так что сюда попасть можно
+        // только правкой кода. Молча собрать артефакт из удвоенного —
+        // худший исход: человек считает, что свёртка работает.
+        Err(error) => Ok(ArtifactInput {
+            body: final_transcript.body_markdown.clone(),
+            note: Some(error.to_string()),
+        }),
+    }
+}
+
+/// Готовый артефакт и всё, что о нём известно на момент записи.
+///
+/// Одной записью, а не семью аргументами: у трёх движков сборка общая
+/// только концом, и перепутать местами два соседних `Option<&str>` в
+/// таком списке — дело одной строки.
+struct GeneratedArtifact<'a> {
+    kind: ArtifactKind,
+    body: &'a str,
+    generated_at_ms: u64,
+    /// Идентификатор шаблона; `None` — встроенный.
+    template_id: Option<&'a str>,
+    source: &'a FinalTranscript,
+    /// Отчёт о свёртке; `None` — свёртка выключена.
+    note: Option<&'a str>,
+}
+
 fn store_generated_artifact(
     inner: &mut MeetingCoreInner,
     meeting_id: &str,
-    kind: ArtifactKind,
-    body: &str,
-    generated_at_ms: u64,
-    template_id: Option<&str>,
-    source: &FinalTranscript,
+    generated: GeneratedArtifact<'_>,
 ) -> FfiGenerateArtifactResult {
-    let mut artifact = make_artifact(meeting_id, kind, body, generated_at_ms);
+    let GeneratedArtifact {
+        kind,
+        body,
+        generated_at_ms,
+        template_id,
+        source,
+        note,
+    } = generated;
+    // Отчёт о свёртке едет в само тело: артефакт живёт дольше экрана, на
+    // котором его собрали, и уезжает в Obsidian отдельным файлом. Право
+    // на преобразование даёт отчёт о нём, а не его качество.
+    let body = match note {
+        Some(note) => format!("{}\n\n---\n\n{note}", body.trim_end()),
+        None => body.to_owned(),
+    };
+    let mut artifact = make_artifact(meeting_id, kind, &body, generated_at_ms);
     artifact.id = Uuid::new_v4().to_string();
     if let Some(template_id) = template_id {
         artifact.template_id = template_id.to_owned();
@@ -1158,6 +1254,7 @@ fn core_with_spawner(
             llm_provider_id: String::new(),
             preferred_whisper_model: "auto".to_string(),
             post_call_whisper_model: "large-v3-turbo".to_string(),
+            artifact_dedup_threshold: None,
         }),
         jobs: RebuildJobs::new(spawner),
     })
@@ -1288,6 +1385,32 @@ impl MeetingCore {
         guard.llm_model_id = model_id;
         guard.llm_base_url = base_url.trim().trim_end_matches('/').to_owned();
         guard.llm_provider_id = provider_id;
+    }
+
+    /// Порог свёртки удвоенных реплик на входе артефакта (Epic 8).
+    ///
+    /// `None` выключает свёртку, и это умолчание: пока порог не измерен
+    /// прибором `dup-probe`, включать её нечем. Значение вне (0.0, 1.0] —
+    /// ошибка, а не подстановка своего: порог здесь единственное, что
+    /// стоит между «свернуть дубли» и «выбросить половину встречи».
+    ///
+    /// Пустая строка — успех, непустая — текст ошибки: соглашение
+    /// мутирующих методов ядра.
+    pub fn set_artifact_dedup_threshold(&self, threshold: Option<f32>) -> String {
+        if let Some(value) = threshold
+            && !(value.is_finite() && value > 0.0 && value <= 1.0)
+        {
+            return format!("порог похожести {value} вне (0.0, 1.0]");
+        }
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.artifact_dedup_threshold = threshold;
+        String::new()
+    }
+
+    /// Текущий порог свёртки; `None` — свёртка выключена.
+    pub fn artifact_dedup_threshold(&self) -> Option<f32> {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.artifact_dedup_threshold
     }
 
     /// Каталог LLM с backend; при ошибке sync / не настроенном API — пустой список.
@@ -2785,20 +2908,26 @@ impl MeetingCore {
         };
         let engine = normalize_llm_engine(&guard.llm_engine).to_owned();
         let generated_at_ms = now_ms();
+        let primary = guard.language_policy.primary;
+        // Один вход на все три ветки: разойдись они, свёртка была бы то
+        // включена, то нет в зависимости от выбранного движка (ADR-007).
+        let input = match artifact_input(&guard, &meeting_id, &final_transcript, primary) {
+            Ok(input) => input,
+            Err(error) => {
+                return FfiGenerateArtifactResult {
+                    artifact: empty_artifact(),
+                    error: error.to_string(),
+                };
+            }
+        };
         if engine == "backend" {
             let job_kind = match domain_kind {
                 ArtifactKind::Brief => JobKind::Brief,
                 ArtifactKind::FollowUp => JobKind::FollowUp,
             };
             let (system, user) = match domain_kind {
-                ArtifactKind::Brief => brief_prompts(
-                    &final_transcript.body_markdown,
-                    guard.language_policy.primary,
-                ),
-                ArtifactKind::FollowUp => follow_up_prompts(
-                    &final_transcript.body_markdown,
-                    guard.language_policy.primary,
-                ),
+                ArtifactKind::Brief => brief_prompts(&input.body, primary),
+                ArtifactKind::FollowUp => follow_up_prompts(&input.body, primary),
             };
             let request = CreateJobRequest {
                 meeting_id: meeting_id.clone(),
@@ -2837,23 +2966,24 @@ impl MeetingCore {
             return store_generated_artifact(
                 &mut guard,
                 &meeting_id,
-                domain_kind,
-                &backend_artifact.body_markdown,
-                generated_at_ms,
-                Some(template_id),
-                &final_transcript,
+                GeneratedArtifact {
+                    kind: domain_kind,
+                    body: &backend_artifact.body_markdown,
+                    generated_at_ms,
+                    template_id: Some(template_id),
+                    source: &final_transcript,
+                    note: input.note.as_deref(),
+                },
             );
         }
         if matches!(engine.as_str(), "ollama" | "openai_compat") {
             let base_url = guard.llm_base_url.clone();
             let model_id = guard.llm_model_id.clone();
-            let primary_language = guard.language_policy.primary;
-            let final_body = final_transcript.body_markdown.clone();
             drop(guard);
 
             let (system, user) = match domain_kind {
-                ArtifactKind::Brief => brief_prompts(&final_body, primary_language),
-                ArtifactKind::FollowUp => follow_up_prompts(&final_body, primary_language),
+                ArtifactKind::Brief => brief_prompts(&input.body, primary),
+                ArtifactKind::FollowUp => follow_up_prompts(&input.body, primary),
             };
             let completion = match engine.as_str() {
                 "ollama" => OllamaNativeClient::new(base_url, model_id).complete(&system, &user),
@@ -2882,17 +3012,19 @@ impl MeetingCore {
             return store_generated_artifact(
                 &mut guard,
                 &meeting_id,
-                domain_kind,
-                &body,
-                generated_at_ms,
-                Some(template_id),
-                &final_transcript,
+                GeneratedArtifact {
+                    kind: domain_kind,
+                    body: &body,
+                    generated_at_ms,
+                    template_id: Some(template_id),
+                    source: &final_transcript,
+                    note: input.note.as_deref(),
+                },
             );
         }
 
-        let primary_language = guard.language_policy.primary;
         let body = match domain_kind {
-            ArtifactKind::Brief => render_brief(&final_transcript.body_markdown, primary_language),
+            ArtifactKind::Brief => render_brief(&input.body, primary),
             ArtifactKind::FollowUp => {
                 let started_at_ms = read_store(&guard, |store| store.list_meeting_summaries())
                     .ok()
@@ -2903,21 +3035,20 @@ impl MeetingCore {
                             .map(|meeting| meeting.started_at_ms)
                     })
                     .unwrap_or(generated_at_ms);
-                render_follow_up(
-                    &final_transcript.body_markdown,
-                    primary_language,
-                    &utc_date_label(started_at_ms),
-                )
+                render_follow_up(&input.body, primary, &utc_date_label(started_at_ms))
             }
         };
         store_generated_artifact(
             &mut guard,
             &meeting_id,
-            domain_kind,
-            &body,
-            generated_at_ms,
-            None,
-            &final_transcript,
+            GeneratedArtifact {
+                kind: domain_kind,
+                body: &body,
+                generated_at_ms,
+                template_id: None,
+                source: &final_transcript,
+                note: input.note.as_deref(),
+            },
         )
     }
 
@@ -3353,6 +3484,189 @@ mod tests {
         );
         let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
         (root, meeting_id, core)
+    }
+
+    /// Встреча с одной удвоенной репликой и одной репликой владельца.
+    ///
+    /// Реплика удалённого участника пришла в обе дорожки и распознана
+    /// по-разному (ADR-014); у микрофонной копии есть слово, которого нет
+    /// в системной, — по нему и видно, какая копия ушла.
+    fn seed_doubled_meeting(root: &std::path::Path, meeting_id: &str) {
+        const MIC_DOUBLE: &str = "Значит, переносим релиз на следующую среду, окей";
+        const SYSTEM_DOUBLE: &str = "Значит, переносим релиз на следующую среду.";
+        const OWN: &str = "Я тогда соберу цифры и покажу вечером";
+
+        let mut store = AudioManifestStore::open(root).expect("store");
+        store
+            .upsert_final_transcript(&FinalTranscript {
+                meeting_id: meeting_id.to_owned(),
+                version: 1,
+                body_markdown: format!("{MIC_DOUBLE}\n\n{SYSTEM_DOUBLE}\n\n{OWN}"),
+                created_at_ms: 1,
+            })
+            .expect("transcript");
+        let rows = vec![
+            doubled_segment(0, AudioChannel::Mic, 1_000, 5_000, MIC_DOUBLE),
+            doubled_segment(1, AudioChannel::System, 1_200, 5_100, SYSTEM_DOUBLE),
+            doubled_segment(2, AudioChannel::Mic, 10_000, 14_000, OWN),
+        ];
+        store
+            .replace_final_segments(meeting_id, 1, &rows)
+            .expect("segments");
+    }
+
+    fn doubled_segment(
+        index: u32,
+        channel: AudioChannel,
+        start_ms: u64,
+        end_ms: u64,
+        text: &str,
+    ) -> domain::FinalSegment {
+        domain::FinalSegment {
+            index,
+            start_ms,
+            end_ms,
+            channel,
+            speaker_id: String::new(),
+            speaker_source: SpeakerSource::None,
+            text: text.to_owned(),
+            text_edited: false,
+            original_text: String::new(),
+        }
+    }
+
+    fn doubled_core(name: &str) -> (std::path::PathBuf, String, std::sync::Arc<MeetingCore>) {
+        let root = edits_root(name);
+        let meeting_id = format!("m-{name}");
+        seed_doubled_meeting(&root, &meeting_id);
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        (root, meeting_id, core)
+    }
+
+    /// Умолчание: свёртки нет, артефакт собирается ровно как раньше.
+    ///
+    /// Порога никто не измерил, и включать свёртку нечем. Заглушек в
+    /// интерфейсе быть не должно: пока порога нет, ничего и не
+    /// происходит.
+    #[test]
+    fn without_a_threshold_the_artifact_keeps_both_copies() {
+        let (root, meeting_id, core) = doubled_core("dedup-off");
+        assert_eq!(
+            core.artifact_dedup_threshold(),
+            None,
+            "свёртка по умолчанию выключена"
+        );
+
+        let generated = core.generate_artifact(meeting_id, FfiArtifactKind::Brief);
+        assert!(generated.error.is_empty(), "{}", generated.error);
+        assert!(
+            generated.artifact.body_markdown.contains("окей"),
+            "микрофонная копия обязана остаться: {}",
+            generated.artifact.body_markdown
+        );
+        assert!(
+            !generated.artifact.body_markdown.contains("свёрнуто"),
+            "отчёт о свёртке при выключенной свёртке — вранье: {}",
+            generated.artifact.body_markdown
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// С порогом дубль уходит, и артефакт говорит об этом вслух.
+    #[test]
+    fn a_threshold_collapses_the_double_and_says_so() {
+        let (root, meeting_id, core) = doubled_core("dedup-on");
+        assert!(core.set_artifact_dedup_threshold(Some(0.5)).is_empty());
+
+        let generated = core.generate_artifact(meeting_id, FfiArtifactKind::Brief);
+        assert!(generated.error.is_empty(), "{}", generated.error);
+        let body = generated.artifact.body_markdown;
+        assert!(
+            !body.contains("окей"),
+            "микрофонная копия обязана была свернуться: {body}"
+        );
+        assert!(
+            body.contains("среду"),
+            "системная копия обязана остаться: {body}"
+        );
+        assert!(
+            body.contains("цифры"),
+            "реплика владельца близнеца не имеет и не трогается: {body}"
+        );
+        assert!(
+            body.contains("свёрнуто удвоенных: 1"),
+            "свёртка обязана быть видимой: {body}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Свёрнутый артефакт не устарел в момент рождения.
+    ///
+    /// Отпечаток источника считается по телу Final, а не по свёрнутому
+    /// входу: свёртка Final не меняет, и отпечаток по её результату
+    /// разошёлся бы с тем, с чем его сравнивают, — каждый артефакт
+    /// числился бы отставшим сразу.
+    #[test]
+    fn a_folded_artifact_is_not_stale_at_birth() {
+        let (root, meeting_id, core) = doubled_core("dedup-stale");
+        assert!(core.set_artifact_dedup_threshold(Some(0.5)).is_empty());
+
+        let generated = core.generate_artifact(meeting_id.clone(), FfiArtifactKind::Brief);
+        assert!(generated.error.is_empty(), "{}", generated.error);
+        assert!(!generated.artifact.is_stale, "только что собран");
+
+        let artifacts = core.list_artifacts(meeting_id);
+        assert_eq!(artifacts.len(), 1);
+        assert!(!artifacts[0].is_stale, "Final не менялся с момента сборки");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Порог вне (0.0, 1.0] отвергается, и свёртка остаётся выключенной.
+    #[test]
+    fn an_out_of_range_threshold_is_refused_and_changes_nothing() {
+        let (root, _, core) = doubled_core("dedup-bad-threshold");
+        for bad in [0.0_f32, 1.5, -0.2, f32::NAN] {
+            let error = core.set_artifact_dedup_threshold(Some(bad));
+            assert!(!error.is_empty(), "порог {bad} принят молча");
+        }
+        assert_eq!(
+            core.artifact_dedup_threshold(),
+            None,
+            "отвергнутый порог не смеет включать свёртку"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Версия Final без реплик: сворачивать нечего, и об этом сказано.
+    ///
+    /// Такие версии собраны из live-субтитров (ADR-011). Молчание здесь
+    /// выглядело бы сработавшей свёрткой.
+    #[test]
+    fn a_final_without_segments_says_the_fold_did_not_run() {
+        let root = edits_root("dedup-no-segments");
+        let meeting_id = "m-dedup-no-segments".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store
+                .upsert_final_transcript(&FinalTranscript {
+                    meeting_id: meeting_id.clone(),
+                    version: 1,
+                    body_markdown: "Реплик у этой версии нет, только текст".to_string(),
+                    created_at_ms: 1,
+                })
+                .expect("transcript");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert!(core.set_artifact_dedup_threshold(Some(0.5)).is_empty());
+
+        let generated = core.generate_artifact(meeting_id, FfiArtifactKind::Brief);
+        assert!(generated.error.is_empty(), "{}", generated.error);
+        assert!(
+            generated.artifact.body_markdown.contains("не выполнена"),
+            "включённая свёртка, которая не сработала, обязана сказать об этом: {}",
+            generated.artifact.body_markdown
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Правка текста после сборки расходится с артефактом.

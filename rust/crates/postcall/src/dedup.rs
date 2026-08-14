@@ -19,7 +19,7 @@
 //! доля общих слов ([`word_overlap`]) — нет. Какая из них делит пары
 //! лучше, решается по числам с настоящей записи, а не здесь.
 
-use domain::{AudioChannel, FinalSegment, SpeakerSource};
+use domain::{AudioChannel, FinalSegment, SpeakerSource, SpeechLanguage};
 
 /// Потолок длины реплики в словах.
 ///
@@ -197,6 +197,72 @@ pub struct CollapseReport {
     /// Порог, по которому свернули. Записан в отчёт, потому что без него
     /// числа выше не значат ничего.
     pub threshold: f32,
+}
+
+/// Строка отчёта для человека, читающего артефакт.
+///
+/// Свёртка обязана быть **видимой**: право на преобразование даёт отчёт
+/// о нём, а не его качество. Без этой строки реплики исчезают из брифа
+/// молча, и человеку неоткуда узнать, что их вообще было больше.
+///
+/// Язык — тот же, на котором собран артефакт: строка едет в его тело, а
+/// не в интерфейс, и локализовать её нечем, кроме языка встречи.
+///
+/// Числа стоят после двоеточий не для красоты: «свёрнуто 2 дубля» и
+/// «свёрнуто 5 дублей» — разные формы, и склонять их в трёх языках
+/// значит завести грамматику там, где нужен отчёт.
+pub fn collapse_note(report: &CollapseReport, language: SpeechLanguage) -> String {
+    let (built, folded, threshold, by_hand) = match language {
+        SpeechLanguage::Ru => (
+            "Собран из реплик",
+            "свёрнуто удвоенных",
+            "порог",
+            "оставлено правленых рукой",
+        ),
+        SpeechLanguage::En => (
+            "Built from replies",
+            "doubles collapsed",
+            "threshold",
+            "kept as hand-edited",
+        ),
+        SpeechLanguage::Es => (
+            "Compuesto de intervenciones",
+            "duplicados plegados",
+            "umbral",
+            "conservadas por edición manual",
+        ),
+    };
+    let mut note = format!(
+        "{built}: {}; {folded}: {}; {threshold}: {:.2}",
+        report.kept, report.collapsed, report.threshold
+    );
+    if report.kept_by_hand > 0 {
+        note.push_str(&format!("; {by_hand}: {}", report.kept_by_hand));
+    }
+    note.push('.');
+    note
+}
+
+/// Строка о том, что свёртку сделать было не над чем.
+///
+/// Отдельным сообщением от [`collapse_note`], потому что «свёрнуто 0
+/// дублей» и «сворачивать было нечего» — разные ответы, и первый из них
+/// на версии без реплик был бы неправдой: пар не искали вовсе.
+///
+/// Такие версии Final собраны из live-субтитров (ADR-011), реплик у них
+/// нет, и свёртке не за что взяться.
+pub fn collapse_skipped_note(language: SpeechLanguage) -> String {
+    match language {
+        SpeechLanguage::Ru => {
+            "Свёртка удвоенных реплик не выполнена: у этой версии Final нет реплик.".to_string()
+        }
+        SpeechLanguage::En => {
+            "Doubles were not collapsed: this Final version has no replies.".to_string()
+        }
+        SpeechLanguage::Es => {
+            "No se plegaron duplicados: esta versión de Final no tiene intervenciones.".to_string()
+        }
+    }
 }
 
 /// Результат свёртки: сегменты и отчёт о том, что с ними сделали.
@@ -524,6 +590,39 @@ mod tests {
                 "Тогда я беру на себя выгрузку",
             ),
         ]
+    }
+
+    #[test]
+    fn the_note_names_the_numbers_and_the_threshold() {
+        let report = CollapseReport {
+            kept: 128,
+            collapsed: 96,
+            kept_by_hand: 0,
+            threshold: 0.6,
+        };
+        let note = collapse_note(&report, SpeechLanguage::Ru);
+        assert!(note.contains("128"), "{note}");
+        assert!(note.contains("96"), "{note}");
+        assert!(note.contains("0.60"), "порог обязан быть в строке: {note}");
+        assert!(
+            !note.contains("рукой"),
+            "нечего сообщать: свёртка ни разу не отступила — {note}"
+        );
+    }
+
+    #[test]
+    fn the_note_says_when_the_fold_stepped_back() {
+        // Отступление свёртки — не то же, что её отсутствие, и молчать о
+        // нём нельзя: иначе правка выглядит дублем, а дубль правкой.
+        let report = CollapseReport {
+            kept: 10,
+            collapsed: 2,
+            kept_by_hand: 3,
+            threshold: 0.5,
+        };
+        let note = collapse_note(&report, SpeechLanguage::Ru);
+        assert!(note.contains("рукой"), "{note}");
+        assert!(note.contains('3'), "{note}");
     }
 
     #[test]
