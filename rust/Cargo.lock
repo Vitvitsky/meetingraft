@@ -972,6 +972,15 @@ name = "meetingraft-domain"
 version = "0.1.0"
 
 [[package]]
+name = "meetingraft-dup-probe"
+version = "0.1.0"
+dependencies = [
+ "meetingraft-domain",
+ "meetingraft-postcall",
+ "meetingraft-storage",
+]
+
+[[package]]
 name = "meetingraft-echo-probe"
 version = "0.1.0"
 dependencies = [

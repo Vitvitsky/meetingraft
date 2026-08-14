@@ -1,6 +1,7 @@
 //! Локальная сборка post-call транскриптов и артефактов.
 
 mod assemble;
+mod dedup;
 mod diff;
 mod edit_service;
 mod edits;
@@ -15,6 +16,11 @@ mod templates;
 mod term_from_edit;
 
 pub use assemble::assemble_final;
+pub use dedup::{
+    CONTROL_GAP_MS, CollapseError, CollapseReport, Collapsed, TwinPair, TwinScan, collapse_doubles,
+    collapse_note, collapse_skipped_note, overlap_ms, scan_twins, word_count, word_overlap,
+    word_similarity,
+};
 pub use diff::{DiffOp, DiffSpan, diff_words};
 pub use edit_service::{EditOutcome, occurrences_to_edit, plan_edit};
 pub use edits::reattach_edits;
