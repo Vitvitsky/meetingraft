@@ -1,20 +1,25 @@
-//! Сколько в записи удвоенных реплик (Epic 8, задача 1).
+//! Удвоенные реплики: измерение и свёртка (Epic 8, задачи 1–2).
 //!
 //! Микрофон слышит созвон (ADR-014): реплика удалённого участника
 //! попадает и в системную дорожку, и в микрофонную, и Whisper
 //! распознаёт обе — **разными словами**. Дословных повторов среди них
 //! 12–15%, так что дословное сравнение меряет не то.
 //!
-//! Здесь только измерение: пары находятся, свёртка не делается и Final
-//! не трогается. Порог похожести тут не назначается вовсе — он берётся
-//! из распределения, которое печатает `dup-probe`.
+//! Две половины, и порядок между ними жёсткий. [`scan_twins`] мерит и
+//! печатается прибором `dup-probe`; [`collapse_doubles`] сворачивает и
+//! **берёт порог параметром**. Умолчания у порога нет вовсе: его берут
+//! из распределения, которое напечатал прибор, а не из головы.
+//!
+//! **Final не меняется ни на шаг.** Свёртка отдаёт отдельный список для
+//! входа артефакта, а исходные сегменты не трогает: обе копии реплики в
+//! Final уместны — по ним и видно, что микрофон слышал созвон.
 //!
 //! Мер похожести две, и обе нормированы на длину. Пословное
 //! редакционное расстояние ([`word_similarity`]) учитывает порядок слов,
 //! доля общих слов ([`word_overlap`]) — нет. Какая из них делит пары
 //! лучше, решается по числам с настоящей записи, а не здесь.
 
-use domain::{AudioChannel, FinalSegment};
+use domain::{AudioChannel, FinalSegment, SpeakerSource};
 
 /// Потолок длины реплики в словах.
 ///
@@ -99,9 +104,50 @@ pub fn scan_twins(segments: &[FinalSegment]) -> TwinScan {
     let system_words: Vec<Vec<String>> =
         system.iter().map(|segment| words(&segment.text)).collect();
 
-    let mut overlapping = Vec::new();
+    let (paired, lonely_mic) = pair_up(&mic, &system, &mic_words, &system_words);
+
+    // Контроль ищется только для тех реплик, у которых близнец нашёлся.
     let mut control = Vec::new();
-    let mut lonely_mic = 0;
+    for &(mic_position, _) in &paired {
+        if let Some(far) = farthest_match(
+            mic[mic_position],
+            &mic_words[mic_position],
+            &system,
+            &system_words,
+        ) {
+            control.push(far);
+        }
+    }
+
+    TwinScan {
+        mic_total: mic.len(),
+        system_total: system.len(),
+        overlapping: paired.into_iter().map(|(_, pair)| pair).collect(),
+        lonely_mic,
+        control,
+    }
+}
+
+/// Лучший системный близнец для каждой микрофонной реплики и число тех,
+/// у кого его нет вовсе.
+///
+/// Отдельно от [`scan_twins`], потому что контроль стоит дорого —
+/// сравнение каждой микрофонной реплики со **всеми** далёкими
+/// системными, — а свёртке ([`collapse_doubles`]) он не нужен: она идёт
+/// по живому пути сборки артефакта, где лишний проход платится временем
+/// человека.
+///
+/// Пара едет вместе с местом микрофонной реплики в списке: искать его
+/// заново по номеру значило бы завести второе правило соответствия там,
+/// где хватает одного.
+fn pair_up(
+    mic: &[&FinalSegment],
+    system: &[&FinalSegment],
+    mic_words: &[Vec<String>],
+    system_words: &[Vec<String>],
+) -> (Vec<(usize, TwinPair)>, usize) {
+    let mut pairs = Vec::new();
+    let mut lonely = 0;
 
     for (mic_position, mic_segment) in mic.iter().enumerate() {
         let mut best: Option<TwinPair> = None;
@@ -121,31 +167,141 @@ pub fn scan_twins(segments: &[FinalSegment]) -> TwinScan {
                 best = Some(pair);
             }
         }
-
-        let Some(best) = best else {
-            lonely_mic += 1;
-            continue;
-        };
-
-        // Контроль ищется только для тех реплик, у которых близнец нашёлся.
-        if let Some(far) = farthest_match(
-            mic_segment,
-            &mic_words[mic_position],
-            &system,
-            &system_words,
-        ) {
-            control.push(far);
+        match best {
+            Some(pair) => pairs.push((mic_position, pair)),
+            None => lonely += 1,
         }
-        overlapping.push(best);
     }
 
-    TwinScan {
-        mic_total: mic.len(),
-        system_total: system.len(),
-        overlapping,
-        lonely_mic,
-        control,
+    (pairs, lonely)
+}
+
+/// Отчёт о свёртке.
+///
+/// Едет вместе с сегментами и дальше — в артефакт. Право на
+/// преобразование даёт отчёт о нём, а не его качество: человек обязан
+/// видеть, сколько реплик исчезло с его глаз, даже если исчезли они
+/// правильно.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CollapseReport {
+    /// Реплик осталось.
+    pub kept: usize,
+    /// Микрофонных копий свёрнуто в системные.
+    pub collapsed: usize,
+    /// Реплик оставлено потому, что их касался человек.
+    ///
+    /// Отдельным числом от [`CollapseReport::kept`]: это не «столько
+    /// было непохожих», а «столько раз свёртка отступила», и молчать об
+    /// этом нельзя — иначе правка выглядит дублем, а дубль правкой.
+    pub kept_by_hand: usize,
+    /// Порог, по которому свернули. Записан в отчёт, потому что без него
+    /// числа выше не значат ничего.
+    pub threshold: f32,
+}
+
+/// Результат свёртки: сегменты и отчёт о том, что с ними сделали.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Collapsed {
+    pub segments: Vec<FinalSegment>,
+    pub report: CollapseReport,
+}
+
+/// Почему свернуть не вышло.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CollapseError {
+    /// Порог вне (0.0, 1.0] либо не число.
+    ///
+    /// Отказом, а не умолчанием: порог здесь — единственное, что стоит
+    /// между «свернуть дубли» и «выбросить половину встречи», и
+    /// подставить вместо него своё значение значит решить за человека
+    /// то, ради чего затевался прибор.
+    Threshold(f32),
+}
+
+impl std::fmt::Display for CollapseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Threshold(value) => write!(
+                formatter,
+                "порог похожести {value} вне (0.0, 1.0]: свёртка без порога не бывает"
+            ),
+        }
     }
+}
+
+impl std::error::Error for CollapseError {}
+
+/// Свернуть удвоенные реплики: механически, обратимо, с отчётом.
+///
+/// **Final не меняется.** Вход — его сегменты, выход — отдельный список
+/// для входа артефакта; порядок и нумерация сохраняются, чтобы по
+/// оставшейся реплике можно было найти её место в Final.
+///
+/// Свёртка требует всех условий сразу:
+///
+/// 1. реплики с **разных** дорожек — удвоение живёт между ними;
+/// 2. они пересекаются во времени;
+/// 3. похожесть текста не ниже `threshold`.
+///
+/// Из пары остаётся **системная** копия: она прямой цифровой сигнал, а
+/// микрофонная прошла динамики, комнату и АРУ. На скрине 2026-08-14
+/// системная и распознана лучше.
+///
+/// Порог параметром, и умолчания у него нет: его берут из распределения,
+/// которое печатает `dup-probe`, а не из головы.
+pub fn collapse_doubles(
+    segments: &[FinalSegment],
+    threshold: f32,
+) -> Result<Collapsed, CollapseError> {
+    if !threshold.is_finite() || threshold <= 0.0 || threshold > 1.0 {
+        return Err(CollapseError::Threshold(threshold));
+    }
+
+    let mic: Vec<&FinalSegment> = channel_segments(segments, AudioChannel::Mic);
+    let system: Vec<&FinalSegment> = channel_segments(segments, AudioChannel::System);
+    let mic_words: Vec<Vec<String>> = mic.iter().map(|segment| words(&segment.text)).collect();
+    let system_words: Vec<Vec<String>> =
+        system.iter().map(|segment| words(&segment.text)).collect();
+    let (paired, _) = pair_up(&mic, &system, &mic_words, &system_words);
+
+    let mut drop_indices: Vec<u32> = Vec::new();
+    let mut kept_by_hand = 0;
+    for (mic_position, pair) in paired {
+        if pair.similarity < threshold {
+            continue;
+        }
+        // То, чего человек касался, не исчезает. Ручная правка (Epic 19)
+        // и ручная подпись (ADR-013) — свидетельства о реплике, и
+        // механическое правило их не отменяет.
+        if touched_by_hand(mic[mic_position]) {
+            kept_by_hand += 1;
+            continue;
+        }
+        drop_indices.push(pair.mic_index);
+    }
+
+    let kept: Vec<FinalSegment> = segments
+        .iter()
+        .filter(|segment| {
+            segment.channel != AudioChannel::Mic || !drop_indices.contains(&segment.index)
+        })
+        .cloned()
+        .collect();
+
+    Ok(Collapsed {
+        report: CollapseReport {
+            kept: kept.len(),
+            collapsed: drop_indices.len(),
+            kept_by_hand,
+            threshold,
+        },
+        segments: kept,
+    })
+}
+
+/// Касался ли реплики человек.
+fn touched_by_hand(segment: &FinalSegment) -> bool {
+    segment.text_edited || segment.speaker_source == SpeakerSource::Human
 }
 
 /// Самая похожая системная реплика среди заведомо далёких.
@@ -323,7 +479,6 @@ fn words(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::SpeakerSource;
 
     /// Реальная пара со скрина 2026-08-14: одна фраза, распознанная
     /// дважды разными словами.
@@ -348,6 +503,186 @@ mod tests {
             text_edited: false,
             original_text: String::new(),
         }
+    }
+
+    /// Порог для тестов свёртки.
+    ///
+    /// Не «правильный» и не измеренный: живых чисел ещё нет. Он взят так,
+    /// чтобы известная пара со скрина оказалась выше него, а чужая речь —
+    /// ниже, и годится ровно на то, чтобы проверить правила свёртки.
+    const TEST_THRESHOLD: f32 = 0.5;
+
+    fn doubled_meeting() -> Vec<FinalSegment> {
+        vec![
+            segment(0, AudioChannel::Mic, 1_000, 5_000, MIC_LINE),
+            segment(1, AudioChannel::System, 1_200, 5_100, SYSTEM_LINE),
+            segment(
+                2,
+                AudioChannel::Mic,
+                10_000,
+                14_000,
+                "Тогда я беру на себя выгрузку",
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_double_collapses_into_the_system_copy() {
+        let collapsed = collapse_doubles(&doubled_meeting(), TEST_THRESHOLD).expect("свёртка");
+        assert_eq!(collapsed.report.collapsed, 1);
+        assert_eq!(collapsed.report.kept, 2);
+        assert_eq!(collapsed.report.kept_by_hand, 0);
+        let texts: Vec<&str> = collapsed
+            .segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![SYSTEM_LINE, "Тогда я беру на себя выгрузку"],
+            "остаётся системная копия: она прямой сигнал, а не запись через комнату"
+        );
+    }
+
+    #[test]
+    fn the_final_itself_is_left_alone() {
+        // Обе копии в Final уместны: по ним и видно, что микрофон слышал
+        // созвон. Свёртка отдаёт отдельный список, а не правит вход.
+        let segments = doubled_meeting();
+        let before = segments.clone();
+        let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
+        assert_eq!(segments, before, "вход изменён");
+        assert!(collapsed.segments.len() < segments.len());
+    }
+
+    #[test]
+    fn a_reply_the_hand_touched_survives_the_fold() {
+        // Правка Epic 19 на микрофонной копии: то, чего человек касался,
+        // не исчезает молча.
+        let mut segments = doubled_meeting();
+        segments[0].text_edited = true;
+        let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
+        assert_eq!(collapsed.report.collapsed, 0);
+        assert_eq!(collapsed.report.kept_by_hand, 1);
+        assert_eq!(collapsed.segments.len(), 3);
+    }
+
+    #[test]
+    fn a_reply_signed_by_hand_survives_the_fold() {
+        let mut segments = doubled_meeting();
+        segments[0].speaker_source = SpeakerSource::Human;
+        let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
+        assert_eq!(collapsed.report.collapsed, 0);
+        assert_eq!(collapsed.report.kept_by_hand, 1);
+    }
+
+    #[test]
+    fn a_reply_signed_by_channel_or_print_folds_as_usual() {
+        // Свидетельство — только рука. Канал проставляется оптом
+        // пересбором, слепок — автоматикой (ADR-013), и защитой от
+        // свёртки ни то, ни другое быть не может.
+        for source in [SpeakerSource::Channel, SpeakerSource::VoicePrint] {
+            let mut segments = doubled_meeting();
+            segments[0].speaker_source = source;
+            let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
+            assert_eq!(collapsed.report.collapsed, 1, "{source:?}");
+            assert_eq!(collapsed.report.kept_by_hand, 0, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn unlike_neighbours_do_not_collapse() {
+        let segments = vec![
+            segment(
+                0,
+                AudioChannel::Mic,
+                1_000,
+                5_000,
+                "Тогда я беру на себя выгрузку",
+            ),
+            // Пересекается по времени, но говорит о другом: одновременная
+            // речь — не дубль.
+            segment(
+                1,
+                AudioChannel::System,
+                1_200,
+                5_100,
+                "Давай тогда созвонимся после обеда",
+            ),
+        ];
+        let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
+        assert_eq!(collapsed.report.collapsed, 0);
+        assert_eq!(collapsed.segments.len(), 2);
+    }
+
+    #[test]
+    fn an_owner_reply_without_a_twin_is_untouched() {
+        let segments = vec![
+            segment(
+                0,
+                AudioChannel::Mic,
+                1_000,
+                5_000,
+                "Тогда я беру на себя выгрузку",
+            ),
+            segment(1, AudioChannel::System, 60_000, 64_000, SYSTEM_LINE),
+        ];
+        let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
+        assert_eq!(collapsed.report.collapsed, 0);
+        assert_eq!(collapsed.segments.len(), 2);
+    }
+
+    #[test]
+    fn the_system_copy_is_never_the_one_that_goes() {
+        // Дословный дубль: похожесть 1.0, и решает уже не она, а правило
+        // «остаётся системная». Без него из пары ушла бы любая из двух.
+        let segments = vec![
+            segment(0, AudioChannel::Mic, 1_000, 5_000, "Значит, сделаем так"),
+            segment(1, AudioChannel::System, 1_000, 5_000, "Значит, сделаем так"),
+        ];
+        let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
+        assert_eq!(collapsed.segments.len(), 1);
+        assert_eq!(collapsed.segments[0].channel, AudioChannel::System);
+    }
+
+    #[test]
+    fn the_order_and_numbering_survive() {
+        // По оставшейся реплике надо уметь найти её место в Final:
+        // перенумерация оборвала бы эту связь.
+        let collapsed = collapse_doubles(&doubled_meeting(), TEST_THRESHOLD).expect("свёртка");
+        let indices: Vec<u32> = collapsed
+            .segments
+            .iter()
+            .map(|segment| segment.index)
+            .collect();
+        assert_eq!(indices, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_threshold_out_of_range_is_refused() {
+        // Умолчание вместо порога решило бы за человека то, ради чего
+        // заводился прибор, — и решило бы молча.
+        for bad in [0.0, -0.1, 1.5, f32::NAN] {
+            assert!(
+                matches!(
+                    collapse_doubles(&doubled_meeting(), bad),
+                    Err(CollapseError::Threshold(_))
+                ),
+                "порог {bad} принят"
+            );
+        }
+        assert!(collapse_doubles(&doubled_meeting(), 1.0).is_ok());
+    }
+
+    #[test]
+    fn the_report_carries_the_threshold_it_used() {
+        // Числа отчёта без порога не значат ничего.
+        let collapsed = collapse_doubles(&doubled_meeting(), 0.9).expect("свёртка");
+        assert_eq!(collapsed.report.threshold, 0.9);
+        assert_eq!(
+            collapsed.report.collapsed, 0,
+            "порог 0.9 паре со скрина не по росту: она похожа на 0.64"
+        );
     }
 
     #[test]

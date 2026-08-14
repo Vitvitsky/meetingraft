@@ -17,8 +17,8 @@ mod term_from_edit;
 
 pub use assemble::assemble_final;
 pub use dedup::{
-    CONTROL_GAP_MS, TwinPair, TwinScan, overlap_ms, scan_twins, word_count, word_overlap,
-    word_similarity,
+    CONTROL_GAP_MS, CollapseError, CollapseReport, Collapsed, TwinPair, TwinScan, collapse_doubles,
+    overlap_ms, scan_twins, word_count, word_overlap, word_similarity,
 };
 pub use diff::{DiffOp, DiffSpan, diff_words};
 pub use edit_service::{EditOutcome, occurrences_to_edit, plan_edit};
