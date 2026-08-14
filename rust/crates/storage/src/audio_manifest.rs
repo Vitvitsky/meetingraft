@@ -1283,6 +1283,34 @@ impl AudioManifestStore {
         Ok(())
     }
 
+    /// Метка первого чанка канала — начало его дорожки в общем времени
+    /// записи (Epic 25).
+    ///
+    /// Нужна всем, кто читает дорожку целиком: `read_session_pcm` отдаёт
+    /// поток от первого сэмпла канала, а метки чанков идут от общего
+    /// начала записи. Разница между этими двумя нулями и есть это число —
+    /// от единиц миллисекунд у микрофона до секунды с лишним у системного.
+    ///
+    /// `None` — чанков у канала нет вовсе. Ноль здесь означал бы «канал
+    /// начался вместе с записью», а это другое утверждение.
+    ///
+    /// У записей до Epic 25 метки идут от нуля каждого канала, и ответ
+    /// будет 0 — то есть прибавлять к их временам нечего, и поведение на
+    /// них не меняется.
+    pub fn channel_start_ms(
+        &self,
+        session_id: &str,
+        channel: AudioChannel,
+    ) -> Result<Option<u64>, AudioManifestError> {
+        let start: Option<i64> = self.conn.query_row(
+            "SELECT MIN(timestamp_ms) FROM audio_manifest
+             WHERE session_id = ?1 AND channel = ?2",
+            params![session_id, channel.dir_name()],
+            |row| row.get(0),
+        )?;
+        Ok(start.map(|value| value.max(0) as u64))
+    }
+
     /// Собрать PCM канала за всю сессию в один поток.
     ///
     /// Каналы читаются раздельно: post-call проход (Phase 10) распознаёт
@@ -3043,6 +3071,47 @@ pub(crate) mod tests {
 
             store.forget_voice("p1").unwrap();
             assert!(store.list_known_voices().unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Начало дорожки — это метка её первого чанка, и у каналов она
+    /// разная (Epic 25).
+    ///
+    /// На этом числе держится совпадение времён Final с манифестом: без
+    /// него «играть» отдаёт звук не той реплики, а хронология двух
+    /// дорожек разъезжается на секунду.
+    ///
+    /// Отсутствие чанков — `None`, а не ноль: «канал начался вместе с
+    /// записью» и «канала не было» — разные утверждения.
+    #[test]
+    fn a_channel_starts_where_its_first_chunk_says() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 0, "Встреча").unwrap();
+            let pcm: Vec<u8> = (0..3_200).flat_map(|_| 1_i16.to_le_bytes()).collect();
+            store
+                .append_chunk(AudioChannel::Mic, &pcm, 16_000, 120)
+                .unwrap();
+            store
+                .append_chunk(AudioChannel::System, &pcm, 16_000, 1_044)
+                .unwrap();
+            store.flush_pending_chunks().unwrap();
+
+            assert_eq!(
+                store.channel_start_ms("m1", AudioChannel::Mic).unwrap(),
+                Some(120)
+            );
+            assert_eq!(
+                store.channel_start_ms("m1", AudioChannel::System).unwrap(),
+                Some(1_044)
+            );
+            assert_eq!(
+                store.channel_start_ms("m-none", AudioChannel::Mic).unwrap(),
+                None,
+                "у встречи без чанков начала нет, а не ноль"
+            );
         }
         let _ = fs::remove_dir_all(&root);
     }

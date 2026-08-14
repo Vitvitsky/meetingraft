@@ -38,6 +38,33 @@ pub struct RebuildParams {
     pub system_speaker_name: String,
 }
 
+/// Начало дорожки в общем времени записи; нет чанков — ноль.
+fn track_start(
+    store: &AudioManifestStore,
+    meeting_id: &str,
+    channel: AudioChannel,
+) -> Result<u64, String> {
+    store
+        .channel_start_ms(meeting_id, channel)
+        .map(|start| start.unwrap_or(0))
+        .map_err(|error| error.to_string())
+}
+
+/// Перевести времена сегментов из времени дорожки во время записи.
+fn shift(segments: Vec<TranscriptSegment>, by_ms: u64) -> Vec<TranscriptSegment> {
+    if by_ms == 0 {
+        return segments;
+    }
+    segments
+        .into_iter()
+        .map(|segment| TranscriptSegment {
+            start_ms: segment.start_ms + by_ms,
+            end_ms: segment.end_ms + by_ms,
+            ..segment
+        })
+        .collect()
+}
+
 /// Доли прогресса: распознавание — основная стоимость прохода.
 const TRANSCRIBE_SHARE: f32 = 0.8;
 const PROGRESS_STEPS: u32 = 100;
@@ -63,9 +90,28 @@ pub fn run_rebuild(params: RebuildParams, handle: &JobHandle) -> Result<(), Stri
 
     // Дорожки распознаются раздельно — только так канал сегмента известен
     // точно, без эвристики доминирования из live (ADR-009).
-    let mic_segments = transcribe_track(&mut *transcriber, &mic, handle, 0.0)?;
-    let system_segments =
-        transcribe_track(&mut *transcriber, &system, handle, TRANSCRIBE_SHARE / 2.0)?;
+    //
+    // Времена, которые отдаёт движок, отсчитаны от **первого сэмпла своей
+    // дорожки**, а метки чанков — от начала записи (Epic 25). Между этими
+    // нулями секунда с лишним у системного канала, и без поправки
+    // получается ровно то, на что жалуется человек: нажимаешь «играть» —
+    // звучит предыдущая реплика. До Epic 25 обе шкалы шли от нуля канала
+    // и совпадали; сведение меток эту согласованность сломало, и здесь
+    // она восстанавливается.
+    //
+    // Заодно чинится хронология: `merge_channels` раскладывает реплики
+    // двух дорожек по времени, и до поправки одна из них была смещена на
+    // секунду относительно другой.
+    let mic_start = track_start(&store, &params.meeting_id, AudioChannel::Mic)?;
+    let system_start = track_start(&store, &params.meeting_id, AudioChannel::System)?;
+    let mic_segments = shift(
+        transcribe_track(&mut *transcriber, &mic, handle, 0.0)?,
+        mic_start,
+    );
+    let system_segments = shift(
+        transcribe_track(&mut *transcriber, &system, handle, TRANSCRIBE_SHARE / 2.0)?,
+        system_start,
+    );
 
     if handle.is_cancelled() {
         return Err("cancelled".to_string());
@@ -272,5 +318,45 @@ fn llm_client(params: &RebuildParams) -> Box<dyn LlmClient> {
         // Шаблоны и backend-джобы полировать сегменты не умеют; молча
         // подменять их чем-то другим нельзя, поэтому просто не полируем.
         _ => Box::new(NullLlmClient),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shift;
+    use domain::TranscriptSegment;
+
+    /// Времена движка отсчитаны от первого сэмпла дорожки, метки чанков —
+    /// от начала записи. Поправка переводит первое во второе.
+    ///
+    /// Без неё `segment_audio` ищет по манифесту чужой момент встречи, и
+    /// человек слышит предыдущую реплику — так этот дефект и нашёлся.
+    #[test]
+    fn segment_times_move_into_recording_time() {
+        let shifted = shift(
+            vec![
+                TranscriptSegment::new(0, 500, "первая"),
+                TranscriptSegment::new(2_000, 2_400, "вторая"),
+            ],
+            1_044,
+        );
+
+        assert_eq!(
+            shifted
+                .iter()
+                .map(|segment| (segment.start_ms, segment.end_ms))
+                .collect::<Vec<_>>(),
+            vec![(1_044, 1_544), (3_044, 3_444)]
+        );
+    }
+
+    /// У дорожки, начавшейся вместе с записью, поправки нет — и у всех
+    /// записей до Epic 25 тоже: их метки идут от нуля канала, начало
+    /// читается нулём, и времена остаются прежними.
+    #[test]
+    fn a_track_that_starts_with_the_recording_is_left_alone() {
+        let original = vec![TranscriptSegment::new(10, 20, "реплика")];
+
+        assert_eq!(shift(original.clone(), 0), original);
     }
 }
