@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use domain::FinalSegment;
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionEvent, CaptionPhase, FinalTranscript,
-    GlossaryKind, GlossaryScope, GlossaryTerm, MeetingSummary, SearchHit, SearchHitKind, Speaker,
-    SpeakerSource, SpeechLanguage, StoredVoicePrint, edits_by_position,
+    GlossaryKind, GlossaryScope, GlossaryTerm, KnownVoice, MeetingSummary, SearchHit,
+    SearchHitKind, Speaker, SpeakerSource, SpeechLanguage, StoredVoicePrint, edits_by_position,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
@@ -41,6 +41,8 @@ pub enum AudioManifestError {
     /// после неё: раньше страя байт портил один файл в 100 мс, теперь — 2 с.
     #[error("pcm length must be even (i16 frames), got {0}")]
     OddPcmLength(usize),
+    #[error("voice memory is off: enable it before remembering anyone")]
+    KnownVoicesDisabled,
     #[error("voiceprint {meeting_id}/{speaker_id}: vector blob of {bytes} bytes is not f32")]
     VoicePrintBlob {
         meeting_id: String,
@@ -1136,6 +1138,147 @@ impl AudioManifestStore {
             "DELETE FROM voiceprints WHERE meeting_id = ?1",
             params![meeting_id],
         )?;
+        Ok(())
+    }
+
+    /// Ключ признака «запоминать голоса между встречами».
+    const KNOWN_VOICES_KEY: &'static str = "known_voices_enabled";
+
+    /// Включено ли запоминание голосов между встречами (ADR-013).
+    ///
+    /// Умолчание — **выключено**, и оно же ответ для базы, где строки нет
+    /// вовсе. Ошибка чтения тоже читается как «выключено»: единственное
+    /// направление, в котором ошибиться безопасно, когда речь о биометрии.
+    pub fn known_voices_enabled(&self) -> bool {
+        self.conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![Self::KNOWN_VOICES_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|value| value == "1")
+            .unwrap_or(false)
+    }
+
+    /// Включить или выключить запоминание голосов.
+    ///
+    /// **Выключение стирает запомненное.** Это тот же выбор, что у журнала
+    /// диагностики: «выключено» обязано значить «пусто», иначе на диске
+    /// остаются векторы, по которым человека узнаю́т, а человек уверен, что
+    /// отключил именно это. Для биометрии довод сильнее, чем для журнала.
+    ///
+    /// Слепки **при встречах** не трогаются: они живут при своих записях,
+    /// умирают вместе с ними и между встречами никого не узнаю́т.
+    pub fn set_known_voices_enabled(&mut self, enabled: bool) -> Result<(), AudioManifestError> {
+        let transaction = self.conn.transaction()?;
+        transaction.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![Self::KNOWN_VOICES_KEY, if enabled { "1" } else { "0" }],
+        )?;
+        if !enabled {
+            transaction.execute("DELETE FROM known_voices", [])?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Запомнить голос человека между встречами.
+    ///
+    /// Отказ при выключенном признаке — не перестраховка: иначе включение
+    /// оказалось бы формальностью, которую любой вызывающий обходит, а
+    /// правило «выключено по умолчанию» держалось бы на вежливости
+    /// вызывающего.
+    pub fn remember_voice(&mut self, voice: &KnownVoice) -> Result<(), AudioManifestError> {
+        if !self.known_voices_enabled() {
+            return Err(AudioManifestError::KnownVoicesDisabled);
+        }
+        let mut blob = Vec::with_capacity(voice.vector.len() * 4);
+        for value in &voice.vector {
+            blob.extend_from_slice(&value.to_le_bytes());
+        }
+        self.conn.execute(
+            "INSERT INTO known_voices
+             (id, display_name, model_id, vector, samples, seconds,
+              source_meeting_id, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                 display_name = excluded.display_name,
+                 model_id = excluded.model_id,
+                 vector = excluded.vector,
+                 samples = excluded.samples,
+                 seconds = excluded.seconds,
+                 source_meeting_id = excluded.source_meeting_id,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![
+                voice.id,
+                voice.display_name,
+                voice.model_id,
+                blob,
+                voice.samples,
+                voice.seconds,
+                voice.source_meeting_id,
+                voice.updated_at_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Запомненные голоса по именам.
+    ///
+    /// Список отдаётся и при выключенном признаке: выключение уже стёрло
+    /// его содержимое, и пустота здесь — факт, а не сокрытие.
+    pub fn list_known_voices(&self) -> Result<Vec<KnownVoice>, AudioManifestError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, display_name, model_id, vector, samples, seconds,
+                    source_meeting_id, updated_at_ms
+             FROM known_voices
+             ORDER BY display_name, id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?;
+
+        let mut voices = Vec::new();
+        for row in rows {
+            let (id, display_name, model_id, blob, samples, seconds, source, updated) = row?;
+            if blob.is_empty() || blob.len() % 4 != 0 {
+                return Err(AudioManifestError::VoicePrintBlob {
+                    meeting_id: source,
+                    speaker_id: id,
+                    bytes: blob.len(),
+                });
+            }
+            voices.push(KnownVoice {
+                id,
+                display_name,
+                model_id,
+                vector: blob
+                    .chunks_exact(4)
+                    .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                    .collect(),
+                samples: samples.max(0) as u32,
+                seconds: seconds as f32,
+                source_meeting_id: source,
+                updated_at_ms: updated.max(0) as u64,
+            });
+        }
+        Ok(voices)
+    }
+
+    /// Забыть один голос — одним действием и без остатков (ADR-013).
+    pub fn forget_voice(&mut self, id: &str) -> Result<(), AudioManifestError> {
+        self.conn
+            .execute("DELETE FROM known_voices WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -2800,6 +2943,105 @@ pub(crate) mod tests {
                 matches!(error, AudioManifestError::VoicePrintBlob { bytes: 3, .. }),
                 "неожиданная ошибка: {error}"
             );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn a_known_voice(id: &str, name: &str) -> KnownVoice {
+        KnownVoice {
+            id: id.to_owned(),
+            display_name: name.to_owned(),
+            model_id: "cam++ multilingual".to_owned(),
+            vector: vec![0.6, 0.8],
+            samples: 4,
+            seconds: 20.0,
+            source_meeting_id: "m1".to_owned(),
+            updated_at_ms: 1_700_000,
+        }
+    }
+
+    /// Биометрия выключена, пока её не включили. Умолчание — то самое
+    /// обещание, которое нельзя оставить на вежливость вызывающего.
+    #[test]
+    fn remembering_voices_is_off_until_switched_on() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+
+            assert!(!store.known_voices_enabled());
+            let error = store
+                .remember_voice(&a_known_voice("p1", "Анна"))
+                .unwrap_err();
+            assert!(
+                matches!(error, AudioManifestError::KnownVoicesDisabled),
+                "неожиданная ошибка: {error}"
+            );
+            assert!(store.list_known_voices().unwrap().is_empty());
+
+            store.set_known_voices_enabled(true).unwrap();
+            store.remember_voice(&a_known_voice("p1", "Анна")).unwrap();
+
+            assert_eq!(store.list_known_voices().unwrap().len(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// «Выключено» обязано значить «пусто»: тот же выбор, что у журнала
+    /// диагностики, и для векторов голоса довод сильнее. Оставить их на
+    /// диске значило бы, что человек отключил не то, что думал.
+    ///
+    /// Непустота утверждается **до** пустоты: иначе проверка проходила бы
+    /// и на базе, где голосов не было вовсе.
+    #[test]
+    fn switching_voice_memory_off_forgets_everyone() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.set_known_voices_enabled(true).unwrap();
+            store.remember_voice(&a_known_voice("p1", "Анна")).unwrap();
+            store.remember_voice(&a_known_voice("p2", "Пётр")).unwrap();
+            assert_eq!(store.list_known_voices().unwrap().len(), 2, "голоса легли");
+
+            store.set_known_voices_enabled(false).unwrap();
+
+            assert!(store.list_known_voices().unwrap().is_empty());
+            assert!(!store.known_voices_enabled());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Удаление встречи уносит её слепки и **не трогает** запомненные
+    /// голоса: это разные вещи, и человек должен видеть оба списка.
+    ///
+    /// Обратное направление тоже проверяется: забыть человека — не то же,
+    /// что удалить запись, из которой он запомнен.
+    #[test]
+    fn deleting_a_meeting_leaves_remembered_voices_alone() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.begin_session("m1", 0, "Встреча").unwrap();
+            store.end_session(1_000).unwrap();
+            store
+                .save_voiceprint(&a_print("sp-anna", vec![1.0, 0.0]))
+                .unwrap();
+            store.set_known_voices_enabled(true).unwrap();
+            store.remember_voice(&a_known_voice("p1", "Анна")).unwrap();
+
+            store.delete_meeting("m1").unwrap();
+
+            assert!(
+                store.list_voiceprints("m1").unwrap().is_empty(),
+                "слепок встречи ушёл"
+            );
+            assert_eq!(
+                store.list_known_voices().unwrap().len(),
+                1,
+                "запомненный голос — не часть встречи"
+            );
+
+            store.forget_voice("p1").unwrap();
+            assert!(store.list_known_voices().unwrap().is_empty());
         }
         let _ = fs::remove_dir_all(&root);
     }

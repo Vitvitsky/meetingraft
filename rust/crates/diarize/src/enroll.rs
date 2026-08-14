@@ -177,9 +177,61 @@ pub fn plan(replies: &[Reply], accept: f32, margin: f32) -> EnrollPlan {
     }
 }
 
+/// Узнать в неподписанных репликах запомненные голоса (задача 7 плана).
+///
+/// Второй проход, а не расширение первого, и порядок между ними жёсткий:
+/// слепки **этой** встречи сильнее. Они сложены по ручным подписям,
+/// сделанным здесь и сегодня, — свидетельство сильнее, чем «похож на
+/// кого-то из прошлого месяца». Соединив оба набора в один `best_match`,
+/// мы дали бы запомненному голосу отнимать реплики у человека, которого
+/// разметили только что.
+///
+/// Разбираются только реплики, оставшиеся без имени после первого прохода.
+/// Полоса отказа та же: не дотянул до порога или не оторвался от
+/// следующего — остаётся неопознанным. «Наверное, он» здесь стоило бы
+/// дороже обычного: ошибка переносит чужое имя между встречами.
+///
+/// Слепки чужой модели сюда приходить не должны — отсеивает вызывающий,
+/// у которого есть отпечаток текущей модели. Молча сравнивать несравнимое
+/// дало бы уверенные и неверные совпадения.
+pub fn plan_known(
+    replies: &[Reply],
+    known: &[(String, VoicePrint)],
+    accept: f32,
+    margin: f32,
+) -> Vec<Assignment> {
+    if known.is_empty() {
+        return Vec::new();
+    }
+    replies
+        .iter()
+        .filter(|reply| {
+            reply.speaker_id.is_empty()
+                && !reply.vector.is_empty()
+                && reply.source.may_overwrite(SpeakerSource::VoicePrint)
+        })
+        .filter_map(
+            |reply| match best_match(&reply.vector, known, accept, margin) {
+                Match::Named {
+                    name, similarity, ..
+                } => Some(Assignment {
+                    index: reply.index,
+                    speaker_id: name,
+                    similarity,
+                }),
+                Match::Unknown { .. } => None,
+            },
+        )
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn print_of(vector: Vec<f32>) -> VoicePrint {
+        build_print(&[(vector, 5.0)]).expect("слепок")
+    }
 
     fn reply(index: u32, speaker: &str, source: SpeakerSource, vector: Vec<f32>) -> Reply {
         Reply {
@@ -359,6 +411,78 @@ mod tests {
         assert!(plan.prints.is_empty());
         assert!(plan.assignments.is_empty());
         assert_eq!(plan.unknown, 2, "обе реплики померены и не узнаны");
+    }
+
+    /// Заведомо положительный случай для второго прохода: голос,
+    /// запомненный в прошлой встрече, узнаётся в неподписанной реплике.
+    ///
+    /// Без него проверки ниже выполнялись бы и на функции, которая не
+    /// узнаёт вообще никого.
+    #[test]
+    fn a_remembered_voice_is_recognised_in_an_unlabelled_reply() {
+        let replies = vec![reply(0, "", SpeakerSource::None, vec![0.96, 0.28])];
+        let known = vec![("person-anna".to_owned(), print_of(vec![1.0, 0.0]))];
+
+        let found = plan_known(&replies, &known, DEFAULT_ACCEPT, DEFAULT_MARGIN);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].speaker_id, "person-anna");
+    }
+
+    /// Слепки этой встречи сильнее запомненных: подписанное первым
+    /// проходом второй не трогает. Иначе «похож на кого-то из прошлого
+    /// месяца» отнимало бы реплику у человека, размеченного только что.
+    #[test]
+    fn a_remembered_voice_does_not_take_replies_from_this_meeting() {
+        let replies = vec![
+            reply(0, "anna", SpeakerSource::VoicePrint, vec![1.0, 0.0]),
+            reply(1, "peter", SpeakerSource::Human, vec![0.0, 1.0]),
+        ];
+        let known = vec![("person-someone".to_owned(), print_of(vec![1.0, 0.0]))];
+
+        let found = plan_known(&replies, &known, DEFAULT_ACCEPT, DEFAULT_MARGIN);
+
+        assert!(
+            found.is_empty(),
+            "второй проход тронул подписанное: {found:?}"
+        );
+    }
+
+    /// Полоса отказа во втором проходе та же: не похож — остаётся
+    /// неопознанным. Ошибка здесь дороже обычного, она переносит чужое
+    /// имя между встречами.
+    #[test]
+    fn an_unfamiliar_voice_is_not_given_a_remembered_name() {
+        let replies = vec![reply(0, "", SpeakerSource::None, vec![0.0, 0.0, 1.0])];
+        let known = vec![("person-anna".to_owned(), print_of(vec![1.0, 0.0, 0.0]))];
+
+        let found = plan_known(&replies, &known, DEFAULT_ACCEPT, DEFAULT_MARGIN);
+
+        assert!(found.is_empty());
+    }
+
+    /// Двое запомненных одинаково похожи — не подписывать никого.
+    #[test]
+    fn a_tie_between_two_remembered_voices_signs_neither() {
+        let replies = vec![reply(0, "", SpeakerSource::None, vec![1.0, 1.0])];
+        let known = vec![
+            ("person-anna".to_owned(), print_of(vec![1.0, 0.0])),
+            ("person-peter".to_owned(), print_of(vec![0.0, 1.0])),
+        ];
+
+        let found = plan_known(&replies, &known, DEFAULT_ACCEPT, DEFAULT_MARGIN);
+
+        assert!(found.is_empty());
+    }
+
+    /// Ничего не запомнено — второй проход не делает ничего. Отдельным
+    /// тестом, потому что это состояние по умолчанию: биометрия выключена,
+    /// и список пуст у всех, кто её не включал.
+    #[test]
+    fn with_nothing_remembered_the_second_pass_is_a_no_op() {
+        let replies = vec![reply(0, "", SpeakerSource::None, vec![1.0, 0.0])];
+
+        assert!(plan_known(&replies, &[], DEFAULT_ACCEPT, DEFAULT_MARGIN).is_empty());
     }
 
     /// Повторный пересчёт на тех же данных ничего не меняет: иначе

@@ -27,6 +27,13 @@ final class SettingsModel {
     private(set) var audioSweepPreviewed = false
     private(set) var audioSweepReport = ""
 
+    // Память на голоса (ADR-013, задача 7). Признак читается из ядра, а
+    // не хранится здесь: настройки этого окна живут в памяти и умирают с
+    // запуском, а биометрия обязана оставаться выключенной и после него.
+    private(set) var voiceMemoryEnabled = false
+    private(set) var knownVoices: [FfiKnownVoice] = []
+    private(set) var voiceMemoryError = ""
+
     private var core: MeetingCore?
     private let downloader: WhisperDownloading
 
@@ -61,8 +68,32 @@ final class SettingsModel {
         dataRoot = root.path
         core = MeetingCore.withDataRoot(dataRoot: root.path)
         refreshModelPaths()
+        refreshVoiceMemory()
         applySttPreference(providerStore)
         applyProviderConfig(providerStore)
+    }
+
+    func refreshVoiceMemory() {
+        guard let core else { return }
+        voiceMemoryEnabled = core.isVoiceMemoryEnabled()
+        knownVoices = core.listKnownVoices()
+    }
+
+    /// Включить или выключить память на голоса.
+    ///
+    /// Выключение **забывает всех**, и человеку это сказано до нажатия, а
+    /// не после: список исчезает у него на глазах, и объяснять постфактум
+    /// уже поздно.
+    func setVoiceMemory(enabled: Bool) {
+        guard let core else { return }
+        voiceMemoryError = core.setVoiceMemoryEnabled(enabled: enabled)
+        refreshVoiceMemory()
+    }
+
+    func forgetVoice(id: String) {
+        guard let core else { return }
+        voiceMemoryError = core.forgetVoice(id: id)
+        refreshVoiceMemory()
     }
 
     func refreshModelPaths() {

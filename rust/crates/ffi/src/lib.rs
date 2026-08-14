@@ -10,13 +10,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use diarize::{
     DEFAULT_ACCEPT, DEFAULT_MARGIN, EnrollPlan, Reply as EnrollReply, VoicePrint,
-    embedding_model_id, plan_enrollment,
+    embedding_model_id, plan_enrollment, plan_known,
 };
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryKind,
-    GlossaryScope, GlossaryTerm, LanguagePolicy, MeetingSummary, SearchHit, SessionState, Speaker,
-    SpeakerSource, SpeechLanguage, StoredVoicePrint, SttDiagnostic, SttDiagnosticKind,
-    body_fingerprint, edits_by_position,
+    GlossaryScope, GlossaryTerm, KnownVoice, LanguagePolicy, MeetingSummary, SearchHit,
+    SessionState, Speaker, SpeakerSource, SpeechLanguage, StoredVoicePrint, SttDiagnostic,
+    SttDiagnosticKind, body_fingerprint, edits_by_position,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
@@ -192,8 +192,29 @@ pub struct FfiVoicePrintPass {
     /// либо звук за них удалён. Это молчание прибора, а не его ответ, и
     /// в `unknown` они не входят.
     pub without_vector: u32,
+    /// Реплик подписано **запомненными** голосами — из прошлых встреч.
+    ///
+    /// Отдельным числом от `signed`: человек включил биометрию осознанно и
+    /// вправе видеть, сколько она сделала. Слитое в общую сумму, оно
+    /// исчезло бы ровно у той функции, которая требует доверия больше
+    /// прочих.
+    pub signed_from_memory: u32,
     /// Отпечаток модели, которой считали.
     pub model_id: String,
+}
+
+/// Запомненный голос: человек, узнаваемый между встречами (ADR-013).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiKnownVoice {
+    pub id: String,
+    pub display_name: String,
+    /// Из какой встречи запомнен; встречу могли и удалить.
+    pub source_meeting_id: String,
+    pub samples: u32,
+    pub seconds: f32,
+    /// Совпадает ли модель с той, что стоит сейчас. Нет — голос не
+    /// сравнивается ни с чем, и человеку об этом сказано.
+    pub model_matches: bool,
 }
 
 /// Сегмент финального транскрипта для Swift.
@@ -528,6 +549,91 @@ fn store_and_enqueue(inner: &mut MeetingCoreInner, events: Vec<domain::CaptionEv
 /// Свободная функция, а не метод: приватные методы внутри
 /// `#[uniffi::export]`-блока всё равно пытаются пройти через границу, а
 /// хранилище через неё не проходит.
+/// Подписать запомненными голосами то, что осталось без имени.
+///
+/// Свободной функцией, а не методом: приватный метод внутри
+/// `#[uniffi::export]`-блока всё равно пытается пройти через границу.
+///
+/// Голоса чужой модели отсеиваются **здесь**, до сравнения. Векторы
+/// разных моделей несравнимы, а похожесть между ними получается не
+/// нулевая, а правдоподобная — то есть чужое имя приехало бы уверенно.
+///
+/// Спикер под запомненного человека заводится с детерминированным
+/// идентификатором: повторный пересчёт обязан попадать в того же, иначе
+/// список участников плодил бы Анну за Анной. Имя ставится только при
+/// заведении — человек мог переименовать её здесь, и возвращать прошлое
+/// значило бы переписывать ручную работу автоматической.
+fn match_known_voices(
+    store: &mut AudioManifestStore,
+    meeting_id: &str,
+    version: u32,
+    replies: &[EnrollReply],
+    model_id: &str,
+    accept: f32,
+    margin: f32,
+) -> Result<u32, String> {
+    let known = store
+        .list_known_voices()
+        .map_err(|error| error.to_string())?;
+    let prints: Vec<(String, VoicePrint)> = known
+        .iter()
+        .filter(|voice| voice.model_id == model_id)
+        .map(|voice| {
+            (
+                voice.id.clone(),
+                VoicePrint {
+                    vector: voice.vector.clone(),
+                    samples: voice.samples as usize,
+                    seconds: voice.seconds,
+                },
+            )
+        })
+        .collect();
+
+    let found = plan_known(replies, &prints, accept, margin);
+    if found.is_empty() {
+        return Ok(0);
+    }
+
+    let existing: std::collections::HashSet<String> = store
+        .list_speakers(meeting_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|speaker| speaker.id)
+        .collect();
+
+    let mut signed = 0u32;
+    for assignment in &found {
+        let speaker_id = format!("{meeting_id}:voice:{}", assignment.speaker_id);
+        if !existing.contains(&speaker_id) {
+            let Some(voice) = known.iter().find(|voice| voice.id == assignment.speaker_id) else {
+                continue;
+            };
+            store
+                .upsert_speaker(&Speaker {
+                    id: speaker_id.clone(),
+                    meeting_id: meeting_id.to_owned(),
+                    display_name: voice.display_name.clone(),
+                    // После спикеров каналов: те несут владельца и
+                    // собеседника, эти — узнанных.
+                    sort_index: 2,
+                })
+                .map_err(|error| error.to_string())?;
+        }
+        store
+            .set_segment_speaker_from(
+                meeting_id,
+                version,
+                assignment.index,
+                &speaker_id,
+                SpeakerSource::VoicePrint,
+            )
+            .map_err(|error| error.to_string())?;
+        signed += 1;
+    }
+    Ok(signed)
+}
+
 /// Каталог данных ядра.
 fn data_root(core: &MeetingCore) -> PathBuf {
     let guard = core.inner.lock().expect("meeting core poisoned");
@@ -2136,6 +2242,7 @@ impl MeetingCore {
             cleared: 0,
             unknown: 0,
             without_vector: 0,
+            signed_from_memory: 0,
             model_id: String::new(),
         };
 
@@ -2215,6 +2322,50 @@ impl MeetingCore {
             }
         }
 
+        // Второй проход — запомненные голоса (задача 7 плана). Идёт
+        // **после** первого и только по тому, что осталось без имени:
+        // подписи этой встречи сделаны по ручной разметке здесь и сегодня,
+        // и отдавать их «похожему на кого-то из прошлого месяца» нельзя.
+        //
+        // Реплики для него пересобираются с уже проставленными именами —
+        // иначе второй проход судил бы по состоянию до первого и заново
+        // разобрал бы то, что тот только что подписал.
+        let mut signed_from_memory = 0u32;
+        if store.known_voices_enabled() {
+            let assigned: std::collections::HashMap<u32, String> = assignments
+                .iter()
+                .map(|a| (a.index, a.speaker_id.clone()))
+                .collect();
+            let updated: Vec<EnrollReply> = replies
+                .iter()
+                .map(|reply| match assigned.get(&reply.index) {
+                    Some(speaker_id) => EnrollReply {
+                        speaker_id: speaker_id.clone(),
+                        source: if speaker_id.is_empty() {
+                            SpeakerSource::None
+                        } else {
+                            SpeakerSource::VoicePrint
+                        },
+                        ..reply.clone()
+                    },
+                    None => reply.clone(),
+                })
+                .collect();
+
+            match match_known_voices(
+                &mut store,
+                &meeting_id,
+                version,
+                &updated,
+                &model_id,
+                accept,
+                margin,
+            ) {
+                Ok(count) => signed_from_memory = count,
+                Err(error) => return refuse(error),
+            }
+        }
+
         // Слепки заменяются целиком: участник, у которого человек снял
         // все подписи, слепка иметь не должен, а точечное удаление
         // оставило бы его до следующего совпадения имён.
@@ -2249,7 +2400,118 @@ impl MeetingCore {
             cleared,
             unknown: unknown as u32,
             without_vector: without_vector as u32,
+            signed_from_memory,
             model_id,
+        }
+    }
+
+    /// Запоминаются ли голоса между встречами (ADR-013, задача 7).
+    ///
+    /// Выключено по умолчанию и остаётся выключенным, пока человек не
+    /// включит: слепок между встречами — биометрический идентификатор, а
+    /// не рабочая величина пересчёта.
+    pub fn is_voice_memory_enabled(&self) -> bool {
+        open_store(self)
+            .map(|store| store.known_voices_enabled())
+            .unwrap_or(false)
+    }
+
+    /// Включить или выключить память на голоса.
+    ///
+    /// **Выключение забывает всех.** «Выключено» обязано значить «пусто»,
+    /// иначе на диске остаются векторы, по которым человека узнаю́т, а он
+    /// уверен, что отключил именно это. Тот же выбор, что у журнала
+    /// диагностики, и здесь довод сильнее.
+    pub fn set_voice_memory_enabled(&self, enabled: bool) -> String {
+        let Some(mut store) = open_store(self) else {
+            return "storage unavailable".to_string();
+        };
+        match store.set_known_voices_enabled(enabled) {
+            Ok(()) => String::new(),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    /// Кого приложение узнаёт между встречами.
+    pub fn list_known_voices(&self) -> Vec<FfiKnownVoice> {
+        let Some(store) = open_store(self) else {
+            return Vec::new();
+        };
+        let Ok(voices) = store.list_known_voices() else {
+            return Vec::new();
+        };
+        let current = embedding_model_id(data_root(self)).ok();
+        voices
+            .into_iter()
+            .map(|voice| FfiKnownVoice {
+                model_matches: current.as_deref() == Some(voice.model_id.as_str()),
+                id: voice.id,
+                display_name: voice.display_name,
+                source_meeting_id: voice.source_meeting_id,
+                samples: voice.samples,
+                seconds: voice.seconds,
+            })
+            .collect()
+    }
+
+    /// Запомнить голос участника этой встречи между встречами.
+    ///
+    /// Берётся уже сложенный слепок встречи, а не считается заново: он и
+    /// есть то, что человек подтвердил разметкой. Слепка нет — отказ
+    /// называет причину; молча запомнить нечего.
+    ///
+    /// Идентификатор человека детерминирован по встрече и спикеру:
+    /// повторное нажатие обновляет запись, а не заводит второго того же.
+    pub fn remember_voice(&self, meeting_id: String, speaker_id: String) -> String {
+        let Some(mut store) = open_store(self) else {
+            return "storage unavailable".to_string();
+        };
+        if !store.known_voices_enabled() {
+            return "память на голоса выключена".to_string();
+        }
+        let prints = match store.list_voiceprints(&meeting_id) {
+            Ok(prints) => prints,
+            Err(error) => return error.to_string(),
+        };
+        let Some(print) = prints.into_iter().find(|p| p.speaker_id == speaker_id) else {
+            return "у участника нет слепка: подпишите его реплики и пересчитайте".to_string();
+        };
+        let display_name = store
+            .list_speakers(&meeting_id)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|speaker| speaker.id == speaker_id)
+            .map(|speaker| speaker.display_name)
+            .unwrap_or_default();
+        if display_name.trim().is_empty() {
+            // Безымянный запомненный голос бесполезен: узнать его он
+            // потом сможет, а сказать, кого узнал, — нет.
+            return "у участника нет имени: назовите его перед тем, как запоминать".to_string();
+        }
+
+        match store.remember_voice(&KnownVoice {
+            id: format!("{meeting_id}:{speaker_id}"),
+            display_name,
+            model_id: print.model_id,
+            vector: print.vector,
+            samples: print.samples,
+            seconds: print.seconds,
+            source_meeting_id: meeting_id,
+            updated_at_ms: now_ms(),
+        }) {
+            Ok(()) => String::new(),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    /// Забыть голос — одним действием и без остатков.
+    pub fn forget_voice(&self, id: String) -> String {
+        let Some(mut store) = open_store(self) else {
+            return "storage unavailable".to_string();
+        };
+        match store.forget_voice(&id) {
+            Ok(()) => String::new(),
+            Err(error) => error.to_string(),
         }
     }
 
@@ -4131,6 +4393,126 @@ mod tests {
 
         assert!((core.voiceprint_default_accept() - 0.45).abs() < f32::EPSILON);
         assert!(core.voiceprint_default_margin() > 0.0, "отрыв обязателен");
+    }
+
+    /// Биометрия выключена, пока её не включили, и включение — не
+    /// формальность: запомнить кого-то при выключенном признаке нельзя.
+    #[test]
+    fn voice_memory_is_off_and_refuses_to_remember_until_switched_on() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-memory-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-memory".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store.begin_session(&meeting_id, 1, "").expect("session");
+            store.end_session(2).expect("end");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        assert!(!core.is_voice_memory_enabled());
+        assert!(
+            !core
+                .remember_voice(meeting_id.clone(), "sp-1".into())
+                .is_empty(),
+            "запоминание при выключенном признаке обязано отказать"
+        );
+        assert!(core.list_known_voices().is_empty());
+
+        assert!(core.set_voice_memory_enabled(true).is_empty());
+        assert!(core.is_voice_memory_enabled());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Выключение забывает всех: «выключено» значит «пусто», иначе на
+    /// диске остаются векторы, по которым человека узнаю́т.
+    ///
+    /// Непустота утверждается до пустоты — иначе тест проходил бы и на
+    /// базе, где голосов не было вовсе.
+    #[test]
+    fn switching_voice_memory_off_forgets_everyone() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-forget-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-forget".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store.begin_session(&meeting_id, 1, "").expect("session");
+            store.end_session(2).expect("end");
+            store.set_known_voices_enabled(true).expect("включить");
+            store
+                .remember_voice(&KnownVoice {
+                    id: "p1".into(),
+                    display_name: "Анна".into(),
+                    model_id: "cam++".into(),
+                    vector: vec![0.6, 0.8],
+                    samples: 3,
+                    seconds: 15.0,
+                    source_meeting_id: meeting_id.clone(),
+                    updated_at_ms: 1,
+                })
+                .expect("запомнить");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        assert_eq!(core.list_known_voices().len(), 1, "голос запомнен");
+
+        assert!(core.set_voice_memory_enabled(false).is_empty());
+
+        assert!(core.list_known_voices().is_empty());
+        assert!(!core.is_voice_memory_enabled());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Безымянный запомненный голос узнать сможет, а сказать, кого узнал,
+    /// — нет. Отказ называет, что сделать.
+    #[test]
+    fn remembering_refuses_a_speaker_without_a_name() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-noname-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let meeting_id = "m-noname".to_string();
+        {
+            let mut store = AudioManifestStore::open(&root).expect("store");
+            store.begin_session(&meeting_id, 1, "").expect("session");
+            store.end_session(2).expect("end");
+            store.set_known_voices_enabled(true).expect("включить");
+            store
+                .save_voiceprint(&StoredVoicePrint {
+                    meeting_id: meeting_id.clone(),
+                    speaker_id: "sp-1".into(),
+                    model_id: "cam++".into(),
+                    vector: vec![1.0, 0.0],
+                    samples: 2,
+                    seconds: 8.0,
+                    updated_at_ms: 1,
+                })
+                .expect("слепок");
+            store
+                .upsert_speaker(&Speaker {
+                    id: "sp-1".into(),
+                    meeting_id: meeting_id.clone(),
+                    display_name: "   ".into(),
+                    sort_index: 0,
+                })
+                .expect("спикер");
+        }
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let error = core.remember_voice(meeting_id, "sp-1".into());
+
+        assert!(
+            error.contains("имени"),
+            "отказ не объясняет причину: {error}"
+        );
+        assert!(core.list_known_voices().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

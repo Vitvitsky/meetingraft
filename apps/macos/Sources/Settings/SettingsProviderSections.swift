@@ -421,6 +421,10 @@ struct DataSettingsSection: View {
                 .font(Theme.Text.bodySmall)
                 .foregroundStyle(Theme.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Divider().overlay(Theme.borderSubtle)
+
+            VoiceMemorySection(model: model)
         }
     }
 
@@ -433,5 +437,97 @@ struct DataSettingsSection: View {
                 .lineLimit(2)
                 .frame(maxWidth: 280, alignment: .trailing)
         }
+    }
+}
+
+/// Память на голоса: кого приложение узнаёт между встречами (ADR-013).
+///
+/// Живёт в разделе «Данные», а не рядом со спикерами, и это не вопрос
+/// вёрстки. Слепок между встречами — единственное в программе, что
+/// переживает удаление записи, из которой посчитано; человек ищет такое
+/// там, где написано, что хранится на диске.
+///
+/// Текст прямой: «по голосу узнаём». Мягкая формулировка вроде
+/// «улучшение распознавания участников» скрыла бы ровно то, ради чего
+/// признак и выключен по умолчанию.
+struct VoiceMemorySection: View {
+    @Bindable var model: SettingsModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.md) {
+            SettingsRow(
+                title: String(localized: "Remember voices between meetings"),
+                caption: String(
+                    localized: "Приложение сохранит на этом Маке слепок голоса каждого, "
+                        + "кого вы назвали, и будет узнавать его в следующих записях. "
+                        + "Слепок остаётся, даже если запись удалить."
+                )
+            ) {
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { model.voiceMemoryEnabled },
+                        set: { model.setVoiceMemory(enabled: $0) }
+                    )
+                )
+                .labelsHidden()
+            }
+
+            if model.voiceMemoryEnabled {
+                Text("Выключение забудет всех: слепки удаляются вместе с признаком.")
+                    .font(Theme.Text.bodySmall)
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !model.knownVoices.isEmpty {
+                ForEach(model.knownVoices, id: \.id) { voice in
+                    knownVoiceRow(voice)
+                }
+            } else if model.voiceMemoryEnabled {
+                // Пусто — это состояние, а не ошибка: голоса запоминаются
+                // по одному, кнопкой на вкладке Speakers.
+                Text("Никого пока не запомнено. Голос запоминается кнопкой у участника встречи.")
+                    .font(Theme.Text.bodySmall)
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !model.voiceMemoryError.isEmpty {
+                Text(model.voiceMemoryError)
+                    .font(Theme.Text.bodySmall)
+                    .foregroundStyle(Theme.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func knownVoiceRow(_ voice: FfiKnownVoice) -> some View {
+        HStack(spacing: Theme.Space.sm) {
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                Text(voice.displayName)
+                    .font(Theme.Text.body)
+                    .foregroundStyle(Theme.textPrimary)
+                HStack(spacing: Theme.Space.xs) {
+                    Text(SpeakerFormat.knownVoiceText(voice))
+                        .font(Theme.Text.bodySmall)
+                        .foregroundStyle(Theme.textTertiary)
+                    if !voice.modelMatches {
+                        // Не поломка: сравнивать с векторами другой модели
+                        // нельзя, и голос просто не участвует.
+                        Chip(text: "другая модель", tint: Theme.warning)
+                    }
+                }
+            }
+
+            Spacer(minLength: Theme.Space.sm)
+
+            Button(String(localized: "Forget"), role: .destructive) {
+                model.forgetVoice(id: voice.id)
+            }
+            .buttonStyle(.themedSecondary)
+            .help("Удалить слепок голоса этого человека")
+        }
+        .padding(.vertical, Theme.Space.xxs)
     }
 }

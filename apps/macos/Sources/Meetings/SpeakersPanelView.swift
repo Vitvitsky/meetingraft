@@ -30,6 +30,8 @@ struct SpeakersPanelView: View {
                     SpeakerStatRow(
                         row: row,
                         printFor: { viewModel.voicePrints.first { $0.speakerId == row.id } },
+                        canRemember: viewModel.canRememberVoice(speakerId: row.id),
+                        onRemember: { viewModel.rememberVoice(speakerId: row.id) },
                         onRename: { viewModel.rename(id: row.id, displayName: $0) },
                         onDelete: { viewModel.remove(id: row.id) }
                     )
@@ -290,6 +292,9 @@ private struct SpeakerStatRow: View {
     let row: SpeakerRowModel
     /// Слепок этого участника, если он сложен.
     let printFor: () -> FfiVoicePrint?
+    /// Можно ли запомнить его голос между встречами.
+    let canRemember: Bool
+    let onRemember: () -> Void
     let onRename: (String) -> Void
     let onDelete: () -> Void
 
@@ -301,11 +306,15 @@ private struct SpeakerStatRow: View {
     init(
         row: SpeakerRowModel,
         printFor: @escaping () -> FfiVoicePrint?,
+        canRemember: Bool,
+        onRemember: @escaping () -> Void,
         onRename: @escaping (String) -> Void,
         onDelete: @escaping () -> Void
     ) {
         self.row = row
         self.printFor = printFor
+        self.canRemember = canRemember
+        self.onRemember = onRemember
         self.onRename = onRename
         self.onDelete = onDelete
         _displayName = State(initialValue: row.displayName)
@@ -371,6 +380,18 @@ private struct SpeakerStatRow: View {
             }
 
             Spacer(minLength: Theme.Space.sm)
+
+            // Кнопка появляется, только когда запоминать есть что и
+            // память включена: показывать её иначе значило бы предлагать
+            // действие, которое откажет.
+            if canRemember {
+                Button("Remember", systemImage: "person.crop.circle.badge.checkmark") {
+                    onRemember()
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("Запомнить голос: приложение узнает этого человека в следующих встречах")
+            }
 
             Button("Delete", systemImage: "trash", role: .destructive) {
                 onDelete()

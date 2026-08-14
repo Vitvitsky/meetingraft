@@ -206,6 +206,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
             cleared: 0,
             unknown: 3,
             withoutVector: 2,
+            signedFromMemory: 0,
             modelId: "cam++"
         )
         let viewModel = SpeakerAttributionViewModel(core: core)
@@ -238,6 +239,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
             cleared: 0,
             unknown: 0,
             withoutVector: 0,
+            signedFromMemory: 0,
             modelId: ""
         )
         let viewModel = SpeakerAttributionViewModel(core: core)
@@ -277,6 +279,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
                 cleared: 1,
                 unknown: 4,
                 withoutVector: 3,
+                signedFromMemory: 0,
                 modelId: "cam++"
             )
         )
@@ -297,12 +300,95 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
                 cleared: 0,
                 unknown: 2,
                 withoutVector: 0,
+                signedFromMemory: 0,
                 modelId: "cam++"
             )
         )
 
         XCTAssertFalse(summary.contains("без звука"), summary)
         XCTAssertFalse(summary.contains("снято"), summary)
+    }
+
+    // MARK: - Память на голоса (задача 7)
+
+    /// Три условия сразу, и каждое отказывает по своей причине. Кнопка
+    /// без любого из них предлагала бы действие, которое откажет.
+    ///
+    /// Заведомо положительный случай — последним: при всех трёх
+    /// выполненных условиях запоминать можно. Без него проверка
+    /// «нельзя» проходила бы и у функции, всегда возвращающей `false`.
+    func testRememberingNeedsMemoryOnAPrintAndAName() {
+        let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
+        core.voicePrints = [voicePrint("s1", modelMatches: true)]
+        let viewModel = SpeakerAttributionViewModel(core: core)
+
+        viewModel.load(meetingId: "m1", version: 1)
+        XCTAssertFalse(viewModel.canRememberVoice(speakerId: "s1"), "память выключена")
+
+        core.voiceMemoryEnabled = true
+        core.voicePrints = []
+        viewModel.load(meetingId: "m1", version: 1)
+        XCTAssertFalse(viewModel.canRememberVoice(speakerId: "s1"), "слепка нет")
+
+        core.voicePrints = [voicePrint("s1", modelMatches: true)]
+        core.speakers = [speaker("s1", "  ")]
+        viewModel.load(meetingId: "m1", version: 1)
+        XCTAssertFalse(viewModel.canRememberVoice(speakerId: "s1"), "имени нет")
+
+        core.speakers = [speaker("s1", "Пётр")]
+        viewModel.load(meetingId: "m1", version: 1)
+        XCTAssertTrue(viewModel.canRememberVoice(speakerId: "s1"))
+    }
+
+    func testRememberingPassesTheSpeakerToTheCore() {
+        let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
+        core.voiceMemoryEnabled = true
+        core.voicePrints = [voicePrint("s1", modelMatches: true)]
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.rememberVoice(speakerId: "s1")
+
+        XCTAssertEqual(core.rememberedSpeakerIds, ["s1"])
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    /// Отказ ядра виден. Молча проглоченный, он оставил бы человека в
+    /// уверенности, что голос запомнен, — и это худший исход для функции,
+    /// которая как раз о доверии.
+    func testRefusalToRememberIsShown() {
+        let core = AttributionCoreSpy(speakers: [speaker("s1", "Пётр")])
+        core.voiceMemoryEnabled = true
+        core.voicePrints = [voicePrint("s1", modelMatches: true)]
+        core.rememberError = "память на голоса выключена"
+        let viewModel = SpeakerAttributionViewModel(core: core)
+        viewModel.load(meetingId: "m1", version: 1)
+
+        viewModel.rememberVoice(speakerId: "s1")
+
+        XCTAssertEqual(viewModel.errorMessage, "память на голоса выключена")
+        XCTAssertTrue(core.rememberedSpeakerIds.isEmpty)
+    }
+
+    /// Узнанное по памяти считается отдельно от подписанного слепками
+    /// этой встречи: человек включил биометрию осознанно и вправе видеть,
+    /// сколько она сделала.
+    func testPassSummaryCountsMemoryApartFromThisMeeting() {
+        let summary = SpeakerFormat.passSummary(
+            FfiVoicePrintPass(
+                error: "",
+                prints: 2,
+                signed: 10,
+                cleared: 0,
+                unknown: 4,
+                withoutVector: 0,
+                signedFromMemory: 3,
+                modelId: "cam++"
+            )
+        )
+
+        XCTAssertTrue(summary.contains("подписано 10"), summary)
+        XCTAssertTrue(summary.contains("узнано по памяти 3"), summary)
     }
 
     // MARK: - Спикеры
@@ -729,9 +815,13 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
         cleared: 0,
         unknown: 0,
         withoutVector: 0,
+        signedFromMemory: 0,
         modelId: ""
     )
     private(set) var recomputeCalls: [Thresholds] = []
+    var voiceMemoryEnabled = false
+    var rememberError = ""
+    private(set) var rememberedSpeakerIds: [String] = []
     var assignSegmentError = ""
     var deleteError = ""
     var unapplied: [FfiSegmentEdit] = []
@@ -885,5 +975,15 @@ private final class AttributionCoreSpy: SpeakerAttributionCoreProviding {
 
     func voiceprintDefaultMargin() -> Float {
         0.05
+    }
+
+    func isVoiceMemoryEnabled() -> Bool {
+        voiceMemoryEnabled
+    }
+
+    func rememberVoice(meetingId _: String, speakerId: String) -> String {
+        guard rememberError.isEmpty else { return rememberError }
+        rememberedSpeakerIds.append(speakerId)
+        return ""
     }
 }

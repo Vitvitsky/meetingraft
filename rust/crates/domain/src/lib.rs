@@ -20,7 +20,7 @@ pub use postcall::{
     body_fingerprint, edits_by_position,
 };
 pub use session::SessionState;
-pub use speaker::{Speaker, StoredVoicePrint};
+pub use speaker::{KnownVoice, Speaker, StoredVoicePrint};
 
 /// Версия доменного крейта; используется smoke-тестом сборки.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");

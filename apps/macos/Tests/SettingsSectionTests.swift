@@ -49,6 +49,20 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertFalse(model.isInstalled(.auto))
     }
 
+    /// Память на голоса выключена до `load`, то есть и на экране, который
+    /// ещё не дотянулся до ядра.
+    ///
+    /// Это не мелочь вёрстки: тумблер, нарисованный включённым по
+    /// умолчанию, сам по себе обещание, которого никто не давал. Значение
+    /// приходит из ядра, а до него — «выключено», единственная сторона, в
+    /// которую здесь можно ошибиться безопасно.
+    func testVoiceMemoryIsOffBeforeTheCoreIsOpened() {
+        let model = SettingsModel()
+
+        XCTAssertFalse(model.voiceMemoryEnabled)
+        XCTAssertTrue(model.knownVoices.isEmpty)
+    }
+
     func testDownloadErrorMessages() {
         XCTAssertTrue(
             SettingsModel.message(for: WhisperModelDownloaderError.downloadFailed(statusCode: 404))
