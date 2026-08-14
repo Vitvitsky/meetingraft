@@ -41,6 +41,8 @@ protocol SpeakerAttributionCoreProviding: AnyObject {
     ) -> FfiVoicePrintPass
     func voiceprintDefaultAccept() -> Float
     func voiceprintDefaultMargin() -> Float
+    func isVoiceMemoryEnabled() -> Bool
+    func rememberVoice(meetingId: String, speakerId: String) -> String
 }
 
 extension MeetingCore: SpeakerAttributionCoreProviding {}
@@ -136,6 +138,11 @@ final class SpeakerAttributionViewModel {
     /// и ничего не изменилось» — законный ответ, и показывать его надо
     /// числами, а не тишиной.
     private(set) var lastPass: FfiVoicePrintPass?
+    /// Включена ли память на голоса между встречами (ADR-013, задача 7).
+    ///
+    /// Читается из ядра, а не хранится здесь: признак живёт рядом с
+    /// данными, которыми управляет, и переживает перезапуск выключенным.
+    private(set) var voiceMemoryEnabled = false
 
     private let core: any SpeakerAttributionCoreProviding
     private var meetingId = ""
@@ -297,6 +304,25 @@ final class SpeakerAttributionViewModel {
         finish(error: pass.error)
     }
 
+    /// Можно ли запомнить голос этого участника между встречами.
+    ///
+    /// Три условия сразу, и каждое — отказ по своей причине: память
+    /// выключена, слепка нет, имени нет. Кнопка без любого из них
+    /// показывала бы действие, которое не сработает.
+    func canRememberVoice(speakerId: String) -> Bool {
+        guard voiceMemoryEnabled else { return false }
+        guard voicePrints.contains(where: { $0.speakerId == speakerId }) else { return false }
+        return speakers
+            .first(where: { $0.id == speakerId })
+            .map { !$0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            ?? false
+    }
+
+    /// Запомнить голос участника между встречами.
+    func rememberVoice(speakerId: String) {
+        finish(error: core.rememberVoice(meetingId: meetingId, speakerId: speakerId))
+    }
+
     func dismissError() {
         errorMessage = nil
     }
@@ -411,6 +437,7 @@ final class SpeakerAttributionViewModel {
         speakers = core.listSpeakers(meetingId: meetingId)
         audioAvailable = core.meetingAudioBytes(meetingId: meetingId) > 0
         voicePrints = core.listVoiceprints(meetingId: meetingId)
+        voiceMemoryEnabled = core.isVoiceMemoryEnabled()
         // Именно здесь, а не под `guard let version`: правка без версии —
         // как раз та, которую надо показать.
         unappliedEdits = core.listUnappliedEdits(meetingId: meetingId)
@@ -524,6 +551,13 @@ enum SpeakerFormat {
         "голос: \(print.samples) репл., \(Int(print.seconds)) с"
     }
 
+    /// Из чего сложен запомненный голос — тем же языком, что и слепок
+    /// встречи: человеку это одна и та же величина, и разные подписи под
+    /// ней он читал бы как разные вещи.
+    static func knownVoiceText(_ voice: FfiKnownVoice) -> String {
+        "\(voice.samples) репл., \(Int(voice.seconds)) с"
+    }
+
     /// Итог пересчёта числами.
     ///
     /// Неопознанные названы **отдельно** от «без звука»: первое — ответ
@@ -538,6 +572,13 @@ enum SpeakerFormat {
         parts.append("без имени \(pass.unknown)")
         if pass.withoutVector > 0 {
             parts.append("без звука \(pass.withoutVector)")
+        }
+        if pass.signedFromMemory > 0 {
+            // Отдельной строкой, а не внутри «подписано»: человек включил
+            // память на голоса осознанно и вправе видеть, сколько она
+            // сделала. Слитое в общую сумму, это исчезло бы у функции,
+            // которая требует доверия больше прочих.
+            parts.append("узнано по памяти \(pass.signedFromMemory)")
         }
         parts.append("слепков \(pass.prints)")
         return parts.joined(separator: " · ")

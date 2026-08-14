@@ -24,6 +24,7 @@ mod sherpa;
 
 pub use enroll::{
     Assignment, DEFAULT_ACCEPT, DEFAULT_MARGIN, EnrollPlan, Reply, plan as plan_enrollment,
+    plan_known,
 };
 pub use mock::MockDiarizer;
 pub use model_path::{
