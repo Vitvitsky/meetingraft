@@ -139,6 +139,14 @@ Swift собирается только на Mac, поэтому `swiftformat --
 - **`wrapFunctionBodies`.** Тело функции в одну строку
   (`func f() -> Float { 0.45 }`) — ошибка, включая тестовые заглушки.
 
+Шаг 6 (`xcodebuild test`) ловит то же самое, но компилятором. Пойманное:
+
+- **`String(localized:)` принимает только литерал.** Он берёт
+  `String.LocalizationValue`, а склеенное через `+` — уже `String`, и
+  преобразования нет. Длинный текст писать одной строкой; склейка через
+  `+` законна у `Text`, `Label` и `.help` (у них есть перегрузка под
+  `StringProtocol`) и незаконна здесь. Разница невидима, пока не собрать.
+
 ## Stack & conventions
 
 - Stack: SwiftUI + AVFoundation (macOS shell), Rust + UniFFI (domain core), backend workers/API (post-call)
