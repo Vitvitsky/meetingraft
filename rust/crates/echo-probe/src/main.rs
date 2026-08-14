@@ -397,13 +397,14 @@ fn print_report(report: &EchoReport) {
         return;
     }
 
-    println!("\n  время, с      mic_rms  explained  эхо");
+    println!("\n  время, с      mic_rms  sys_rms  explained  эхо");
     for window in &loud {
         println!(
-            "  {:>6.1}–{:<6.1} {:>7.0}  {:>9.2}  {}",
+            "  {:>6.1}–{:<6.1} {:>7.0}  {:>7.0}  {:>9.2}  {}",
             window.start_ms as f64 / 1_000.0,
             window.end_ms as f64 / 1_000.0,
             window.mic_rms,
+            window.system_rms,
             window.explained,
             if window.is_echo { "да" } else { "" }
         );
@@ -603,17 +604,25 @@ fn print_gap(windows: &[&stt::EchoWindow], speech: &LabelledSpeech) {
         return;
     }
 
+    // Опора отдельной строкой у каждой группы, и это не украшение.
+    // `explained` при молчащем системном канале не значит «эха нет» — он
+    // значит «отражать было нечего», и сравнивать такую долю с долей,
+    // посчитанной при звучащей опоре, нельзя вовсе. Пока этих двух чисел
+    // не было рядом, зазор читался как свойство эха, а мог быть свойством
+    // тишины.
     let owner_median = median(owner.iter().map(|w| w.explained));
     let others_median = median(others.iter().map(|w| w.explained));
     println!(
-        "    речь владельца:   {:>4} окон, explained медиана {:.2}",
+        "    речь владельца:   {:>4} окон, explained медиана {:.2}, опора медиана {:.0}",
         owner.len(),
-        owner_median
+        owner_median,
+        median(owner.iter().map(|w| w.system_rms))
     );
     println!(
-        "    речь остальных:   {:>4} окон, explained медиана {:.2}",
+        "    речь остальных:   {:>4} окон, explained медиана {:.2}, опора медиана {:.0}",
         others.len(),
-        others_median
+        others_median,
+        median(others.iter().map(|w| w.system_rms))
     );
     println!("    смешанных окон:   {both:>4} — говорили оба, в счёт не идут");
     println!(
@@ -639,6 +648,18 @@ fn print_gap(windows: &[&stt::EchoWindow], speech: &LabelledSpeech) {
         "    Левый столбец — дорогая ошибка: речь владельца, выброшенная как\n\
          \x20   эхо, не восстановится ничем. Правый — дешёвая: лишний текст видно\n\
          \x20   и его стирают. Порог берётся там, где левый ещё ноль."
+    );
+
+    // Сверка групп по опоре: она объясняет зазор либо опровергает его.
+    let quiet_owner = owner.iter().filter(|w| w.system_rms < LOUD_RMS).count();
+    let quiet_others = others.iter().filter(|w| w.system_rms < LOUD_RMS).count();
+    println!(
+        "\n    С молчащей опорой: у владельца {quiet_owner} окон из {}, у остальных\n\
+         \x20   {quiet_others} из {}. Там, где опора молчит, `explained` отвечает не на\n\
+         \x20   тот вопрос: отражать было нечего. Если такие окна собрались в одной\n\
+         \x20   группе, зазор описывает тишину, а не эхо.",
+        owner.len(),
+        others.len()
     );
 }
 
@@ -911,6 +932,7 @@ mod tests {
             end_ms,
             explained,
             mic_rms: 500.0,
+            system_rms: 500.0,
             is_echo: false,
         }
     }

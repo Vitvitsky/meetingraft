@@ -79,6 +79,15 @@ pub struct EchoWindow {
     /// Доля энергии микрофона, объяснённая системным каналом (`corr²`).
     pub explained: f32,
     pub mic_rms: f32,
+    /// Уровень опорного (системного) канала в том же окне, с той же
+    /// задержкой.
+    ///
+    /// Без него `explained` нечитаем. Доля, посчитанная там, где отражать
+    /// было нечего, — не «эха нет», а «вопрос не задан», и отличить одно
+    /// от другого можно только зная, звучала ли опора. Пока этого числа не
+    /// было, обе величины сливались в одну — ровно как когда-то сливались
+    /// «искали и не нашли» с «сопоставлять нечем».
+    pub system_rms: f32,
     pub is_echo: bool,
 }
 
@@ -143,9 +152,10 @@ pub fn detect_echo(mic: &[i16], system: &[i16], sample_rate: u32) -> EchoReport 
     let residual = residual_energy(mic, system, aligned, window);
 
     let mut windows = Vec::with_capacity(residual.len());
-    for (index, (mic_energy, error_energy)) in residual.iter().enumerate() {
+    for (index, (mic_energy, error_energy, system_energy)) in residual.iter().enumerate() {
         let start = index * window;
         let mic_level = (mic_energy / window as f64).sqrt() as f32;
+        let system_level = (system_energy / window as f64).sqrt() as f32;
         // Доля энергии микрофона, объяснённая откликом комнаты на
         // системный канал. Своя речь с ним не коррелирует, добавляет
         // энергии в остаток и долю сбивает вниз — отсюда же защита от
@@ -160,6 +170,7 @@ pub fn detect_echo(mic: &[i16], system: &[i16], sample_rate: u32) -> EchoReport 
             end_ms: ms_for(start + window, sample_rate),
             explained,
             mic_rms: mic_level,
+            system_rms: system_level,
             is_echo: mic_level >= MIN_WINDOW_RMS && explained >= ECHO_EXPLAINED,
         });
     }
@@ -177,11 +188,17 @@ pub fn detect_echo(mic: &[i16], system: &[i16], sample_rate: u32) -> EchoReport 
 /// зависит от расстановки динамиков. **Сигнал при этом не меняется** —
 /// остаток нужен только чтобы понять, чем окно объясняется; в запись
 /// уходит ровно то, что пришло с микрофона.
-fn residual_energy(mic: &[i16], system: &[i16], delay: usize, window: usize) -> Vec<(f64, f64)> {
+fn residual_energy(
+    mic: &[i16],
+    system: &[i16],
+    delay: usize,
+    window: usize,
+) -> Vec<(f64, f64, f64)> {
     let mut filter = vec![0f32; RESPONSE_TAPS];
     let mut out = Vec::new();
     let mut mic_energy = 0.0f64;
     let mut error_energy = 0.0f64;
+    let mut system_energy = 0.0f64;
     let mut counted = 0usize;
 
     for (index, sample) in mic.iter().enumerate() {
@@ -219,11 +236,21 @@ fn residual_energy(mic: &[i16], system: &[i16], delay: usize, window: usize) -> 
 
         mic_energy += f64::from(target) * f64::from(target);
         error_energy += f64::from(error) * f64::from(error);
+        // Опора берётся с той же задержкой, что и оценка: сравнивать
+        // микрофон с несмещённым системным каналом значило бы мерить не ту
+        // пару и получить уровень чужого момента встречи.
+        let reference = index
+            .checked_sub(delay)
+            .and_then(|shifted| system.get(shifted))
+            .map(|sample| f64::from(*sample))
+            .unwrap_or(0.0);
+        system_energy += reference * reference;
         counted += 1;
         if counted == window {
-            out.push((mic_energy, error_energy));
+            out.push((mic_energy, error_energy, system_energy));
             mic_energy = 0.0;
             error_energy = 0.0;
+            system_energy = 0.0;
             counted = 0;
         }
     }
@@ -369,6 +396,48 @@ mod tests {
                 (sample * envelope * 6_000.0) as i16
             })
             .collect()
+    }
+
+    /// Уровень опоры измеряется, а не подразумевается.
+    ///
+    /// Заведомо положительный случай и заведомо отрицательный в одном
+    /// прогоне: там, где системный канал звучит, `system_rms` обязан быть
+    /// высоким, там, где он смолк, — низким. Без этого числа `explained`
+    /// нечитаем: доля, посчитанная при молчащей опоре, не значит «эха
+    /// нет», она значит «отражать было нечего».
+    #[test]
+    fn the_reference_level_is_reported_per_window() {
+        let sec = RATE as usize;
+        let mut system = speechlike(sec * 6, 1);
+        let quiet: Vec<i16> = speechlike(sec * 2, 3).iter().map(|s| s / 60).collect();
+        system.extend(quiet);
+        let mut mic = echo_of(&system[..sec * 6], 1_200, 0.4);
+        mic.extend(speechlike(sec * 2, 7));
+
+        let report = detect_echo(&mic, &system, RATE);
+
+        let loud: Vec<&EchoWindow> = report
+            .windows
+            .iter()
+            .filter(|w| w.start_ms < 5_000)
+            .collect();
+        let hushed: Vec<&EchoWindow> = report
+            .windows
+            .iter()
+            .filter(|w| w.start_ms >= 6_500)
+            .collect();
+        assert!(
+            !loud.is_empty() && !hushed.is_empty(),
+            "нет окон в одной из половин — сравнивать нечего"
+        );
+        assert!(
+            loud.iter().all(|w| w.system_rms >= MIN_WINDOW_RMS),
+            "опора звучит, а прибор её не слышит"
+        );
+        assert!(
+            hushed.iter().all(|w| w.system_rms < MIN_WINDOW_RMS),
+            "опора смолкла, а прибор всё ещё считает её громкой"
+        );
     }
 
     /// Эхо так, как его слышит микрофон: несколько отражений, сглаживание
