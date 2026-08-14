@@ -340,6 +340,22 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.canRememberVoice(speakerId: "s1"))
     }
 
+    /// Два счётчика в строке участника означают разное, и подписи у них
+    /// обязаны различаться.
+    ///
+    /// «N репл.» — сколько реплик участнику досталось, растёт после
+    /// пересчёта. Слепок — из скольки **ваших подписей** он сложен, и не
+    /// растёт вовсе. Пока оба назывались «репл.», совпадение второго с
+    /// числом своих подписей читалось как «пересчёт ничего не сделал».
+    func testThePrintChipDoesNotSpeakOfRepliesLikeTheCountBesideIt() {
+        let chip = SpeakerFormat.voicePrintText(voicePrint("s1", modelMatches: true))
+        let count = SpeakerFormat.segmentCountText(120)
+
+        XCTAssertTrue(chip.contains("подписей"), chip)
+        XCTAssertFalse(chip.contains("репл."), "две разные величины названы одним словом: \(chip)")
+        XCTAssertTrue(count.contains("репл."), count)
+    }
+
     // MARK: - Память на голоса (задача 7)
 
     /// Три условия сразу, и каждое отказывает по своей причине. Кнопка
