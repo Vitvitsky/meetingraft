@@ -157,6 +157,13 @@ pub fn plan(replies: &[Reply], accept: f32, margin: f32) -> EnrollPlan {
             } => (name, similarity),
             Match::Unknown { best, .. } => {
                 unknown += 1;
+                // Не узнал — не стирает. Подпись по каналу поставлена не
+                // нами, и снимать её из-за того, что модель промолчала,
+                // значило бы менять имя на пустоту без всякого основания.
+                // Своё прошлое имя пересчёт снимает — оно его и было.
+                if reply.source == SpeakerSource::Channel {
+                    continue;
+                }
                 (String::new(), best)
             }
         };
@@ -328,18 +335,47 @@ mod tests {
         );
     }
 
-    /// Подписанное каналом слепок тоже не трогает: на звонке один на один
-    /// канал точен абсолютно (ADR-012), и уточнять там нечего.
+    /// Подпись по каналу слепок уточняет: это умолчание, проставленное
+    /// оптом, а не свидетельство о том, кто говорил.
     #[test]
-    fn a_channel_label_is_left_alone() {
+    fn a_channel_label_is_refined_by_a_print() {
         let replies = vec![
             reply(0, "anna", SpeakerSource::Human, vec![1.0, 0.0]),
-            reply(1, "peter", SpeakerSource::Channel, vec![0.99, 0.1]),
+            reply(1, "others", SpeakerSource::Channel, vec![0.99, 0.1]),
         ];
 
         let plan = plan(&replies, DEFAULT_ACCEPT, DEFAULT_MARGIN);
 
-        assert!(plan.assignments.is_empty());
+        assert_eq!(
+            plan.assignments
+                .iter()
+                .map(|a| (a.index, a.speaker_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "anna")]
+        );
+    }
+
+    /// Не узнал — не стирает. Имя по каналу поставлено не пересчётом, и
+    /// снимать его из-за того, что модель промолчала, значило бы менять
+    /// имя на пустоту без основания.
+    ///
+    /// Своё прошлое имя пересчёт снимает — это проверяет соседний тест
+    /// про исчезнувший вектор.
+    #[test]
+    fn an_unrecognised_reply_keeps_the_name_the_channel_gave_it() {
+        let replies = vec![
+            reply(0, "anna", SpeakerSource::Human, vec![1.0, 0.0, 0.0]),
+            reply(1, "others", SpeakerSource::Channel, vec![0.0, 0.0, 1.0]),
+        ];
+
+        let plan = plan(&replies, DEFAULT_ACCEPT, DEFAULT_MARGIN);
+
+        assert_eq!(plan.unknown, 1, "реплика померена и не узнана");
+        assert!(
+            plan.assignments.is_empty(),
+            "подпись по каналу снята без основания: {:?}",
+            plan.assignments
+        );
     }
 
     /// Слепок складывается только по ручному. Подпись по каналу в него не
