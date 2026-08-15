@@ -941,8 +941,19 @@ fn normalize_llm_engine(code: &str) -> &str {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CoreError {
-    Http { status: u16, body: String },
+    Http {
+        status: u16,
+        body: String,
+    },
     Empty,
+    /// Модель не уложилась в отведённое время.
+    ///
+    /// Отдельно от [`CoreError::Transport`]: причина не в сети, а в том,
+    /// что локальная модель на длинной расшифровке считает дольше
+    /// потолка, и человеку надо сказать именно это.
+    Timeout {
+        seconds: u64,
+    },
     Transport(String),
     NotConfigured,
 }
@@ -952,6 +963,7 @@ impl From<LlmError> for CoreError {
         match error {
             LlmError::Http { status, body } => Self::Http { status, body },
             LlmError::EmptyResponse => Self::Empty,
+            LlmError::Timeout { seconds } => Self::Timeout { seconds },
             LlmError::Transport(message) => Self::Transport(message),
             LlmError::NotConfigured => Self::NotConfigured,
         }
@@ -965,6 +977,12 @@ impl fmt::Display for CoreError {
                 write!(formatter, "LLM-провайдер вернул HTTP {status}: {body}")
             }
             Self::Empty => formatter.write_str("LLM-провайдер вернул пустой ответ"),
+            Self::Timeout { seconds } => write!(
+                formatter,
+                "Модель не ответила за {seconds} с. Локальная модель на длинной \
+                 расшифровке считает дольше: возьмите модель поменьше либо \
+                 поднимите потолок ожидания"
+            ),
             Self::Transport(message) => write!(formatter, "Ошибка транспорта LLM: {message}"),
             Self::NotConfigured => formatter.write_str("LLM-клиент не настроен"),
         }
@@ -6306,6 +6324,15 @@ mod tests {
             (
                 postcall::LlmError::Transport("connection refused".into()),
                 "Ошибка транспорта LLM: connection refused",
+            ),
+            // Отказ по времени обязан называться своим именем: пока он
+            // ехал транспортом, человек шёл проверять адрес и имя
+            // модели, которые были в порядке (2026-08-14).
+            (
+                postcall::LlmError::Timeout { seconds: 600 },
+                "Модель не ответила за 600 с. Локальная модель на длинной \
+                 расшифровке считает дольше: возьмите модель поменьше либо \
+                 поднимите потолок ожидания",
             ),
             (postcall::LlmError::NotConfigured, "LLM-клиент не настроен"),
         ];

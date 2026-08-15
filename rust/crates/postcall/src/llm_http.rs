@@ -5,7 +5,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::{LlmClient, LlmError};
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Сколько ждать ответа модели.
+///
+/// Запрос уходит без стриминга (`stream: false`), поэтому в этот потолок
+/// должна уложиться **вся** сборка ответа, а не первый его байт: разбор
+/// длинной расшифровки, генерация брифа целиком, а на первом вызове ещё
+/// и загрузка весов в память.
+///
+/// Прежняя минута этого не выдерживала: 2026-08-14 бриф на локальной
+/// 12B-модели падал «ошибкой транспорта» через минуту-другую, и человек
+/// шёл проверять адрес и имя модели, которые были в порядке.
+///
+/// Десять минут выбраны по цене ошибки, а не по замеру — замера
+/// скорости этой модели на этой машине ни у кого пока нет. Ошибиться
+/// можно в две стороны, и они не равны: слишком строгий потолок **теряет
+/// уже сделанную работу** и врёт о причине, слишком щедрый — заставляет
+/// ждать зря отказавший сервер. Запрос при этом идёт вне мьютекса ядра
+/// (Epic 21), то есть живые субтитры он не держит.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Serialize)]
 struct Message<'a> {
@@ -45,21 +62,31 @@ struct OpenAiResponse {
 struct HttpClient {
     base_url: String,
     model: String,
+    timeout: Duration,
     client: Result<Client, String>,
 }
 
 impl HttpClient {
     fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::with_timeout(base_url, model, REQUEST_TIMEOUT)
+    }
+
+    fn with_timeout(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
         let base_url = base_url.into().trim().trim_end_matches('/').to_owned();
         let model = model.into().trim().to_owned();
         let client = Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(|error| error.to_string());
 
         Self {
             base_url,
             model,
+            timeout,
             client,
         }
     }
@@ -97,11 +124,9 @@ impl HttpClient {
             .post(format!("{}{}", self.base_url, path))
             .json(&request)
             .send()
-            .map_err(|error| LlmError::Transport(error.to_string()))?;
+            .map_err(|error| self.failure(&error))?;
         let status = response.status();
-        let body = response
-            .text()
-            .map_err(|error| LlmError::Transport(error.to_string()))?;
+        let body = response.text().map_err(|error| self.failure(&error))?;
 
         if !status.is_success() {
             return Err(LlmError::Http {
@@ -111,6 +136,20 @@ impl HttpClient {
         }
 
         Ok(body)
+    }
+
+    /// Отличить «модель не успела» от «до сервера не доехало».
+    ///
+    /// Разница видна только здесь: выше по стеку обе выглядят одинаково
+    /// — ошибкой запроса, — и потому обе годами ехали одной строкой про
+    /// транспорт.
+    fn failure(&self, error: &reqwest::Error) -> LlmError {
+        if error.is_timeout() {
+            return LlmError::Timeout {
+                seconds: self.timeout.as_secs(),
+            };
+        }
+        LlmError::Transport(error.to_string())
     }
 }
 
@@ -123,6 +162,20 @@ impl OllamaNativeClient {
     pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             http: HttpClient::new(base_url, model),
+        }
+    }
+
+    /// Тот же клиент со своим потолком ожидания.
+    ///
+    /// Нужен, чтобы отказ по времени можно было проверить тестом за
+    /// секунду, а не за десять минут. Умолчание — [`REQUEST_TIMEOUT`].
+    pub fn with_timeout(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            http: HttpClient::with_timeout(base_url, model, timeout),
         }
     }
 }
@@ -146,6 +199,17 @@ impl OpenAiCompatLlmClient {
     pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             http: HttpClient::new(base_url, model),
+        }
+    }
+
+    /// Тот же клиент со своим потолком ожидания.
+    pub fn with_timeout(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            http: HttpClient::with_timeout(base_url, model, timeout),
         }
     }
 }
@@ -182,9 +246,65 @@ fn non_empty_content(content: Option<String>) -> Result<String, LlmError> {
 mod tests {
     use mockito::{Matcher, Server};
 
+    use std::time::Duration;
+
     use crate::{LlmClient, LlmError};
 
     use super::{OllamaNativeClient, OpenAiCompatLlmClient};
+
+    /// Сервер, который принял соединение и молчит.
+    ///
+    /// Именно этот случай ловил прежний потолок: модель считает, сокет
+    /// открыт, ответа ещё нет.
+    fn silent_server() -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("сокет");
+        let address = listener.local_addr().expect("адрес");
+        let handle = std::thread::spawn(move || {
+            // Соединение держится открытым: закрой его — и клиент получит
+            // разрыв, то есть **другую** ошибку, и тест проверял бы не то.
+            let _accepted = listener.incoming().next();
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[test]
+    fn a_silent_model_is_a_timeout_not_a_transport_error() {
+        let (base_url, _server) = silent_server();
+
+        let error = OllamaNativeClient::with_timeout(base_url, "gemma", Duration::from_secs(1))
+            .complete("sys", "user")
+            .expect_err("молчащий сервер обязан кончиться отказом");
+
+        assert_eq!(
+            error,
+            LlmError::Timeout { seconds: 1 },
+            "отказ по времени не должен выглядеть отказом транспорта: человек \
+             пойдёт проверять адрес, который в порядке"
+        );
+    }
+
+    /// Заведомо положительный случай к предыдущему тесту.
+    ///
+    /// Тот же короткий потолок против отвечающего сервера: без этой
+    /// проверки «отказ по времени» мог бы означать, что с секундным
+    /// потолком не проходит ничто вообще.
+    #[test]
+    fn the_same_short_ceiling_lets_a_fast_answer_through() {
+        let mut server = Server::new();
+        let _mock = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body(r#"{"message":{"content":"успел"}}"#)
+            .create();
+
+        let answer =
+            OllamaNativeClient::with_timeout(server.url(), "gemma", Duration::from_secs(1))
+                .complete("sys", "user")
+                .expect("быстрый ответ обязан пройти");
+
+        assert_eq!(answer, "успел");
+    }
 
     #[test]
     fn ollama_native_parses_message_content() {
