@@ -387,13 +387,24 @@ fn print_section(title: &str, pairs: &[TwinPair], control: &[TwinPair], mic_word
         ),
         Gap::Clear => {
             println!("\n  ВЕРДИКТ: пары и контроль разошлись, распределению можно верить");
-            match honest_threshold(pairs, control) {
+            match clean_threshold(pairs, control) {
                 Some(row) => println!(
-                    "           порог {:.1}: пар свернётся {}, слов mic {}, ложных {}",
+                    "           берите {:.1} — ложных ноль: свернётся {}, слов mic {}",
                     row.threshold,
                     row.pairs,
-                    share(row.mic_words, mic_words),
-                    row.control
+                    share(row.mic_words, mic_words)
+                ),
+                None => println!(
+                    "           порога без ложных в сетке нет — сворачивать\n\
+                     \x20          придётся с потерями либо не сворачивать вовсе"
+                ),
+            }
+            match honest_threshold(pairs, control) {
+                Some(row) => println!(
+                    "           ниже {:.1} не опускаться: там уже {} ложных из {}",
+                    row.threshold,
+                    row.control,
+                    control.len()
                 ),
                 None => println!(
                     "           порога с долей ложных ниже {}% в сетке нет",
@@ -442,6 +453,9 @@ fn threshold_rows(pairs: &[TwinPair], control: &[TwinPair]) -> Vec<ThresholdRow>
 ///
 /// Наименьший — потому что чем ниже порог, тем больше дублей свернётся;
 /// ограничение сверху ставит контроль, а не вкус.
+///
+/// Это **нижняя граница**, а не рекомендация: цену ошибок она считает
+/// равной, а они не равны. Рекомендацию печатает [`clean_threshold`].
 fn honest_threshold(pairs: &[TwinPair], control: &[TwinPair]) -> Option<ThresholdRow> {
     if control.is_empty() {
         return None;
@@ -449,6 +463,26 @@ fn honest_threshold(pairs: &[TwinPair], control: &[TwinPair]) -> Option<Threshol
     threshold_rows(pairs, control)
         .into_iter()
         .find(|row| row.control as f32 <= control.len() as f32 * FALSE_SHARE)
+}
+
+/// Наименьший порог, на котором ложных **ноль**.
+///
+/// Тот же выбор, что и у зазора эха, и по той же причине: цена ошибок не
+/// равна. Ложная свёртка **стирает реплику** из входа артефакта, и
+/// человек об этом не узнает; пропущенный дубль всего лишь оставляет
+/// повтор, который видно глазами.
+///
+/// Печатается рядом с [`honest_threshold`], потому что без него читают
+/// его: на `1BF7AEAB` (2026-08-16) прибор назвал 0.4 при шести ложных,
+/// тогда как чистым был 0.6. Названное число становится ответом, даже
+/// когда оно названо как нижняя граница.
+fn clean_threshold(pairs: &[TwinPair], control: &[TwinPair]) -> Option<ThresholdRow> {
+    if control.is_empty() {
+        return None;
+    }
+    threshold_rows(pairs, control)
+        .into_iter()
+        .find(|row| row.control == 0)
 }
 
 /// Разошлись ли распределения пар и контроля.
@@ -685,6 +719,38 @@ mod tests {
             "0.5 стоил бы двух ложных из двадцати — это больше 5%"
         );
         assert_eq!(row.pairs, 20);
+    }
+
+    #[test]
+    fn the_named_threshold_is_the_cheapest_one_without_false_folds() {
+        // Цена ошибок не равна: ложная свёртка стирает реплику молча,
+        // пропущенный дубль оставляет видимый повтор. Поэтому прибор
+        // называет первый порог с нулём ложных, а не первый терпимый.
+        let pairs: Vec<TwinPair> = (0..20).map(|_| pair(0.75, 10, 10)).collect();
+        let mut control: Vec<TwinPair> = (0..18).map(|_| pair(0.2, 10, 10)).collect();
+        control.push(pair(0.45, 10, 10));
+        control.push(pair(0.55, 10, 10));
+
+        let clean = clean_threshold(&pairs, &control).expect("чистый порог обязан найтись");
+        assert_eq!(clean.threshold, 0.6, "0.5 стоил бы одной ложной");
+        assert_eq!(clean.control, 0);
+
+        let lowest = honest_threshold(&pairs, &control).expect("нижняя граница");
+        assert!(
+            lowest.threshold < clean.threshold,
+            "нижняя граница обязана быть ниже чистого порога: {} против {}",
+            lowest.threshold,
+            clean.threshold
+        );
+    }
+
+    #[test]
+    fn without_a_clean_threshold_the_probe_says_so() {
+        // Ложные на каждом пороге — законный ответ, и выдавать за него
+        // самый терпимый нельзя.
+        let pairs = vec![pair(0.9, 10, 10)];
+        let control = vec![pair(0.95, 10, 10)];
+        assert_eq!(clean_threshold(&pairs, &control), None);
     }
 
     #[test]
