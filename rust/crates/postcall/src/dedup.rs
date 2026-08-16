@@ -29,6 +29,23 @@ use domain::{AudioChannel, FinalSegment, SpeakerSource, SpeechLanguage};
 /// склеенного из целого монолога, чтобы прибор не встал.
 const MAX_WORDS: usize = 400;
 
+/// Короче этого реплики не сворачиваются вовсе.
+///
+/// Не осторожность, а вывод из первого живого прогона (`1BF7AEAB`,
+/// 2026-08-16). На всех парах мера не делит родство и случайность:
+/// медиана пар 0.33 против 0.25 у заведомо неродственного контроля, и в
+/// верхнем ведре 0.9…1.0 у контроля **21 пара**. Все двадцать одна —
+/// короткие: среди реплик от четырёх слов там ноль.
+///
+/// Совпадают они по случайности: «да» против «да» — это 1.00, а не
+/// дубль. Свернуть такую пару значит стереть «да» владельца, потому что
+/// в этот момент кто-то в созвоне сказал «да» тоже. Молчаливое
+/// исчезновение речи — худший исход из возможных (`CLAUDE.md`).
+///
+/// Четыре слова — та граница, по которой прибор делит распределения. На
+/// ней контроль перестаёт забираться выше 0.6 совсем.
+pub const MIN_COLLAPSE_WORDS: usize = 4;
+
 /// Насколько далеко должна отстоять реплика, чтобы годиться в контроль.
 ///
 /// Заведомо отрицательный случай: та же микрофонная реплика против
@@ -194,6 +211,12 @@ pub struct CollapseReport {
     /// было непохожих», а «столько раз свёртка отступила», и молчать об
     /// этом нельзя — иначе правка выглядит дублем, а дубль правкой.
     pub kept_by_hand: usize,
+    /// Реплик оставлено потому, что они короче [`MIN_COLLAPSE_WORDS`].
+    ///
+    /// Тоже отступление свёртки, и тоже отдельным числом: короткие пары
+    /// совпадают по случайности, и молчать о том, что их не трогали,
+    /// значит выдавать осторожность за отсутствие дублей.
+    pub kept_short: usize,
     /// Порог, по которому свернули. Записан в отчёт, потому что без него
     /// числа выше не значат ничего.
     pub threshold: f32,
@@ -212,24 +235,27 @@ pub struct CollapseReport {
 /// «свёрнуто 5 дублей» — разные формы, и склонять их в трёх языках
 /// значит завести грамматику там, где нужен отчёт.
 pub fn collapse_note(report: &CollapseReport, language: SpeechLanguage) -> String {
-    let (built, folded, threshold, by_hand) = match language {
+    let (built, folded, threshold, by_hand, short) = match language {
         SpeechLanguage::Ru => (
             "Собран из реплик",
             "свёрнуто удвоенных",
             "порог",
             "оставлено правленых рукой",
+            "коротких не тронуто",
         ),
         SpeechLanguage::En => (
             "Built from replies",
             "doubles collapsed",
             "threshold",
             "kept as hand-edited",
+            "short replies untouched",
         ),
         SpeechLanguage::Es => (
             "Compuesto de intervenciones",
             "duplicados plegados",
             "umbral",
             "conservadas por edición manual",
+            "intervenciones cortas intactas",
         ),
     };
     let mut note = format!(
@@ -238,6 +264,9 @@ pub fn collapse_note(report: &CollapseReport, language: SpeechLanguage) -> Strin
     );
     if report.kept_by_hand > 0 {
         note.push_str(&format!("; {by_hand}: {}", report.kept_by_hand));
+    }
+    if report.kept_short > 0 {
+        note.push_str(&format!("; {short}: {}", report.kept_short));
     }
     note.push('.');
     note
@@ -332,8 +361,15 @@ pub fn collapse_doubles(
 
     let mut drop_indices: Vec<u32> = Vec::new();
     let mut kept_by_hand = 0;
+    let mut kept_short = 0;
     for (mic_position, pair) in paired {
         if pair.similarity < threshold {
+            continue;
+        }
+        // Короткая пара совпадает по случайности, и порог тут не судья:
+        // «да» против «да» даёт 1.00 при любом пороге.
+        if pair.words < MIN_COLLAPSE_WORDS {
+            kept_short += 1;
             continue;
         }
         // То, чего человек касался, не исчезает. Ручная правка (Epic 19)
@@ -359,6 +395,7 @@ pub fn collapse_doubles(
             kept: kept.len(),
             collapsed: drop_indices.len(),
             kept_by_hand,
+            kept_short,
             threshold,
         },
         segments: kept,
@@ -598,6 +635,7 @@ mod tests {
             kept: 128,
             collapsed: 96,
             kept_by_hand: 0,
+            kept_short: 0,
             threshold: 0.6,
         };
         let note = collapse_note(&report, SpeechLanguage::Ru);
@@ -618,11 +656,99 @@ mod tests {
             kept: 10,
             collapsed: 2,
             kept_by_hand: 3,
+            kept_short: 0,
             threshold: 0.5,
         };
         let note = collapse_note(&report, SpeechLanguage::Ru);
         assert!(note.contains("рукой"), "{note}");
         assert!(note.contains('3'), "{note}");
+    }
+
+    #[test]
+    fn a_short_pair_is_never_collapsed_however_alike() {
+        // «Да» против «Да» — это 1.00 и не дубль. Первый живой прогон
+        // (1BF7AEAB, 2026-08-16): в верхнем ведре контроля 21 такая пара
+        // и ни одной среди реплик от четырёх слов.
+        let segments = vec![
+            segment(0, AudioChannel::Mic, 1_000, 2_000, "Да"),
+            segment(1, AudioChannel::System, 1_000, 2_000, "Да."),
+        ];
+        let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
+        assert_eq!(collapsed.report.collapsed, 0, "короткое совпало случайно");
+        assert_eq!(collapsed.report.kept_short, 1);
+        assert_eq!(
+            collapsed.segments.len(),
+            2,
+            "речь владельца осталась на месте"
+        );
+    }
+
+    #[test]
+    fn the_length_is_measured_by_the_shorter_side() {
+        // Иначе длинная системная реплика утащила бы за собой короткую
+        // микрофонную: «да» против «да, конечно, давай так и сделаем»
+        // прошло бы проверку длины по системной стороне.
+        let segments = vec![
+            segment(0, AudioChannel::Mic, 1_000, 5_000, "Да"),
+            segment(
+                1,
+                AudioChannel::System,
+                1_000,
+                5_000,
+                "Да, конечно, давай так и сделаем",
+            ),
+        ];
+        let collapsed = collapse_doubles(&segments, 0.1).expect("свёртка");
+        assert_eq!(collapsed.report.collapsed, 0);
+        assert_eq!(collapsed.report.kept_short, 1);
+    }
+
+    #[test]
+    fn a_reply_at_the_length_boundary_still_collapses() {
+        // Граница включающая: ровно четыре слова — уже не короткая.
+        // Без этого правило тихо съело бы целый слой реплик.
+        let segments = vec![
+            segment(
+                0,
+                AudioChannel::Mic,
+                1_000,
+                5_000,
+                "Давай перенесём релиз, окей",
+            ),
+            segment(
+                1,
+                AudioChannel::System,
+                1_000,
+                5_000,
+                "Давай перенесём релиз.",
+            ),
+        ];
+        let scan = scan_twins(&segments);
+        assert_eq!(
+            scan.overlapping[0].words,
+            MIN_COLLAPSE_WORDS - 1,
+            "короткая сторона — три слова, и это ещё коротко"
+        );
+
+        let segments = vec![
+            segment(
+                0,
+                AudioChannel::Mic,
+                1_000,
+                5_000,
+                "Давай перенесём релиз на среду",
+            ),
+            segment(
+                1,
+                AudioChannel::System,
+                1_000,
+                5_000,
+                "Давай перенесём релиз на среду.",
+            ),
+        ];
+        let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
+        assert_eq!(collapsed.report.collapsed, 1, "пять слов сворачиваются");
+        assert_eq!(collapsed.report.kept_short, 0);
     }
 
     #[test]
@@ -735,9 +861,23 @@ mod tests {
     fn the_system_copy_is_never_the_one_that_goes() {
         // Дословный дубль: похожесть 1.0, и решает уже не она, а правило
         // «остаётся системная». Без него из пары ушла бы любая из двух.
+        // Реплика взята длиннее порога длины: короткую свёртка не тронет
+        // вовсе, и тест проверял бы не ту ветку.
         let segments = vec![
-            segment(0, AudioChannel::Mic, 1_000, 5_000, "Значит, сделаем так"),
-            segment(1, AudioChannel::System, 1_000, 5_000, "Значит, сделаем так"),
+            segment(
+                0,
+                AudioChannel::Mic,
+                1_000,
+                5_000,
+                "Значит, сделаем так и разойдёмся",
+            ),
+            segment(
+                1,
+                AudioChannel::System,
+                1_000,
+                5_000,
+                "Значит, сделаем так и разойдёмся",
+            ),
         ];
         let collapsed = collapse_doubles(&segments, TEST_THRESHOLD).expect("свёртка");
         assert_eq!(collapsed.segments.len(), 1);
