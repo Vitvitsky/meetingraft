@@ -24,10 +24,39 @@ use crate::{LlmClient, LlmError};
 /// (Epic 21), то есть живые субтитры он не держит.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Температура сборки артефактов.
+///
+/// Ноль, а не «поменьше»: артефакт производен от расшифровки, и два
+/// прогона по одному Final обязаны давать один и тот же текст.
+///
+/// Заведено 2026-08-16 по неудавшемуся опыту. Бриф собирали дважды —
+/// без свёртки дублей и с ней, — чтобы увидеть, перестал ли он
+/// перевешивать удалённых участников. Сравнить оказалось нечем:
+/// **разница между двумя прогонами шире, чем разница между входами**.
+/// Случайная выборка делает опыт невозможным в принципе, а не неточным.
+///
+/// Заодно это чинит и то, ради чего заведён `source_fingerprint`:
+/// «артефакт устарел» значит «Final изменился», а не «модель бросила
+/// кости иначе».
+const TEMPERATURE: f32 = 0.0;
+
+/// Зерно генератора.
+///
+/// Температура ноль сама по себе одинакового ответа не обещает: при
+/// равных вероятностях выбор всё ещё за генератором.
+const SEED: u64 = 0;
+
 #[derive(Serialize)]
 struct Message<'a> {
     role: &'static str,
     content: &'a str,
+}
+
+/// Настройки выборки в том виде, в каком их принимает Ollama.
+#[derive(Serialize)]
+struct OllamaOptions {
+    temperature: f32,
+    seed: u64,
 }
 
 #[derive(Serialize)]
@@ -36,6 +65,27 @@ struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     messages: [Message<'a>; 2],
+    /// OpenAI-совместимые кладут настройки выборки рядом с моделью.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
+    /// Ollama прячет их в `options`. Величины те же, разное только место.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<OllamaOptions>,
+}
+
+/// Где провайдер ждёт настройки выборки.
+///
+/// Различие не косметическое: положи Ollama температуру рядом с моделью
+/// — она молча её проигнорирует, и воспроизводимости не будет, а
+/// выглядеть это будет как работающая настройка.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sampling {
+    /// Внутри `options` — Ollama.
+    Nested,
+    /// Рядом с моделью — OpenAI-совместимые.
+    TopLevel,
 }
 
 #[derive(Deserialize)]
@@ -95,6 +145,7 @@ impl HttpClient {
         &self,
         path: &str,
         stream: Option<bool>,
+        sampling: Sampling,
         system: &str,
         user: &str,
     ) -> Result<String, LlmError> {
@@ -119,6 +170,12 @@ impl HttpClient {
                     content: user,
                 },
             ],
+            temperature: (sampling == Sampling::TopLevel).then_some(TEMPERATURE),
+            seed: (sampling == Sampling::TopLevel).then_some(SEED),
+            options: (sampling == Sampling::Nested).then_some(OllamaOptions {
+                temperature: TEMPERATURE,
+                seed: SEED,
+            }),
         };
         let response = client
             .post(format!("{}{}", self.base_url, path))
@@ -182,7 +239,9 @@ impl OllamaNativeClient {
 
 impl LlmClient for OllamaNativeClient {
     fn complete(&self, system: &str, user: &str) -> Result<String, LlmError> {
-        let body = self.http.complete("/api/chat", Some(false), system, user)?;
+        let body = self
+            .http
+            .complete("/api/chat", Some(false), Sampling::Nested, system, user)?;
         let response: OllamaResponse =
             serde_json::from_str(&body).map_err(|error| LlmError::Transport(error.to_string()))?;
 
@@ -216,9 +275,13 @@ impl OpenAiCompatLlmClient {
 
 impl LlmClient for OpenAiCompatLlmClient {
     fn complete(&self, system: &str, user: &str) -> Result<String, LlmError> {
-        let body = self
-            .http
-            .complete("/v1/chat/completions", None, system, user)?;
+        let body = self.http.complete(
+            "/v1/chat/completions",
+            None,
+            Sampling::TopLevel,
+            system,
+            user,
+        )?;
         let response: OpenAiResponse =
             serde_json::from_str(&body).map_err(|error| LlmError::Transport(error.to_string()))?;
         let content = response
@@ -304,6 +367,83 @@ mod tests {
                 .expect("быстрый ответ обязан пройти");
 
         assert_eq!(answer, "успел");
+    }
+
+    /// Ollama ждёт настройки выборки внутри `options`.
+    ///
+    /// Положи их рядом с моделью — она молча их проигнорирует, и
+    /// артефакт снова станет невоспроизводимым, а выглядеть это будет
+    /// как работающая настройка.
+    #[test]
+    fn ollama_gets_the_sampling_settings_where_it_looks_for_them() {
+        let mut server = Server::new();
+        let _mock = server
+            .mock("POST", "/api/chat")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "model": "gemma2",
+                "options": {"temperature": 0.0, "seed": 0}
+            })))
+            .with_status(200)
+            .with_body(r#"{"message":{"content":"ответ"}}"#)
+            .create();
+
+        let answer = OllamaNativeClient::new(server.url(), "gemma2")
+            .complete("sys", "user")
+            .expect("ответ");
+
+        assert_eq!(answer, "ответ");
+    }
+
+    /// OpenAI-совместимые ждут их рядом с моделью.
+    #[test]
+    fn the_openai_shape_carries_the_settings_beside_the_model() {
+        let mut server = Server::new();
+        let _mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "model": "gemma2",
+                "temperature": 0.0,
+                "seed": 0
+            })))
+            .with_status(200)
+            .with_body(r#"{"choices":[{"message":{"content":"ответ"}}]}"#)
+            .create();
+
+        let answer = OpenAiCompatLlmClient::new(server.url(), "gemma2")
+            .complete("sys", "user")
+            .expect("ответ");
+
+        assert_eq!(answer, "ответ");
+    }
+
+    /// Место настроек у двух провайдеров не путается.
+    ///
+    /// Проверяется отказом: Ollama-запрос **не** должен нести
+    /// температуру рядом с моделью. Без этой проверки обе прошлые
+    /// сошлись бы и на запросе, где настройки продублированы всюду, —
+    /// то есть на коде, который не знает, куда их класть.
+    #[test]
+    fn the_ollama_request_keeps_the_settings_out_of_the_top_level() {
+        let mut server = Server::new();
+        let _wrong = server
+            .mock("POST", "/api/chat")
+            .match_body(Matcher::PartialJson(serde_json::json!({
+                "temperature": 0.0
+            })))
+            .with_status(500)
+            .with_body("настройки уехали не туда")
+            .create();
+        let _right = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body(r#"{"message":{"content":"ответ"}}"#)
+            .create();
+
+        let answer = OllamaNativeClient::new(server.url(), "gemma2")
+            .complete("sys", "user")
+            .expect("ответ");
+
+        assert_eq!(answer, "ответ");
     }
 
     #[test]
