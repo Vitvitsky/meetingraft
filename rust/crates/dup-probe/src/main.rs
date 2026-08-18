@@ -27,7 +27,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use domain::{AudioChannel, FinalSegment, SpeakerSource};
+use domain::{AudioChannel, FinalSegment, SpeakerSource, utc_date_label};
 use postcall::{CONTROL_GAP_MS, TwinPair, TwinScan, scan_twins, word_count};
 use storage::AudioManifestStore;
 
@@ -195,7 +195,11 @@ fn list_meetings(root: &Path) -> Result<(), String> {
             .get_final_transcript(&meeting.id)
             .map_err(|error| error.to_string())?
         else {
-            println!("    {} — Final не собран", meeting.id);
+            println!(
+                "    {} {} — Final не собран",
+                utc_date_label(meeting.started_at_ms),
+                meeting_label(&meeting)
+            );
             continue;
         };
         let segments = store
@@ -212,19 +216,39 @@ fn list_meetings(root: &Path) -> Result<(), String> {
         // дорожке прибору сравнивать нечего.
         let mark = if mic > 0 && system > 0 { "+" } else { " " };
         println!(
-            "  {mark} {} — Final v{}, mic {mic}, system {system}",
-            meeting.id, final_transcript.version
+            "  {mark} {} {} — Final v{}, mic {mic}, system {system}",
+            utc_date_label(meeting.started_at_ms),
+            meeting_label(&meeting),
+            final_transcript.version
         );
     }
     println!("\nСтрока с «+» годится для прогона: dup-probe <каталог> <встреча>");
     Ok(())
 }
 
+/// Как встреча называется в списке: id и название, если оно есть.
+///
+/// Id обязателен — им прибор и запускают. Название рядом, потому что по
+/// одному id человек не помнит, что это была за встреча, и выбирает
+/// наугад.
+fn meeting_label(meeting: &domain::MeetingSummary) -> String {
+    let title = meeting.title.trim();
+    if title.is_empty() {
+        return meeting.id.clone();
+    }
+    format!("{} «{title}»", meeting.id)
+}
+
 fn probe(root: &Path, meeting_id: &str) -> Result<(), String> {
     let store = AudioManifestStore::open(root).map_err(|error| error.to_string())?;
     let reading = read(&store, meeting_id)?;
 
-    println!("\nВстреча {meeting_id}, Final v{}", reading.version);
+    println!(
+        "\nВстреча {} {}, Final v{}",
+        utc_date_label(reading.started_at_ms),
+        reading.label,
+        reading.version
+    );
     println!(
         "  реплик: mic {}, system {}",
         reading.scan.mic_total, reading.scan.system_total
@@ -241,6 +265,9 @@ fn probe(root: &Path, meeting_id: &str) -> Result<(), String> {
 #[derive(Debug)]
 struct Reading {
     version: u32,
+    /// Как встреча зовётся в списке: id и название.
+    label: String,
+    started_at_ms: u64,
     /// Сведены ли метки каналов к общему времени (Epic 25).
     unified: bool,
     segments: Vec<FinalSegment>,
@@ -277,8 +304,18 @@ fn read(store: &AudioManifestStore, meeting_id: &str) -> Result<Reading, String>
         ));
     }
 
+    let summary = store
+        .list_meeting_summaries()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|summary| summary.id == meeting_id);
+
     Ok(Reading {
         version: final_transcript.version,
+        label: summary
+            .as_ref()
+            .map_or_else(|| meeting_id.to_owned(), meeting_label),
+        started_at_ms: summary.map_or(0, |summary| summary.started_at_ms),
         unified,
         segments,
         scan,
@@ -602,6 +639,11 @@ mod tests {
 
         let reading = read(&store, "M1").expect("разбор");
         assert_eq!(reading.version, 1);
+        assert!(
+            reading.label.contains("M1"),
+            "по одному номеру версии встречу не узнать: {}",
+            reading.label
+        );
         assert_eq!(reading.scan.mic_total, 2, "сегменты обязаны прочитаться");
         assert_eq!(reading.scan.system_total, 2);
         assert_eq!(reading.scan.overlapping.len(), 1);
@@ -661,6 +703,38 @@ mod tests {
         // Самопроверка — единственное, что стоит между прибором и
         // числом, которому поверят.
         assert!(self_check());
+    }
+
+    #[test]
+    fn a_meeting_shows_its_name_next_to_the_id() {
+        // По одному id человек не помнит, что это была за встреча, и
+        // выбирает наугад — а прогон идёт минуты.
+        let summary = domain::MeetingSummary {
+            id: "1BF7AEAB".into(),
+            title: "Синк команды".into(),
+            started_at_ms: 1_785_628_800_000,
+            ended_at_ms: None,
+            has_final: true,
+            artifact_count: 0,
+            audio_deleted_at_ms: None,
+        };
+        assert_eq!(meeting_label(&summary), "1BF7AEAB «Синк команды»");
+    }
+
+    #[test]
+    fn a_nameless_meeting_still_shows_its_id() {
+        // Пустое название законно (`MeetingSummary`), и подставлять
+        // вместо него что-нибудь — дело презентационного слоя, не прибора.
+        let summary = domain::MeetingSummary {
+            id: "1BF7AEAB".into(),
+            title: "   ".into(),
+            started_at_ms: 0,
+            ended_at_ms: None,
+            has_final: false,
+            artifact_count: 0,
+            audio_deleted_at_ms: None,
+        };
+        assert_eq!(meeting_label(&summary), "1BF7AEAB");
     }
 
     #[test]
