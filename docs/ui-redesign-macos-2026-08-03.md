@@ -32,29 +32,47 @@ backend.
 
 ### 2.1 Цвета
 
-| Токен | Значение | Назначение |
-|-------|----------|------------|
-| `surface-root` | `#0D0D0F` | Фон окна |
-| `surface` | `#141416` | Панели / toolbar |
-| `surface-elevated` | `#1C1C1F` | Карточки, elevated rows |
-| `surface-overlay` | `#242428` | Всплывающие панели |
-| `surface-glass` | `#00000030` | Overlay / glass |
-| `text-primary` | `#FFFFFF` | Основной текст |
-| `text-secondary` | `#A1A1A6` | Вторичный |
-| `text-tertiary` | `#6E6E73` | Третичный |
-| `text-disabled` | `#48484D` | Disabled |
-| `accent-primary` | `#4A9FD8` | CTA / selected |
-| `accent-bg` | `#4A9FD818` | Selected chip bg |
-| `success` / `warning` / `error` / `info` | `#30D158` / `#FFD60A` / `#FF453A` / `#64D2FF` | Статусы |
-| `border-subtle` / `default` / `strong` | white @ 6–14% | Разделители |
+| Токен | Тёмная | Светлая | Назначение |
+|-------|--------|---------|------------|
+| `surface-root` | `#0D0D0F` | `#FFFFFF` | Фон окна |
+| `surface` | `#141416` | `#F5F5F7` | Панели / toolbar |
+| `surface-elevated` | `#1C1C1F` | `#FFFFFF` | Карточки, elevated rows |
+| `surface-overlay` | `#242428` | `#FFFFFF` | Всплывающие панели |
+| `surface-glass` | чёрный @ 19% | белый @ 72% | Overlay / glass |
+| `text-primary` | `#FFFFFF` | `#1D1D1F` | Основной текст |
+| `text-secondary` | `#A1A1A6` | `#6E6E73` | Вторичный |
+| `text-tertiary` | `#6E6E73` | `#7C7C82` | Третичный |
+| `text-disabled` | `#48484D` | `#C7C7CC` | Disabled |
+| `accent-primary` | `#0A84FF` | `#0069D9` | CTA / selected |
+| `accent-bg` | акцент @ 9% | акцент @ 10% | Selected chip bg |
+| `success` | `#30D158` | `#1D7A32` | Статус |
+| `warning` | `#FFD60A` | `#B25000` | Статус |
+| `error` | `#FF453A` | `#D70015` | Статус |
+| `info` | `#64D2FF` | `#0071A4` | Статус |
+| `border-subtle` / `default` / `strong` | белый @ 6–14% | чёрный @ 6–14% | Разделители |
 
-Тема: **Dark по умолчанию**; в Settings заложены Dark / Light / Auto
-(Light-палитру уточнить отдельным pass, если Light не раскрашен в pen).
+Тема: **Auto по умолчанию**, в Settings → General переключатель
+System / Light / Dark. Реализовано 2026-08-20.
+
+Три значения здесь не те, что стояли в первой редакции, и каждое —
+следствие счёта, а не вкуса (спека
+`docs/superpowers/specs/2026-08-20-light-theme-and-honest-ui-design.md`):
+
+- **Акцент тёмной темы `#0A84FF`**, а не `#4A9FD8`: системный синий
+  Apple, о котором просил Epic 23.
+- **Акцент светлой `#0069D9`**, а не системный `#007AFF`: тот даёт на
+  белом 4.02:1, ниже порога 4.5:1 для обычного текста, а этим цветом
+  красятся подписи в 10–13 пунктов.
+- **Предупреждение светлой оранжевое.** Жёлтое `#FFD60A` на белом даёт
+  1.41:1 — надпись пропадает. Перенести статусные цвета тёмной темы как
+  есть нельзя: так падают пять из восьми, и это отрицательный контроль
+  теста `ThemeContrastTests`.
 
 ### 2.2 Типографика
 
-- Sans: **Inter** (в коде допустим SF Pro как системный fallback, если
-  Inter не бандлится — зафиксировать решение в ADR/UI kit).
+- Sans: **SF Pro** (системный). Решение 2026-08-20: предписание брать
+  Inter отменено — пользователю понравился ровно системный шрифт, а
+  Inter увёл бы от него и добавил файл в бандл.
 - Mono: **IBM Plex Mono** (latency, ids, timestamps).
 - Шкала: caption 10 · body-sm 12 · body 13 · body-lg 15 · title 17 ·
   headline 20 · large 28 · xlarge 34.
