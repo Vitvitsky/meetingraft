@@ -125,6 +125,14 @@ struct AppShellView: View {
         .onChange(of: presenceStore.minimizesMainWindow) { _, _ in
             applyPresence()
         }
+        .onChange(of: appearanceStore.preference) { _, _ in
+            // Накладка живёт вне иерархии SwiftUI: сама она о смене темы
+            // не узнает, её пересобирает тот же путь, что и всё остальное
+            // присутствие.
+            if overlay.isVisible {
+                applyPresence()
+            }
+        }
         .onChange(of: captionsViewModel.lines) { _, _ in
             // Содержимое накладки обновляется вместе с лентой.
             if overlay.isVisible {
@@ -181,7 +189,8 @@ struct AppShellView: View {
                     opacity: presenceStore.overlayOpacity
                 ) {
                     captionsViewModel.stopLive(capture: captureCoordinator)
-                }
+                },
+                preference: appearanceStore.preference
             )
         } else {
             overlay.hide()
