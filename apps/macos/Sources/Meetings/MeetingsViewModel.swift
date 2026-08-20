@@ -33,20 +33,9 @@ protocol MeetingsCoreProviding: AnyObject, Sendable {
     func setApiConfig(baseUrl: String, token: String)
     func setLlmConfig(engineCode: String, modelId: String, baseUrl: String, providerId: String)
     func generateArtifact(meetingId: String, kind: FfiArtifactKind) -> FfiGenerateArtifactResult
-    func submitBackendJob(meetingId: String, kindCode: String) -> FfiBackendJob
-    func getBackendJob(jobId: String) -> FfiBackendJob
-    func getBackendArtifact(artifactId: String) -> FfiBackendArtifact
 }
 
 extension MeetingCore: MeetingsCoreProviding {}
-
-enum BackendRefineStatus: String, Equatable {
-    case idle
-    case submitting
-    case polling
-    case succeeded
-    case failed
-}
 
 /// Presentation model локальной истории и post-call артефактов.
 @Observable
@@ -54,7 +43,7 @@ enum BackendRefineStatus: String, Equatable {
 final class MeetingsViewModel {
     private(set) var meetings: [FfiMeetingSummary] = []
     private(set) var captions: [FfiCaptionEvent] = []
-    /// Latest Final — Brief / Export / refine опираются только на него.
+    /// Latest Final — Brief и экспорт опираются только на него.
     private(set) var finalTranscript: FfiFinalTranscript?
     /// Все версии Final (новые первыми); UI picker / Compare.
     private(set) var finalVersions: [FfiFinalTranscript] = []
@@ -63,9 +52,6 @@ final class MeetingsViewModel {
     private(set) var artifacts: [FfiArtifact] = []
     private(set) var selectedArtifact: FfiArtifact?
     private(set) var errorMessage: String?
-    private(set) var backendJobStatus: BackendRefineStatus = .idle
-    private(set) var backendJobId = ""
-    private(set) var backendArtifactMarkdown = ""
     private(set) var isGeneratingArtifact = false
     private(set) var exportStatusMessage = ""
     /// Строка поиска; пустая — показываем полный список.
@@ -82,11 +68,8 @@ final class MeetingsViewModel {
     var filter: MeetingsFilter = .all
 
     private let core: any MeetingsCoreProviding
-    private var backendRefineTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
     private let searchDebounceNanoseconds: UInt64
-    private let maxPollAttempts: Int
-    private let pollDelayNanoseconds: UInt64
 
     /// Версия, которую сейчас показывает экран Final.
     ///
@@ -112,13 +95,9 @@ final class MeetingsViewModel {
 
     init(
         core: any MeetingsCoreProviding,
-        maxPollAttempts: Int = 20,
-        pollDelayNanoseconds: UInt64 = 250_000_000,
         searchDebounceNanoseconds: UInt64 = 200_000_000
     ) {
         self.core = core
-        self.maxPollAttempts = maxPollAttempts
-        self.pollDelayNanoseconds = pollDelayNanoseconds
         self.searchDebounceNanoseconds = searchDebounceNanoseconds
     }
 
@@ -364,107 +343,5 @@ final class MeetingsViewModel {
             exportStatusMessage = error.localizedDescription
             return .failure(MarkdownExportFailure(message: error.localizedDescription))
         }
-    }
-
-    func submitBackendRefine(meetingId: String) {
-        backendRefineTask?.cancel()
-        backendRefineTask = Task { @MainActor [weak self] in
-            await self?.performBackendRefine(meetingId: meetingId)
-        }
-    }
-
-    func resetBackendRefineSession() {
-        backendRefineTask?.cancel()
-        backendRefineTask = nil
-        backendJobStatus = .idle
-        backendJobId = ""
-        backendArtifactMarkdown = ""
-    }
-
-    func performBackendRefine(meetingId: String) async {
-        guard finalTranscript != nil else {
-            backendJobStatus = .failed
-            errorMessage = "Нужен Final transcript"
-            return
-        }
-
-        backendJobStatus = .submitting
-        backendArtifactMarkdown = ""
-        errorMessage = nil
-
-        let backgroundCore = core
-        let job = await offMainThread {
-            backgroundCore.submitBackendJob(meetingId: meetingId, kindCode: "refine")
-        }
-        if !job.error.isEmpty {
-            backendJobStatus = .failed
-            backendJobId = job.id
-            errorMessage = job.error
-            return
-        }
-        if job.status == "failed" {
-            backendJobStatus = .failed
-            backendJobId = job.id
-            errorMessage = job.error.isEmpty ? "Backend job failed" : job.error
-            return
-        }
-
-        backendJobId = job.id
-        var current = job
-
-        if current.status != "succeeded" {
-            backendJobStatus = .polling
-            var attempts = 0
-            while attempts < maxPollAttempts {
-                if Task.isCancelled {
-                    return
-                }
-                if pollDelayNanoseconds > 0 {
-                    try? await Task.sleep(nanoseconds: pollDelayNanoseconds)
-                }
-                if Task.isCancelled {
-                    return
-                }
-                let jobId = current.id
-                current = await offMainThread { backgroundCore.getBackendJob(jobId: jobId) }
-                if !current.error.isEmpty {
-                    backendJobStatus = .failed
-                    errorMessage = current.error
-                    return
-                }
-                if current.status == "failed" {
-                    backendJobStatus = .failed
-                    errorMessage = current.error.isEmpty ? "Backend job failed" : current.error
-                    return
-                }
-                if current.status == "succeeded" {
-                    break
-                }
-                attempts += 1
-            }
-            if current.status != "succeeded" {
-                backendJobStatus = .failed
-                errorMessage = "Backend job timeout"
-                return
-            }
-        }
-
-        guard let artifactId = current.artifactIds.first else {
-            backendJobStatus = .failed
-            errorMessage = "Backend job has no artifacts"
-            return
-        }
-
-        let artifact = await offMainThread {
-            backgroundCore.getBackendArtifact(artifactId: artifactId)
-        }
-        if !artifact.error.isEmpty {
-            backendJobStatus = .failed
-            errorMessage = artifact.error
-            return
-        }
-
-        backendArtifactMarkdown = artifact.bodyMarkdown
-        backendJobStatus = .succeeded
     }
 }

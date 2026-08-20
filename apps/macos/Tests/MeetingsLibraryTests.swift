@@ -264,16 +264,4 @@ private final class LibraryCoreSpy: MeetingsCoreProviding, @unchecked Sendable {
             error: ""
         )
     }
-
-    func submitBackendJob(meetingId _: String, kindCode _: String) -> FfiBackendJob {
-        FfiBackendJob(id: "", meetingId: "", kind: "", status: "", error: "", artifactIds: [])
-    }
-
-    func getBackendJob(jobId _: String) -> FfiBackendJob {
-        FfiBackendJob(id: "", meetingId: "", kind: "", status: "", error: "", artifactIds: [])
-    }
-
-    func getBackendArtifact(artifactId _: String) -> FfiBackendArtifact {
-        FfiBackendArtifact(id: "", kind: "", bodyMarkdown: "", createdAt: "", error: "")
-    }
 }
