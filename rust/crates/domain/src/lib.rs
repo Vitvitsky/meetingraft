@@ -12,7 +12,9 @@ mod speaker;
 pub use audio::AudioChannel;
 pub use caption::{CaptionEvent, CaptionPhase};
 pub use diagnostics::{SttDiagnostic, SttDiagnosticKind};
-pub use glossary::{GlossaryKind, GlossaryScope, GlossaryTerm};
+pub use glossary::{
+    CandidateExample, CandidateRule, GlossaryKind, GlossaryScope, GlossaryTerm, TermCandidate,
+};
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use postcall::{
     Artifact, ArtifactKind, EditOrigin, EditPosition, FinalSegment, FinalTranscript,
