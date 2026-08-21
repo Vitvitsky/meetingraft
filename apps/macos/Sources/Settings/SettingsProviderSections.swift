@@ -465,7 +465,7 @@ struct VoiceMemorySection: View {
                 // принимает `String.LocalizationValue`, и та строится
                 // только из литерала. Склеенное `+` — уже `String`, и
                 // компилятор отказывается молча его принять.
-                caption: String(localized: "Приложение сохранит на этом Маке слепок голоса каждого, кого вы назвали, и будет узнавать его в следующих записях. Слепок остаётся, даже если запись удалить.")
+                caption: String(localized: "The app stores a voiceprint on this Mac for everyone you name and recognises them in later recordings. The print stays even if the recording is deleted.")
             ) {
                 Toggle(
                     "",
@@ -478,7 +478,7 @@ struct VoiceMemorySection: View {
             }
 
             if model.voiceMemoryEnabled {
-                Text("Выключение забудет всех: слепки удаляются вместе с признаком.")
+                Text("Turning this off forgets everyone: the voiceprints go with it.")
                     .font(Theme.Text.bodySmall)
                     .foregroundStyle(Theme.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -491,7 +491,7 @@ struct VoiceMemorySection: View {
             } else if model.voiceMemoryEnabled {
                 // Пусто — это состояние, а не ошибка: голоса запоминаются
                 // по одному, кнопкой на вкладке Speakers.
-                Text("Никого пока не запомнено. Голос запоминается кнопкой у участника встречи.")
+                Text("Nobody is remembered yet. A voice is remembered from the button next to a participant.")
                     .font(Theme.Text.bodySmall)
                     .foregroundStyle(Theme.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -530,7 +530,7 @@ struct VoiceMemorySection: View {
                 model.forgetVoice(id: voice.id)
             }
             .buttonStyle(.themedSecondary)
-            .help("Удалить слепок голоса этого человека")
+            .help("Delete this person's voiceprint")
         }
         .padding(.vertical, Theme.Space.xxs)
     }

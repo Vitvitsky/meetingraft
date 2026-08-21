@@ -187,10 +187,10 @@ private struct FinalSegmentRow: View {
                     .contentShape(Rectangle())
                     .onTapGesture(perform: onBeginEdit)
                     .onHover { isHovered = $0 }
-                    .help("Нажмите, чтобы поправить текст реплики")
+                    .help("Click to edit the text of this line")
                 }
                 if segment.textEdited, !isEditing {
-                    Text("было: \(segment.originalText)")
+                    Text("was: \(segment.originalText)")
                         .font(Theme.Text.caption)
                         .foregroundStyle(Theme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -205,11 +205,11 @@ private struct FinalSegmentRow: View {
     private var editingBar: some View {
         HStack(spacing: Theme.Space.sm) {
             if !segment.originalText.isEmpty {
-                Button("Вернуть исходное", action: onRevert)
+                Button("Restore original", action: onRevert)
                     .buttonStyle(.themedSecondary)
             }
             if canPromote {
-                Button("Заменять всюду") { isConfirmingPromote = true }
+                Button("Replace everywhere") { isConfirmingPromote = true }
                     .buttonStyle(.themedSecondary)
             }
             Spacer()
@@ -220,8 +220,8 @@ private struct FinalSegmentRow: View {
             isPresented: $isConfirmingPromote,
             titleVisibility: .visible
         ) {
-            Button("Заменять всюду", role: .destructive, action: onPromote)
-            Button("Отмена", role: .cancel) {}
+            Button("Replace everywhere", role: .destructive, action: onPromote)
+            Button("Cancel", role: .cancel) {}
         } message: {
             Text(
                 "Все совпадения в этой встрече будут заменены. "
@@ -280,7 +280,7 @@ private struct FinalSegmentRow: View {
                 }
                 if segment.source == .human {
                     Divider()
-                    Button("Вернуть под дорожку") { onUnpin() }
+                    Button("Back to the channel") { onUnpin() }
                 }
             } label: {
                 Text(speakerLabel)

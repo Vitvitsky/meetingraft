@@ -222,6 +222,40 @@
         }
       }
     },
+    "Assigning by channel becomes available after Final is rebuilt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Assigning by channel becomes available after Final is rebuilt"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Назначение по дорожкам доступно после пересбора Final"
+          }
+        }
+      }
+    },
+    "Audio": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Звук"
+          }
+        }
+      }
+    },
     "Audio, captions and transcripts stay on this Mac. Deleting a meeting removes all of it.": {
       "extractionState": "manual",
       "localizations": {
@@ -273,6 +307,23 @@
         }
       }
     },
+    "Back to the channel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Back to the channel"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Вернуть под дорожку"
+          }
+        }
+      }
+    },
     "Backend": {
       "extractionState": "manual",
       "localizations": {
@@ -320,6 +371,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Дорожки остаются раздельными на всём пути: после встречи известно, кто говорил, живой путь оценивает по громкости."
+          }
+        }
+      }
+    },
+    "Built before the transcript was edited": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built before the transcript was edited"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Собран до правок транскрипта"
           }
         }
       }
@@ -392,6 +460,23 @@
         }
       }
     },
+    "Choose a folder and export": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a folder and export"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выбрать папку и экспортировать"
+          }
+        }
+      }
+    },
     "Choose folder…": {
       "extractionState": "manual",
       "localizations": {
@@ -443,6 +528,23 @@
         }
       }
     },
+    "Click to edit the text of this line": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click to edit the text of this line"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нажмите, чтобы поправить текст реплики"
+          }
+        }
+      }
+    },
     "Copy": {
       "extractionState": "manual",
       "localizations": {
@@ -456,6 +558,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Скопировать"
+          }
+        }
+      }
+    },
+    "Copy text": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy text"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скопировать текст"
           }
         }
       }
@@ -528,6 +647,57 @@
         }
       }
     },
+    "Delete edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete edit"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Удалить правку"
+          }
+        }
+      }
+    },
+    "Delete recording": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete recording"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Удалить запись"
+          }
+        }
+      }
+    },
+    "Delete the participant and unassign every line": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete the participant and unassign every line"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Удалить участника и снять его со всех реплик"
+          }
+        }
+      }
+    },
     "Delete these recordings?": {
       "extractionState": "manual",
       "localizations": {
@@ -541,6 +711,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Удалить эти записи?"
+          }
+        }
+      }
+    },
+    "Delete this person's voiceprint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete this person's voiceprint"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Удалить слепок голоса этого человека"
           }
         }
       }
@@ -817,6 +1004,23 @@
         }
       }
     },
+    "Final version": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Final version"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Версия Final"
+          }
+        }
+      }
+    },
     "Finished recordings show up here": {
       "extractionState": "manual",
       "localizations": {
@@ -1034,6 +1238,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Установленные модели"
+          }
+        }
+      }
+    },
+    "Label every line on the %@ channel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Label every line on the %@ channel"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подписать все реплики дорожки %@"
           }
         }
       }
@@ -1361,6 +1582,23 @@
         }
       }
     },
+    "Nobody is remembered yet. A voice is remembered from the button next to a participant.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nobody is remembered yet. A voice is remembered from the button next to a participant."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Никого пока не запомнено. Голос запоминается кнопкой у участника встречи."
+          }
+        }
+      }
+    },
     "Not recording": {
       "extractionState": "manual",
       "localizations": {
@@ -1565,6 +1803,23 @@
         }
       }
     },
+    "Participant name — click to edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Participant name — click to edit"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Имя участника: нажмите, чтобы поправить"
+          }
+        }
+      }
+    },
     "Pick another scope": {
       "extractionState": "manual",
       "localizations": {
@@ -1595,6 +1850,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Движок-заглушка — модель не установлена"
+          }
+        }
+      }
+    },
+    "Play the line — a name is usually recognised by ear": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play the line — a name is usually recognised by ear"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Послушать реплику — имя обычно определяют на слух"
           }
         }
       }
@@ -1714,6 +1986,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Выйти"
+          }
+        }
+      }
+    },
+    "Re-transcribe the stored audio with a larger model": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-transcribe the stored audio with a larger model"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторно распознать сохранённое аудио большой моделью"
+          }
+        }
+      }
+    },
+    "Rebuild": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rebuild"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пересобрать"
           }
         }
       }
@@ -1871,6 +2177,23 @@
         }
       }
     },
+    "Remember this voice: the app will recognise this person in later meetings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remember this voice: the app will recognise this person in later meetings"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Запомнить голос: приложение узнает этого человека в следующих встречах"
+          }
+        }
+      }
+    },
     "Remember voices between meetings": {
       "extractionState": "manual",
       "localizations": {
@@ -1918,6 +2241,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Переименовать встречу"
+          }
+        }
+      }
+    },
+    "Replace everywhere": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replace everywhere"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Заменять всюду"
+          }
+        }
+      }
+    },
+    "Restore original": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restore original"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Вернуть исходное"
           }
         }
       }
@@ -2024,6 +2381,23 @@
         }
       }
     },
+    "Section": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Section"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Раздел"
+          }
+        }
+      }
+    },
     "Service URL": {
       "extractionState": "manual",
       "localizations": {
@@ -2058,6 +2432,23 @@
         }
       }
     },
+    "Skipped: ": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skipped: "
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пропущено: "
+          }
+        }
+      }
+    },
     "Speech models": {
       "extractionState": "manual",
       "localizations": {
@@ -2088,6 +2479,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Распознавание речи"
+          }
+        }
+      }
+    },
+    "Split by voice": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Split by voice"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Разнести по голосам"
           }
         }
       }
@@ -2296,6 +2704,23 @@
         }
       }
     },
+    "The app stores a voiceprint on this Mac for everyone you name and recognises them in later recordings. The print stays even if the recording is deleted.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The app stores a voiceprint on this Mac for everyone you name and recognises them in later recordings. The print stays even if the recording is deleted."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Приложение сохранит на этом Маке слепок голоса каждого, кого вы назвали, и будет узнавать его в следующих записях. Слепок остаётся, даже если запись удалить."
+          }
+        }
+      }
+    },
     "This Mac cannot capture system audio; only your voice is recorded.": {
       "extractionState": "manual",
       "localizations": {
@@ -2466,6 +2891,40 @@
         }
       }
     },
+    "Turning this off forgets everyone: the voiceprints go with it.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning this off forgets everyone: the voiceprints go with it."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выключение забудет всех: слепки удаляются вместе с признаком."
+          }
+        }
+      }
+    },
+    "Unnamed · %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unnamed · %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Без имени · %lld"
+          }
+        }
+      }
+    },
     "Untitled": {
       "extractionState": "manual",
       "localizations": {
@@ -2619,6 +3078,40 @@
         }
       }
     },
+    "now: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "now: %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "стало: %@"
+          }
+        }
+      }
+    },
+    "was: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "was: %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "было: %@"
+          }
+        }
+      }
+    },
     "~%@ MB": {
       "extractionState": "manual",
       "localizations": {
@@ -2632,6 +3125,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "~%@ МБ"
+          }
+        }
+      }
+    },
+    "▶ Play": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "▶ Play"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "▶ Прослушать"
           }
         }
       }

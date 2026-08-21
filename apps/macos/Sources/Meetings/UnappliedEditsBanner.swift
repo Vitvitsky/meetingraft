@@ -65,23 +65,23 @@ struct UnappliedEditsBanner: View {
             }
             .foregroundStyle(Theme.textTertiary)
 
-            Text("было: \(edit.originalText)")
+            Text("was: \(edit.originalText)")
                 .font(Theme.Text.bodySmall)
                 .foregroundStyle(Theme.textTertiary)
-            Text("стало: \(edit.editedText)")
+            Text("now: \(edit.editedText)")
                 .font(Theme.Text.bodySmall)
                 .foregroundStyle(Theme.textPrimary)
 
             HStack(spacing: Theme.Space.xs) {
-                Button("▶ Прослушать") { onPlay(edit) }
+                Button("▶ Play") { onPlay(edit) }
                     .buttonStyle(.themedSecondary)
                 // Перенести правку на место нельзя: `originalText` служит
                 // и поиском при пересборе, и признаком возврата к
                 // исходному. Поэтому копируем текст, а правится нужный
                 // сегмент обычным путём.
-                Button("Скопировать текст") { onCopy(edit) }
+                Button("Copy text") { onCopy(edit) }
                     .buttonStyle(.themedSecondary)
-                Button("Удалить правку") { onDismiss(edit) }
+                Button("Delete edit") { onDismiss(edit) }
                     .buttonStyle(.themedSecondary)
                 Spacer()
             }

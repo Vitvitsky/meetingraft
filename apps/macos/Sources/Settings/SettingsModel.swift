@@ -176,7 +176,7 @@ final class SettingsModel {
         if !result.skipped.isEmpty {
             // Пропуски называются вслух: молчание сделало бы число
             // удалённых враньём.
-            report += "\n" + String(localized: "Пропущено: ") + result.skipped.joined(separator: ", ")
+            report += "\n" + String(localized: "Skipped: ") + result.skipped.joined(separator: ", ")
         }
         audioSweepReport = report
         previewAudioSweep()

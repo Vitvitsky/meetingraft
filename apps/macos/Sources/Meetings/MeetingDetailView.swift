@@ -23,7 +23,7 @@ struct MeetingDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Раздел", selection: $section) {
+            Picker("Section", selection: $section) {
                 ForEach(MeetingDetailSection.allCases) { section in
                     Text(section.title).tag(section)
                 }
@@ -95,10 +95,10 @@ struct MeetingDetailView: View {
             isPresented: $confirmingAudioDeletion,
             titleVisibility: .visible
         ) {
-            Button("Удалить запись", role: .destructive) {
+            Button("Delete recording", role: .destructive) {
                 viewModel.deleteAudio(meetingId: meeting.id)
             }
-            Button("Отмена", role: .cancel) {}
+            Button("Cancel", role: .cancel) {}
         } message: {
             Text(
                 "Транскрипт, правки и артефакты останутся. "
@@ -160,7 +160,7 @@ struct MeetingDetailView: View {
                         .font(Theme.Text.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Удалить запись") { confirmingAudioDeletion = true }
+                    Button("Delete recording") { confirmingAudioDeletion = true }
                         .buttonStyle(.link)
                 }
             }
@@ -306,7 +306,7 @@ struct MeetingDetailView: View {
                 Button("Rebuild Final", systemImage: "arrow.clockwise") {
                     rebuild.start(meetingId: meeting.id)
                 }
-                .help("Повторно распознать сохранённое аудио большой моделью")
+                .help("Re-transcribe the stored audio with a larger model")
             }
             if !rebuild.statusText.isEmpty {
                 Text(rebuild.statusText)
@@ -365,7 +365,7 @@ struct MeetingDetailView: View {
     }
 
     private var finalVersionPicker: some View {
-        Picker("Версия Final", selection: $viewModel.selectedFinalVersion) {
+        Picker("Final version", selection: $viewModel.selectedFinalVersion) {
             ForEach(viewModel.finalVersions, id: \.version) { transcript in
                 Text(finalVersionLabel(transcript)).tag(Optional(transcript.version))
             }
@@ -411,7 +411,7 @@ struct MeetingDetailView: View {
                 Button("Choose folder…") {
                     chooseExportFolderAndExport()
                 }
-                .help("Выбрать папку и экспортировать")
+                .help("Choose a folder and export")
                 .disabled(viewModel.finalTranscript == nil)
                 // Генерация больше не морозит окно, поэтому ожидание надо
                 // показать: иначе нажатие выглядит как ничего не сделавшее.
@@ -462,7 +462,7 @@ struct MeetingDetailView: View {
                                     Image(systemName: "exclamationmark.triangle.fill")
                                         .font(.caption)
                                         .foregroundStyle(Theme.warning)
-                                        .help("Собран до правок транскрипта")
+                                        .help("Built before the transcript was edited")
                                 }
                             }
                             Text(artifactDate(artifact.createdAtMs))
@@ -586,14 +586,14 @@ struct MeetingDetailView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(Theme.warning)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Собран до правок транскрипта")
+                Text("Built before the transcript was edited")
                     .font(.caption.weight(.semibold))
                 Text(stalenessDetail(artifact))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Пересобрать") {
+            Button("Rebuild") {
                 applyProviderConfig()
                 Task { await viewModel.generate(meetingId: meeting.id, kind: artifact.kind) }
             }

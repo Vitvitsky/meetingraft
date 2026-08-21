@@ -86,7 +86,7 @@ struct SpeakersPanelView: View {
                 .listRowSeparator(.hidden)
             }
         } header: {
-            Text("Без имени · \(viewModel.unidentifiedSegments.count)")
+            Text("Unnamed · \(viewModel.unidentifiedSegments.count)")
                 .font(Theme.Text.bodySmall.weight(.semibold))
                 .foregroundStyle(Theme.textSecondary)
         } footer: {
@@ -107,7 +107,7 @@ struct SpeakersPanelView: View {
                 channelMenu(code: "mic")
                 channelMenu(code: "system")
             } else {
-                Text("Назначение по дорожкам доступно после пересбора Final")
+                Text("Assigning by channel becomes available after Final is rebuilt")
                     .font(Theme.Text.bodySmall)
                     .foregroundStyle(Theme.textTertiary)
             }
@@ -139,7 +139,7 @@ struct SpeakersPanelView: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .disabled(viewModel.speakers.isEmpty)
-        .help("Подписать все реплики дорожки \(SpeakerFormat.channelLabel(code))")
+        .help("Label every line on the \(SpeakerFormat.channelLabel(code)) channel")
     }
 }
 
@@ -155,7 +155,7 @@ private struct VoicePrintBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xxs) {
             HStack(spacing: Theme.Space.sm) {
-                Button("Разнести по голосам", systemImage: "waveform.badge.person") {
+                Button("Split by voice", systemImage: "waveform.badge.person") {
                     viewModel.recomputeVoicePrints()
                 }
                 .disabled(!viewModel.canRecomputeVoicePrints)
@@ -234,7 +234,7 @@ private struct UnidentifiedReplyRow: View {
                     }
                     .buttonStyle(.borderless)
                     .foregroundStyle(isPlaying ? Theme.accent : Theme.textTertiary)
-                    .help("Послушать реплику — имя обычно определяют на слух")
+                    .help("Play the line — a name is usually recognised by ear")
                     .accessibilityLabel(isPlaying ? "Остановить" : "Прослушать реплику")
                 }
             }
@@ -342,7 +342,7 @@ private struct SpeakerStatRow: View {
                             .opacity(isFieldFocused || isHovered ? 1 : 0)
                     )
                     .onHover { isHovered = $0 }
-                    .help("Имя участника: нажмите, чтобы поправить")
+                    .help("Participant name — click to edit")
                     .focused($isFieldFocused)
                     // Enter сохраняет, уход фокуса — тоже, как и при
                     // правке реплики. Без второго набранное имя не
@@ -391,7 +391,7 @@ private struct SpeakerStatRow: View {
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
-                .help("Запомнить голос: приложение узнает этого человека в следующих встречах")
+                .help("Remember this voice: the app will recognise this person in later meetings")
             }
 
             Button("Delete", systemImage: "trash", role: .destructive) {
@@ -399,7 +399,7 @@ private struct SpeakerStatRow: View {
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
-            .help("Удалить участника и снять его со всех реплик")
+            .help("Delete the participant and unassign every line")
         }
         .padding(.vertical, Theme.Space.xxs)
         .onChange(of: row.displayName) { _, newValue in
