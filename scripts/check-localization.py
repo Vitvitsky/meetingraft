@@ -111,6 +111,31 @@ def string_literals(line: str) -> list[tuple[int, str]]:
     return out
 
 
+INTERPOLATION = re.compile(r"\\\((?:[^()]|\([^()]*\))*\)")
+# Имена и обёртки, по которым подстановка считается числовой.
+#
+# Тип из текста не выводится, и это лучшая доступная догадка. Цена
+# ошибки известна и невелика: ключ не совпадёт с каталогом, и строка
+# покажется по-английски. Несовпадение Xcode назовёт при сборке.
+NUMERIC_HINTS = re.compile(
+    r"\b(?:Int|count|number|samples|seconds|months|statusCode|version|prints|"
+    r"signed|cleared|unknown|imported|skipped|deletedCount|labelled|candidates)\b"
+)
+
+
+def catalog_key(literal: str) -> str:
+    r"""Литерал в том виде, в каком ключом его увидит Xcode.
+
+    `Text("Meeting \(stamp)")` даёт ключ `Meeting %@`, а не текст
+    исходника. Без этой нормализации проверка полноты каталога врала бы
+    ровно на строках с подстановкой — там, где ошибиться проще всего.
+    """
+    return INTERPOLATION.sub(
+        lambda match: "%lld" if NUMERIC_HINTS.search(match.group(0)) else "%@",
+        literal,
+    )
+
+
 def swift_files() -> list[Path]:
     return sorted(SOURCES.rglob("*.swift"))
 
@@ -142,7 +167,7 @@ def scan() -> tuple[dict[str, list[str]], list[str], set[str]]:
                     continue
                 kind = key_kind(line[:start])
                 if kind is not None:
-                    keys.setdefault(literal, []).append(f"{rel}:{number}")
+                    keys.setdefault(catalog_key(literal), []).append(f"{rel}:{number}")
                 if CYRILLIC.search(literal):
                     if allowed:
                         used_allowances.add(rel)
@@ -262,15 +287,16 @@ def main() -> int:
     else:
         print("[4] ок — у каждого ключа есть русский перевод")
 
-    # Отдельным списком — строки с числом внутри. Не провал: прибор не
-    # знает, согласуется ли число, но человек обязан на них посмотреть.
-    numeric = sorted(
-        key for key in keys if re.search(r"\\\((?:[^)]*\b(?:count|number|samples|seconds)\b[^)]*)\)", key)
-    )
-    if numeric:
-        print(f"\n  строк с числом внутри: {len(numeric)} — проверить формы вручную")
-        for key in numeric[:20]:
+    # Отдельным списком — ключи с подстановкой. Не провал: спецификатор
+    # выведен догадкой по имени переменной, и подтвердить его может
+    # только сборка на Маке.
+    interpolated = sorted(key for key in keys if "%" in key)
+    if interpolated:
+        print(f"\n  ключей с подстановкой: {len(interpolated)} — спецификатор проверяется сборкой")
+        for key in interpolated[:15]:
             print(f"      «{key}»")
+        if len(interpolated) > 15:
+            print(f"      … ещё {len(interpolated) - 15}")
 
     if failures:
         print("\nПровалов: " + str(len(failures)))
