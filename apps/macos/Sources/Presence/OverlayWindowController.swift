@@ -18,11 +18,23 @@ final class OverlayWindowController {
         panel?.isVisible ?? false
     }
 
+    /// Тема панели. `nil` — панель идёт за темой приложения.
+    var panelAppearanceName: NSAppearance.Name? {
+        panel?.appearance?.name
+    }
+
     /// Показать накладку с новым содержимым; повторный вызов обновляет
     /// уже открытую панель, а не создаёт вторую.
-    func show(content: some View) {
+    ///
+    /// Тема передаётся явно: панель живёт вне иерархии SwiftUI, и
+    /// `preferredColorScheme` до неё не доходит. Забыть об этом — значит
+    /// получить тёмную плашку поверх светлого приложения, причём именно в
+    /// том сценарии, ради которого накладка и существует: главное окно
+    /// свёрнуто, видна только она.
+    func show(content: some View, preference: AppearancePreference) {
         let hosting = NSHostingView(rootView: AnyView(content))
         if let panel {
+            panel.appearance = Self.appearance(for: preference)
             panel.contentView = hosting
             panel.orderFrontRegardless()
             return
@@ -35,6 +47,7 @@ final class OverlayWindowController {
             defer: false
         )
         panel.level = .floating
+        panel.appearance = Self.appearance(for: preference)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -75,6 +88,14 @@ final class OverlayWindowController {
         self.hiddenWindow = nil
         if hiddenWindow.isMiniaturized {
             hiddenWindow.deminiaturize(nil)
+        }
+    }
+
+    private static func appearance(for preference: AppearancePreference) -> NSAppearance? {
+        switch preference {
+        case .auto: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
         }
     }
 

@@ -1412,3 +1412,77 @@ swift scripts/ax-probe.swift watch 120
 И отдельно — сколько стоит опрос: `watch` держит 250 мс, а это четыре
 обхода дерева в секунду на всё время встречи. Замер ваттметром по образцу
 Epic 18, иначе атрибуция окажется дороже диаризации, от которой уходили.
+
+## Тема и контраст (Epic 23)
+
+Написано 2026-08-20 на Linux-машине, где Swift не собирается вовсе. Всё
+ниже — первый прогон, а не перепроверка.
+
+### Шаг 1 — тесты
+
+```
+cd apps/macos
+xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft \
+  -only-testing:MeetingRaftTests/ThemeTests \
+  -only-testing:MeetingRaftTests/ThemeContrastTests \
+  -only-testing:MeetingRaftTests/AppearanceSettingsStoreTests \
+  -only-testing:MeetingRaftTests/OverlayAppearanceTests \
+  test CODE_SIGNING_ALLOWED=NO
+```
+
+Ожидается зелёное. Худшая пара в светлой палитре — вторичный текст на
+`surface`, 4.66:1.
+
+Если падает `ThemeTests` на разрешении цвета — вероятная причина не
+палитра, а `performAsCurrentDrawingAppearance`: динамический `NSColor`
+вне назначенной темы разрешается по теме приложения, и тогда обе
+проверки вернут одно и то же значение. Признак именно этого:
+`testSurfaceRootDiffersBetweenAppearances` падает, а
+`testHexInitParsesChannelsInOrder` проходит.
+
+### Шаг 2 — отрицательный контроль. Обязателен
+
+Зелёный тест контраста сам по себе не значит ничего. Временно, **без
+коммита**, подменить пять светлых значений в `Theme.swift` на
+перенесённые из тёмной темы как есть:
+
+```swift
+    static let textTertiary = dynamic(light: 0x8E8E93, dark: 0x6E6E73)
+    static let success = dynamic(light: 0x30D158, dark: 0x30D158)
+    static let warning = dynamic(light: 0xFFD60A, dark: 0xFFD60A)
+    static let error = dynamic(light: 0xFF453A, dark: 0xFF453A)
+    static let info = dynamic(light: 0x64D2FF, dark: 0x64D2FF)
+```
+
+`testLightPaletteMeetsContrastFloors` обязан покраснеть **ровно на
+пяти**, с числами: третичный 3.26 на белом, успех 2.02, предупреждение
+1.41, ошибка 3.41, инфо 1.72. `testDarkPaletteMeetsContrastFloors`
+обязан остаться зелёным — иначе тест ловит не тему, а что-то другое.
+
+Числа посчитаны до написания теста. Расхождение означает, что тема при
+разрешении цвета не назначается, и разбираться надо с тестом, а не с
+палитрой.
+
+Откат: `git checkout apps/macos/Sources/DesignSystem/Theme.swift`.
+
+### Шаг 3 — глазами, три поверхности
+
+Settings → General → Appearance, переключить System → Light → Dark.
+Проверить **все три**, потому что тема до них доходит тремя разными
+путями:
+
+1. **главное окно** — `preferredColorScheme` из хранилища;
+2. **окно настроек** — то же, но это отдельная сцена;
+3. **накладка субтитров поверх встречи** — `NSPanel`, до которого
+   `preferredColorScheme` не доходит вовсе, и тема ставится ему явно.
+   Начать запись, свернуть окно, переключить тему **во время записи**:
+   панель обязана перекраситься не дожидаясь новой реплики.
+
+При `System` — переключить тему в Системных настройках при запущенном
+приложении и убедиться, что оно идёт следом.
+
+### Шаг 4 — заглушка убрана
+
+Открыть встречу → Artifacts. Кнопки `Submit refine (stub)` нет, панели
+`Backend refine (stub)` нет. `Generate Brief` и `Generate Follow-up` на
+месте и работают.

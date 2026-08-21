@@ -16,6 +16,7 @@ struct AppShellView: View {
     @State private var modelBootstrap = FirstRunModelBootstrap()
     @State private var overlay = OverlayWindowController()
     @Environment(PresenceSettingsStore.self) private var presenceStore
+    @Environment(AppearanceSettingsStore.self) private var appearanceStore
     @Environment(RecordingBridge.self) private var recordingBridge
     private let core: MeetingCore
 
@@ -55,13 +56,12 @@ struct AppShellView: View {
             }
         }
         // Оболочка окна переведена на токены (ТЗ редизайна, D1, шаг 3).
-        // Тема принудительно тёмная: светлая палитра вынесена за скобки,
-        // и смешение с системной светлой дало бы нечитаемый контраст.
+        // Тема идёт из настроек; `nil` означает системную.
         .background(Theme.surfaceRoot)
         // Минимум окна: без него его можно сжать так, что управлению
         // внизу экрана просто некуда поместиться.
         .frame(minWidth: 880, minHeight: 560)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(appearanceStore.colorScheme)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Picker("Language", selection: Bindable(languageStore).primary) {
@@ -125,6 +125,14 @@ struct AppShellView: View {
         .onChange(of: presenceStore.minimizesMainWindow) { _, _ in
             applyPresence()
         }
+        .onChange(of: appearanceStore.preference) { _, _ in
+            // Накладка живёт вне иерархии SwiftUI: сама она о смене темы
+            // не узнает, её пересобирает тот же путь, что и всё остальное
+            // присутствие.
+            if overlay.isVisible {
+                applyPresence()
+            }
+        }
         .onChange(of: captionsViewModel.lines) { _, _ in
             // Содержимое накладки обновляется вместе с лентой.
             if overlay.isVisible {
@@ -181,7 +189,8 @@ struct AppShellView: View {
                     opacity: presenceStore.overlayOpacity
                 ) {
                     captionsViewModel.stopLive(capture: captureCoordinator)
-                }
+                },
+                preference: appearanceStore.preference
             )
         } else {
             overlay.hide()

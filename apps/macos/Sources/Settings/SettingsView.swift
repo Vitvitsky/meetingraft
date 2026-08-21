@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Environment(SessionLanguageStore.self) private var languageStore
     @Environment(TranslationSettingsStore.self) private var translationStore
     @Environment(ProviderSettingsStore.self) private var providerStore
+    @Environment(AppearanceSettingsStore.self) private var appearanceStore
 
     @State private var selection: SettingsSection = .general
     @State private var model = SettingsModel()
@@ -36,7 +37,7 @@ struct SettingsView: View {
             .navigationTitle(selection.title)
         }
         .frame(minWidth: 720, minHeight: 520)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(appearanceStore.colorScheme)
         .onAppear {
             model.load(providerStore: providerStore)
         }

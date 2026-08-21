@@ -48,6 +48,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
 struct GeneralSettingsSection: View {
     @Environment(SessionLanguageStore.self) private var languageStore
     @Environment(PresenceSettingsStore.self) private var presenceStore
+    @Environment(AppearanceSettingsStore.self) private var appearanceStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.md) {
@@ -58,6 +59,21 @@ struct GeneralSettingsSection: View {
                 Picker("", selection: Bindable(languageStore).primary) {
                     ForEach(languageStore.allowed) { language in
                         Text(language.displayName).tag(language)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 160)
+            }
+
+            Divider().overlay(Theme.borderSubtle)
+
+            SettingsRow(
+                title: String(localized: "Appearance"),
+                caption: String(localized: "System follows the macOS setting.")
+            ) {
+                Picker("", selection: Bindable(appearanceStore).preference) {
+                    ForEach(AppearancePreference.allCases) { option in
+                        Text(option.title).tag(option)
                     }
                 }
                 .labelsHidden()

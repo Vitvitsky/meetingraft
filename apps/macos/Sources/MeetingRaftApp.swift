@@ -7,6 +7,7 @@ struct MeetingRaftApp: App {
     @State private var translationStore = TranslationSettingsStore()
     @State private var providerStore = ProviderSettingsStore()
     @State private var presenceStore = PresenceSettingsStore()
+    @State private var appearanceStore = AppearanceSettingsStore()
     @State private var detector = MeetingDetector()
     /// Общее состояние записи для строки меню: сама запись живёт в
     /// координаторе внутри окна, сюда попадает только флаг.
@@ -19,6 +20,7 @@ struct MeetingRaftApp: App {
                 .environment(translationStore)
                 .environment(providerStore)
                 .environment(presenceStore)
+                .environment(appearanceStore)
                 .environment(recordingBridge)
                 .task {
                     detector.start()
@@ -50,6 +52,7 @@ struct MeetingRaftApp: App {
                 .environment(translationStore)
                 .environment(providerStore)
                 .environment(presenceStore)
+                .environment(appearanceStore)
         }
     }
 }

@@ -160,152 +160,6 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertEqual(core.listMeetingsCallCount, 0)
     }
 
-    func testSubmitBackendRefineHappyPathImmediateSuccess() async {
-        let transcript = makeTranscript(meetingId: "meeting-1")
-        let local = makeArtifact(id: "local-1", meetingId: "meeting-1")
-        let core = MeetingsCoreSpy(finalTranscript: transcript, artifacts: [local])
-        core.submitJobResult = FfiBackendJob(
-            id: "job-1",
-            meetingId: "meeting-1",
-            kind: "refine",
-            status: "succeeded",
-            error: "",
-            artifactIds: ["art-b1"]
-        )
-        core.getArtifactResult = FfiBackendArtifact(
-            id: "art-b1",
-            kind: "refine",
-            bodyMarkdown: "# Stub refine",
-            createdAt: "2026-08-02T00:00:00Z",
-            error: ""
-        )
-        let viewModel = MeetingsViewModel(core: core, maxPollAttempts: 20, pollDelayNanoseconds: 0)
-        viewModel.reload(meetingId: "meeting-1")
-
-        await viewModel.performBackendRefine(meetingId: "meeting-1")
-
-        XCTAssertEqual(viewModel.backendJobStatus, .succeeded)
-        XCTAssertEqual(viewModel.backendJobId, "job-1")
-        XCTAssertEqual(viewModel.backendArtifactMarkdown, "# Stub refine")
-        XCTAssertEqual(viewModel.artifacts, [local])
-        XCTAssertEqual(core.submitBackendJobCallCount, 1)
-        XCTAssertEqual(core.getBackendArtifactCallCount, 1)
-        XCTAssertEqual(core.getBackendJobCallCount, 0)
-        XCTAssertNil(viewModel.errorMessage)
-    }
-
-    func testReloadMeetingPreservesBackendRefineSessionState() async {
-        let transcript = makeTranscript(meetingId: "meeting-1")
-        let local = makeArtifact(id: "local-1", meetingId: "meeting-1")
-        let core = MeetingsCoreSpy(finalTranscript: transcript, artifacts: [local])
-        core.submitJobResult = FfiBackendJob(
-            id: "job-1",
-            meetingId: "meeting-1",
-            kind: "refine",
-            status: "succeeded",
-            error: "",
-            artifactIds: ["art-b1"]
-        )
-        core.getArtifactResult = FfiBackendArtifact(
-            id: "art-b1",
-            kind: "refine",
-            bodyMarkdown: "# Stub refine",
-            createdAt: "2026-08-02T00:00:00Z",
-            error: ""
-        )
-        let viewModel = MeetingsViewModel(core: core, maxPollAttempts: 20, pollDelayNanoseconds: 0)
-        viewModel.reload(meetingId: "meeting-1")
-
-        await viewModel.performBackendRefine(meetingId: "meeting-1")
-        viewModel.reload(meetingId: "meeting-1")
-
-        XCTAssertEqual(viewModel.backendJobStatus, .succeeded)
-        XCTAssertEqual(viewModel.backendJobId, "job-1")
-        XCTAssertEqual(viewModel.backendArtifactMarkdown, "# Stub refine")
-    }
-
-    func testSubmitBackendRefineSurfacesSubmitError() async {
-        let transcript = makeTranscript(meetingId: "meeting-1")
-        let core = MeetingsCoreSpy(finalTranscript: transcript)
-        core.submitJobResult = FfiBackendJob(
-            id: "", meetingId: "", kind: "", status: "", error: "connection refused", artifactIds: []
-        )
-        let viewModel = MeetingsViewModel(core: core)
-        viewModel.reload(meetingId: "meeting-1")
-
-        await viewModel.performBackendRefine(meetingId: "meeting-1")
-
-        XCTAssertEqual(viewModel.backendJobStatus, .failed)
-        XCTAssertEqual(viewModel.errorMessage, "connection refused")
-        XCTAssertEqual(core.getBackendArtifactCallCount, 0)
-    }
-
-    func testSubmitBackendRefineStopsOnFailedJobWithEmptyError() async {
-        let transcript = makeTranscript(meetingId: "meeting-1")
-        let core = MeetingsCoreSpy(finalTranscript: transcript)
-        core.submitJobResult = FfiBackendJob(
-            id: "job-1",
-            meetingId: "meeting-1",
-            kind: "refine",
-            status: "failed",
-            error: "",
-            artifactIds: []
-        )
-        let viewModel = MeetingsViewModel(core: core, maxPollAttempts: 2, pollDelayNanoseconds: 0)
-        viewModel.reload(meetingId: "meeting-1")
-
-        await viewModel.performBackendRefine(meetingId: "meeting-1")
-
-        XCTAssertEqual(viewModel.backendJobStatus, .failed)
-        XCTAssertEqual(viewModel.backendJobId, "job-1")
-        XCTAssertEqual(viewModel.errorMessage, "Backend job failed")
-        XCTAssertEqual(core.getBackendJobCallCount, 0)
-        XCTAssertEqual(core.getBackendArtifactCallCount, 0)
-    }
-
-    func testSubmitBackendRefineRequiresFinalTranscript() async {
-        let core = MeetingsCoreSpy()
-        let viewModel = MeetingsViewModel(core: core)
-        viewModel.reload(meetingId: "meeting-1")
-
-        await viewModel.performBackendRefine(meetingId: "meeting-1")
-
-        XCTAssertEqual(viewModel.backendJobStatus, .failed)
-        XCTAssertEqual(viewModel.errorMessage, "Нужен Final transcript")
-        XCTAssertEqual(core.submitBackendJobCallCount, 0)
-    }
-
-    func testSubmitBackendRefineTimesOutWhileQueued() async {
-        let transcript = makeTranscript(meetingId: "meeting-1")
-        let core = MeetingsCoreSpy(finalTranscript: transcript)
-        core.submitJobResult = FfiBackendJob(
-            id: "job-1",
-            meetingId: "meeting-1",
-            kind: "refine",
-            status: "queued",
-            error: "",
-            artifactIds: []
-        )
-        core.getJobResults = [
-            FfiBackendJob(
-                id: "job-1", meetingId: "meeting-1", kind: "refine",
-                status: "queued", error: "", artifactIds: []
-            ),
-            FfiBackendJob(
-                id: "job-1", meetingId: "meeting-1", kind: "refine",
-                status: "running", error: "", artifactIds: []
-            ),
-        ]
-        let viewModel = MeetingsViewModel(core: core, maxPollAttempts: 2, pollDelayNanoseconds: 0)
-        viewModel.reload(meetingId: "meeting-1")
-
-        await viewModel.performBackendRefine(meetingId: "meeting-1")
-
-        XCTAssertEqual(viewModel.backendJobStatus, .failed)
-        XCTAssertEqual(viewModel.errorMessage, "Backend job timeout")
-        XCTAssertEqual(core.getBackendArtifactCallCount, 0)
-    }
-
     func testGenerateRefreshesArtifactsAndMeetingBadges() async {
         let generated = makeArtifact(id: "artifact-1", meetingId: "meeting-1")
         let updatedMeeting = makeMeeting(id: "meeting-1", artifactCount: 1)
@@ -494,13 +348,6 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding, @unchecked Sendable 
     var generateResult: FfiGenerateArtifactResult
     var meetingsAfterGenerate: [FfiMeetingSummary]?
     var artifactsAfterGenerate: [FfiArtifact]?
-    var submitJobResult: FfiBackendJob = .init(
-        id: "", meetingId: "", kind: "", status: "", error: "", artifactIds: []
-    )
-    var getJobResults: [FfiBackendJob] = []
-    var getArtifactResult: FfiBackendArtifact = .init(
-        id: "", kind: "", bodyMarkdown: "", createdAt: "", error: ""
-    )
     var renameError = ""
     var deleteError = ""
     var searchHits: [FfiSearchHit] = []
@@ -509,16 +356,12 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding, @unchecked Sendable 
     private(set) var searchQueries: [String] = []
     private(set) var listMeetingsCallCount = 0
     private(set) var listArtifactsCallCount = 0
-    private(set) var submitBackendJobCallCount = 0
-    private(set) var getBackendJobCallCount = 0
-    private(set) var getBackendArtifactCallCount = 0
     private(set) var apiBaseUrl = ""
     private(set) var apiToken = ""
     private(set) var lastLlmEngineCode = ""
     private(set) var lastLlmModelId = ""
     private(set) var lastLlmBaseUrl = ""
     private(set) var lastLlmProviderId = ""
-    private var getJobIndex = 0
 
     init(
         meetings: [FfiMeetingSummary] = [],
@@ -675,24 +518,5 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding, @unchecked Sendable 
         lastLlmModelId = modelId
         lastLlmBaseUrl = baseUrl
         lastLlmProviderId = providerId
-    }
-
-    func submitBackendJob(meetingId _: String, kindCode _: String) -> FfiBackendJob {
-        submitBackendJobCallCount += 1
-        return submitJobResult
-    }
-
-    func getBackendJob(jobId _: String) -> FfiBackendJob {
-        getBackendJobCallCount += 1
-        guard getJobIndex < getJobResults.count else {
-            return getJobResults.last ?? submitJobResult
-        }
-        defer { getJobIndex += 1 }
-        return getJobResults[getJobIndex]
-    }
-
-    func getBackendArtifact(artifactId _: String) -> FfiBackendArtifact {
-        getBackendArtifactCallCount += 1
-        return getArtifactResult
     }
 }

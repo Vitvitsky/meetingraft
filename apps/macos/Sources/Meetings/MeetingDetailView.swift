@@ -60,7 +60,6 @@ struct MeetingDetailView: View {
             rebuild.attach(meetingId: meeting.id)
         }
         .onDisappear {
-            viewModel.resetBackendRefineSession()
             rebuild.stopPolling()
         }
         .onChange(of: viewModel.selectedFinalVersion) { _, _ in
@@ -404,15 +403,6 @@ struct MeetingDetailView: View {
                 }
                 .help(generateHelp)
                 .disabled(!canGenerateArtifacts || viewModel.isGeneratingArtifact)
-                Button("Submit refine (stub)", systemImage: "cloud") {
-                    viewModel.submitBackendRefine(meetingId: meeting.id)
-                }
-                .help("Отправить refine job на backend stub")
-                .disabled(
-                    viewModel.finalTranscript == nil
-                        || viewModel.backendJobStatus == .submitting
-                        || viewModel.backendJobStatus == .polling
-                )
                 Button("Export to Markdown", systemImage: "square.and.arrow.up") {
                     exportMarkdown()
                 }
@@ -497,44 +487,7 @@ struct MeetingDetailView: View {
                 artifactBody
                     .frame(minWidth: 320)
             }
-
-            Divider()
-
-            backendRefinePanel
         }
-    }
-
-    private var backendRefinePanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Backend refine (stub)")
-                .font(.headline)
-            Text("Stub job refine · не заменяет local Brief")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("Status: \(viewModel.backendJobStatus.rawValue)")
-                .font(.caption.monospaced())
-            if !viewModel.backendJobId.isEmpty {
-                Text("Job: \(viewModel.backendJobId)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-            if !viewModel.backendArtifactMarkdown.isEmpty {
-                HStack {
-                    Spacer()
-                    Button("Copy", systemImage: "doc.on.doc") {
-                        copy(viewModel.backendArtifactMarkdown)
-                    }
-                }
-                ScrollView {
-                    Text(markdown(viewModel.backendArtifactMarkdown))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minHeight: 120, maxHeight: 220)
-            }
-        }
-        .padding()
     }
 
     private var canGenerateArtifacts: Bool {
