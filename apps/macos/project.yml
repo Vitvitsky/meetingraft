@@ -37,8 +37,8 @@ targets:
       properties:
         CFBundleDisplayName: MeetingRaft
         CFBundleDevelopmentRegion: en
-        NSMicrophoneUsageDescription: MeetingRaft записывает микрофон для субтитров встречи.
-        NSAudioCaptureUsageDescription: MeetingRaft записывает системный звук встречи (другие участники).
+        NSMicrophoneUsageDescription: MeetingRaft records the microphone to caption your meeting.
+        NSAudioCaptureUsageDescription: MeetingRaft records the system audio of the meeting (the other participants).
   MeetingRaftTests:
     type: bundle.unit-test
     platform: macOS

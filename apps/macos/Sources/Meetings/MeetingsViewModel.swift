@@ -268,7 +268,7 @@ final class MeetingsViewModel {
     ) -> Result<MarkdownExportResult, MarkdownExportFailure> {
         let transcript = core.getFinalTranscript(meetingId: meetingId)
         guard !transcript.meetingId.isEmpty else {
-            let message = "Нужен Final transcript"
+            let message = String(localized: "A Final transcript is required")
             exportStatusMessage = message
             return .failure(MarkdownExportFailure(message: message))
         }

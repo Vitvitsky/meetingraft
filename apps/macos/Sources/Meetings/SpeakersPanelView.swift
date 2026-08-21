@@ -46,11 +46,10 @@ struct SpeakersPanelView: View {
             .overlay {
                 if viewModel.rows.isEmpty {
                     ContentUnavailableView(
-                        "Участников нет",
+                        "No participants",
                         systemImage: "person.3",
                         description: Text(
-                            "Спикеры появятся после пересбора Final: "
-                                + "имена привязываются к дорожкам записи."
+                            "Speakers appear once Final is rebuilt: names are bound to the recorded channels."
                         )
                     )
                 }
@@ -91,8 +90,7 @@ struct SpeakersPanelView: View {
                 .foregroundStyle(Theme.textSecondary)
         } footer: {
             Text(
-                "Подпишите несколько — по ним складываются слепки, "
-                    + "и пересчёт разнесёт похожие."
+                "Label a few — voiceprints are built from them, and a recompute spreads them to similar lines."
             )
             .font(Theme.Text.caption)
             .foregroundStyle(Theme.textTertiary)
@@ -160,8 +158,7 @@ private struct VoicePrintBar: View {
                 }
                 .disabled(!viewModel.canRecomputeVoicePrints)
                 .help(
-                    "Сложить слепки по подписанным вручную репликам "
-                        + "и разнести по ним остальные"
+                    "Build voiceprints from the hand-labelled lines and spread them to the rest"
                 )
 
                 Text(costText)
@@ -175,8 +172,7 @@ private struct VoicePrintBar: View {
                 // Не поломка и не повод выбросить слепки: сравнивать их с
                 // векторами другой модели нельзя, и это всё.
                 Label(
-                    "Модель голосов сменилась — слепки надо пересчитать, "
-                        + "сравнивать со старыми нечего",
+                    "The voice model changed — voiceprints need recomputing, there is nothing to compare with the old ones",
                     systemImage: "exclamationmark.triangle"
                 )
                 .font(Theme.Text.caption)
@@ -196,11 +192,11 @@ private struct VoicePrintBar: View {
     /// Что произойдёт по нажатию — либо почему нажимать нечего.
     private var costText: String {
         guard viewModel.canRecomputeVoicePrints else {
-            return "Подпишите хотя бы одну реплику вручную — слепки складываются по ним"
+            return String(localized: "Label at least one line by hand — voiceprints are built from those")
         }
         let labelled = viewModel.humanLabelledCount
         let candidates = viewModel.unidentifiedSegments.count
-        return "слепки по \(labelled) подписанным · без имени \(candidates)"
+        return String(localized: "prints from \(labelled) labelled · unnamed \(candidates)")
     }
 }
 
@@ -235,7 +231,7 @@ private struct UnidentifiedReplyRow: View {
                     .buttonStyle(.borderless)
                     .foregroundStyle(isPlaying ? Theme.accent : Theme.textTertiary)
                     .help("Play the line — a name is usually recognised by ear")
-                    .accessibilityLabel(isPlaying ? "Остановить" : "Прослушать реплику")
+                    .accessibilityLabel(isPlaying ? "Stop" : "Play the line")
                 }
             }
             .frame(width: 56)
@@ -255,7 +251,7 @@ private struct UnidentifiedReplyRow: View {
 
             Spacer(minLength: Theme.Space.sm)
 
-            Menu("Подписать") {
+            Menu("Label") {
                 ForEach(speakers, id: \.id) { speaker in
                     Button(speaker.displayName) { onAssign(speaker.id) }
                 }
@@ -326,7 +322,7 @@ private struct SpeakerStatRow: View {
             avatar
 
             VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                TextField("Имя участника", text: $displayName)
+                TextField("Participant name", text: $displayName)
                     .textFieldStyle(.plain)
                     .font(Theme.Text.body)
                     // Поле имени выглядит подписью, и что его правят,

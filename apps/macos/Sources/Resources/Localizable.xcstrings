@@ -18,6 +18,23 @@
         }
       }
     },
+    "%@ — coming soon": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ — coming soon"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ — скоро"
+          }
+        }
+      }
+    },
     "%lld": {
       "extractionState": "manual",
       "localizations": {
@@ -31,6 +48,146 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld"
+          }
+        }
+      }
+    },
+    "%lld edits did not land on the current version": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld edit did not land on the current version"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld edits did not land on the current version"
+                }
+              }
+            }
+          }
+        },
+        "ru": {
+          "variations": {
+            "plural": {
+              "few": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld правки не легли на текущую версию"
+                }
+              },
+              "many": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld правок не легли на текущую версию"
+                }
+              },
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld правка не легла на текущую версию"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld правки не легли на текущую версию"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld labels, %lld s": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld labels, %lld s"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "подписей %lld, секунд %lld"
+          }
+        }
+      }
+    },
+    "%lld lines": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld line"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld lines"
+                }
+              }
+            }
+          }
+        },
+        "ru": {
+          "variations": {
+            "plural": {
+              "few": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld реплики"
+                }
+              },
+              "many": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld реплик"
+                }
+              },
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld реплика"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld реплики"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld recordings, ": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld recordings, "
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld записей, "
           }
         }
       }
@@ -65,6 +222,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "100 мс · 16 кГц"
+          }
+        }
+      }
+    },
+    "A Final transcript is required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A Final transcript is required"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нужен финальный транскрипт"
           }
         }
       }
@@ -239,6 +413,40 @@
         }
       }
     },
+    "Attribution by recorded channel · manual edits are kept": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attribution by recorded channel · manual edits are kept"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Атрибуция по дорожкам записи · ручные правки сохраняются"
+          }
+        }
+      }
+    },
+    "Attribution error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attribution error"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ошибка атрибуции"
+          }
+        }
+      }
+    },
     "Audio": {
       "extractionState": "manual",
       "localizations": {
@@ -375,6 +583,40 @@
         }
       }
     },
+    "Build an artifact from Final": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Build an artifact from Final"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Собрать артефакт из финала"
+          }
+        }
+      }
+    },
+    "Build voiceprints from the hand-labelled lines and spread them to the rest": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Build voiceprints from the hand-labelled lines and spread them to the rest"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сложить слепки по подписанным вручную репликам и разнести по ним остальные"
+          }
+        }
+      }
+    },
     "Built before the transcript was edited": {
       "extractionState": "manual",
       "localizations": {
@@ -388,6 +630,125 @@
           "stringUnit": {
             "state": "translated",
             "value": "Собран до правок транскрипта"
+          }
+        }
+      }
+    },
+    "Built from Final · LLM: Ollama (%@)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built from Final · LLM: Ollama (%@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сборка из финала · LLM: Ollama (%@)"
+          }
+        }
+      }
+    },
+    "Built from Final · LLM: OpenAI-compatible (%@)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built from Final · LLM: OpenAI-compatible (%@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сборка из финала · LLM: OpenAI-совместимый (%@)"
+          }
+        }
+      }
+    },
+    "Built from Final · LLM: backend": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built from Final · LLM: backend"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сборка из финала · LLM: backend"
+          }
+        }
+      }
+    },
+    "Built from Final · LLM: backend (%@ · %@)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built from Final · LLM: backend (%@ · %@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сборка из финала · LLM: backend (%@ · %@)"
+          }
+        }
+      }
+    },
+    "Built from Final · currently: built-in templates (no LLM)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built from Final · currently: built-in templates (no LLM)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сборка из финала · сейчас: встроенные шаблоны (без LLM)"
+          }
+        }
+      }
+    },
+    "Built from version %lld, now %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built from version %lld, now %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Собран по версии %lld, сейчас %lld"
+          }
+        }
+      }
+    },
+    "CSV import": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CSV import"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Импорт CSV"
           }
         }
       }
@@ -422,6 +783,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Отменено"
+          }
+        }
+      }
+    },
+    "Canonical": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Canonical"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Каноническая форма"
           }
         }
       }
@@ -528,6 +906,23 @@
         }
       }
     },
+    "Click a line to edit its text. ▶ under the timecode plays it without opening the editor": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click a line to edit its text. ▶ under the timecode plays it without opening the editor"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нажмите на реплику, чтобы поправить текст. ▶ под тайм-кодом проигрывает её, не открывая правку"
+          }
+        }
+      }
+    },
     "Click to edit the text of this line": {
       "extractionState": "manual",
       "localizations": {
@@ -575,6 +970,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Скопировать текст"
+          }
+        }
+      }
+    },
+    "Could not read the CSV: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not read the CSV: %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось прочитать CSV: %@"
+          }
+        }
+      }
+    },
+    "Could not refresh the catalog: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not refresh the catalog: %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось обновить каталог: %@"
+          }
+        }
+      }
+    },
+    "Could not save the tail of the recording: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not save the tail of the recording: %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось сохранить хвост записи: %@"
+          }
+        }
+      }
+    },
+    "Could not start the microphone: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not start the microphone: %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось запустить микрофон: %@"
           }
         }
       }
@@ -698,6 +1161,23 @@
         }
       }
     },
+    "Delete the recording of this meeting?": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete the recording of this meeting?"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Удалить запись встречи?"
+          }
+        }
+      }
+    },
     "Delete these recordings?": {
       "extractionState": "manual",
       "localizations": {
@@ -715,6 +1195,23 @@
         }
       }
     },
+    "Delete this meeting?": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete this meeting?"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Удалить эту встречу?"
+          }
+        }
+      }
+    },
     "Delete this person's voiceprint": {
       "extractionState": "manual",
       "localizations": {
@@ -728,6 +1225,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Удалить слепок голоса этого человека"
+          }
+        }
+      }
+    },
+    "Deleted %lld recordings, freed %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deleted %lld recordings, freed %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Удалено записей: %lld, освобождено %@"
           }
         }
       }
@@ -902,6 +1416,23 @@
         }
       }
     },
+    "Every match in this meeting will be replaced. Each changed line gets your edit mark, and undoing them is one at a time.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every match in this meeting will be replaced. Each changed line gets your edit mark, and undoing them is one at a time."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Все совпадения в этой встрече будут заменены. Каждая изменённая реплика получит пометку вашей правки, и отменить их можно будет только по одной."
+          }
+        }
+      }
+    },
     "Everyone else in the call, captured without a driver.": {
       "extractionState": "manual",
       "localizations": {
@@ -915,6 +1446,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Остальные участники звонка — без виртуального драйвера."
+          }
+        }
+      }
+    },
+    "Export Final and artifacts to %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export Final and artifacts to %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Экспорт финала и артефактов в %@"
           }
         }
       }
@@ -1157,6 +1705,40 @@
         }
       }
     },
+    "Glossary error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Glossary error"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ошибка глоссария"
+          }
+        }
+      }
+    },
+    "Glossary is empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Glossary is empty"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Глоссарий пуст"
+          }
+        }
+      }
+    },
     "Glossary term": {
       "extractionState": "manual",
       "localizations": {
@@ -1225,6 +1807,23 @@
         }
       }
     },
+    "Imported %lld, skipped %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imported %lld, skipped %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Импортировано %lld, пропущено %lld"
+          }
+        }
+      }
+    },
     "Installed models": {
       "extractionState": "manual",
       "localizations": {
@@ -1238,6 +1837,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "Установленные модели"
+          }
+        }
+      }
+    },
+    "Label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Label"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подписать"
+          }
+        }
+      }
+    },
+    "Label a few — voiceprints are built from them, and a recompute spreads them to similar lines.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Label a few — voiceprints are built from them, and a recompute spreads them to similar lines."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подпишите несколько — по ним складываются слепки, и пересчёт разнесёт похожие."
+          }
+        }
+      }
+    },
+    "Label at least one line by hand — voiceprints are built from those": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Label at least one line by hand — voiceprints are built from those"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подпишите хотя бы одну реплику вручную — слепки складываются по ним"
           }
         }
       }
@@ -1344,6 +1994,23 @@
         }
       }
     },
+    "Live finals are empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live finals are empty"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live-финалы пусты"
+          }
+        }
+      }
+    },
     "Live model": {
       "extractionState": "manual",
       "localizations": {
@@ -1374,6 +2041,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Живой перевод"
+          }
+        }
+      }
+    },
+    "Manual labels · channel attribution appears once Final is rebuilt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manual labels · channel attribution appears once Final is rebuilt"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ручные метки · атрибуция по дорожкам появится после пересбора финала"
           }
         }
       }
@@ -1446,6 +2130,23 @@
         }
       }
     },
+    "Meetings error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meetings error"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ошибка встреч"
+          }
+        }
+      }
+    },
     "Mic only": {
       "extractionState": "manual",
       "localizations": {
@@ -1476,6 +2177,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Микрофон"
+          }
+        }
+      }
+    },
+    "Microphone access denied": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microphone access denied"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Доступ к микрофону запрещён"
           }
         }
       }
@@ -1548,6 +2266,91 @@
         }
       }
     },
+    "No artifacts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No artifacts"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Артефактов нет"
+          }
+        }
+      }
+    },
+    "No final transcript available": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No final transcript available"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Финальный транскрипт недоступен"
+          }
+        }
+      }
+    },
+    "No meetings yet": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No meetings yet"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Встреч пока нет"
+          }
+        }
+      }
+    },
+    "No microphone access": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No microphone access"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нет доступа к микрофону"
+          }
+        }
+      }
+    },
+    "No model catalog — Settings → Refresh, or PROVIDERS_JSON / LLM_*": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No model catalog — Settings → Refresh, or PROVIDERS_JSON / LLM_*"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нет каталога моделей — Настройки → Обновить, или PROVIDERS_JSON / LLM_*"
+          }
+        }
+      }
+    },
     "No models offered by the backend yet.": {
       "extractionState": "manual",
       "localizations": {
@@ -1565,6 +2368,23 @@
         }
       }
     },
+    "No models — configure PROVIDERS_JSON / LLM_* on the backend": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No models — configure PROVIDERS_JSON / LLM_* on the backend"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нет моделей — настройте PROVIDERS_JSON / LLM_* на backend"
+          }
+        }
+      }
+    },
     "No output device to capture from; only your voice is recorded.": {
       "extractionState": "manual",
       "localizations": {
@@ -1578,6 +2398,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Нет устройства вывода для записи; пишется только ваш голос."
+          }
+        }
+      }
+    },
+    "No participants": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No participants"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Участников нет"
           }
         }
       }
@@ -1612,6 +2449,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Запись не идёт"
+          }
+        }
+      }
+    },
+    "Nothing in this scope": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing in this scope"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "В этой области пусто"
           }
         }
       }
@@ -1803,6 +2657,23 @@
         }
       }
     },
+    "Participant name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Participant name"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Имя участника"
+          }
+        }
+      }
+    },
     "Participant name — click to edit": {
       "extractionState": "manual",
       "localizations": {
@@ -1816,6 +2687,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Имя участника: нажмите, чтобы поправить"
+          }
+        }
+      }
+    },
+    "Pick an artifact": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick an artifact"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выберите артефакт"
           }
         }
       }
@@ -1854,6 +2742,23 @@
         }
       }
     },
+    "Play the line": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play the line"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Прослушать реплику"
+          }
+        }
+      }
+    },
     "Play the line — a name is usually recognised by ear": {
       "extractionState": "manual",
       "localizations": {
@@ -1867,6 +2772,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Послушать реплику — имя обычно определяют на слух"
+          }
+        }
+      }
+    },
+    "Play this line": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play this line"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Прослушать эту реплику"
           }
         }
       }
@@ -2126,6 +3048,23 @@
         }
       }
     },
+    "Recording deleted %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recording deleted %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Запись удалена %@"
+          }
+        }
+      }
+    },
     "Refresh catalog": {
       "extractionState": "manual",
       "localizations": {
@@ -2262,6 +3201,23 @@
         }
       }
     },
+    "Replace everywhere in this meeting?": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replace everywhere in this meeting?"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Заменять всюду в этой встрече?"
+          }
+        }
+      }
+    },
     "Restore original": {
       "extractionState": "manual",
       "localizations": {
@@ -2309,6 +3265,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Работает во время встречи; обязана успевать за речью."
+          }
+        }
+      }
+    },
+    "Same version, but the text was edited after it was built": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Same version, but the text was edited after it was built"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Версия та же, но текст правился после сборки"
           }
         }
       }
@@ -2449,6 +3422,74 @@
         }
       }
     },
+    "Source: %@ · input for Brief / Follow-up": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source: %@ · input for Brief / Follow-up"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Источник: %@ · вход для брифа и письма"
+          }
+        }
+      }
+    },
+    "Source: Live STT · not used for Brief / Follow-up": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source: Live STT · not used for Brief / Follow-up"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Источник: Live STT · не используется для брифа и письма"
+          }
+        }
+      }
+    },
+    "Source: Live finals + glossary · input for Brief / Follow-up": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source: Live finals + glossary · input for Brief / Follow-up"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Источник: Live-финалы + глоссарий · вход для брифа и письма"
+          }
+        }
+      }
+    },
+    "Speakers appear once Final is rebuilt: names are bound to the recorded channels.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speakers appear once Final is rebuilt: names are bound to the recorded channels."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Спикеры появятся после пересбора финала: имена привязываются к дорожкам записи."
+          }
+        }
+      }
+    },
     "Speech models": {
       "extractionState": "manual",
       "localizations": {
@@ -2551,6 +3592,23 @@
         }
       }
     },
+    "Stop": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Остановить"
+          }
+        }
+      }
+    },
     "Stop recording": {
       "extractionState": "manual",
       "localizations": {
@@ -2581,6 +3639,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Непрозрачность плашки"
+          }
+        }
+      }
+    },
+    "Surface": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Surface"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Как распознано"
           }
         }
       }
@@ -2704,6 +3779,23 @@
         }
       }
     },
+    "The CSV file must be UTF-8 encoded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The CSV file must be UTF-8 encoded"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CSV-файл должен быть в кодировке UTF-8"
+          }
+        }
+      }
+    },
     "The app stores a voiceprint on this Mac for everyone you name and recognises them in later recordings. The print stays even if the recording is deleted.": {
       "extractionState": "manual",
       "localizations": {
@@ -2717,6 +3809,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "Приложение сохранит на этом Маке слепок голоса каждого, кого вы назвали, и будет узнавать его в следующих записях. Слепок остаётся, даже если запись удалить."
+          }
+        }
+      }
+    },
+    "The audio cannot be restored. Transcripts, edits and artifacts are untouched.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The audio cannot be restored. Transcripts, edits and artifacts are untouched."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Звук восстановить нельзя. Транскрипты, правки и артефакты не затрагиваются."
+          }
+        }
+      }
+    },
+    "The live transcript is empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The live transcript is empty"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live-транскрипт пуст"
+          }
+        }
+      }
+    },
+    "The transcript text changed after it was built": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The transcript text changed after it was built"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Текст транскрипта изменился после сборки"
+          }
+        }
+      }
+    },
+    "The transcript, edits and artifacts stay. The audio itself cannot be restored: playing a line and rebuilding the transcript will no longer be possible.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The transcript, edits and artifacts stay. The audio itself cannot be restored: playing a line and rebuilding the transcript will no longer be possible."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Транскрипт, правки и артефакты останутся. Сам звук восстановить будет нельзя: прослушать реплику и пересобрать транскрипт больше не получится."
+          }
+        }
+      }
+    },
+    "The voice model changed — voiceprints need recomputing, there is nothing to compare with the old ones": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The voice model changed — voiceprints need recomputing, there is nothing to compare with the old ones"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Модель голосов сменилась — слепки надо пересчитать, сравнивать со старыми нечего"
+          }
+        }
+      }
+    },
+    "There is no recording for this fragment — nothing to play.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There is no recording for this fragment — nothing to play."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Записи за этот фрагмент нет — прослушать нечего."
           }
         }
       }
@@ -2789,6 +3983,23 @@
         }
       }
     },
+    "This version was assembled from live captions: it has no lines, so editing text and playback are unavailable. Rebuilding Final gives them — the button above.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This version was assembled from live captions: it has no lines, so editing text and playback are unavailable. Rebuilding Final gives them — the button above."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Эта версия собрана из live-субтитров: реплик в ней нет, поэтому правка текста и прослушивание недоступны. Их даёт пересбор финала — кнопка выше."
+          }
+        }
+      }
+    },
     "This week": {
       "extractionState": "manual",
       "localizations": {
@@ -2802,6 +4013,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Эта неделя"
+          }
+        }
+      }
+    },
+    "Title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Title"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Название"
           }
         }
       }
@@ -2836,6 +4064,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Токен"
+          }
+        }
+      }
+    },
+    "Transcripts, edits and artifacts stay. The audio cannot be restored.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transcripts, edits and artifacts stay. The audio cannot be restored."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Транскрипты, правки и артефакты останутся. Звук восстановить нельзя."
           }
         }
       }
@@ -2904,6 +4149,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Выключение забудет всех: слепки удаляются вместе с признаком."
+          }
+        }
+      }
+    },
+    "Unnamed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unnamed"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Без имени"
           }
         }
       }
@@ -3061,6 +4323,74 @@
         }
       }
     },
+    "cleared %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cleared %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "снято %lld"
+          }
+        }
+      }
+    },
+    "different model": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "different model"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "другая модель"
+          }
+        }
+      }
+    },
+    "edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "edit"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "правка"
+          }
+        }
+      }
+    },
+    "labelled %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "labelled %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "подписано %lld"
+          }
+        }
+      }
+    },
     "months": {
       "extractionState": "manual",
       "localizations": {
@@ -3078,6 +4408,23 @@
         }
       }
     },
+    "no audio %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "no audio %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "без звука %lld"
+          }
+        }
+      }
+    },
     "now: %@": {
       "extractionState": "manual",
       "localizations": {
@@ -3091,6 +4438,125 @@
           "stringUnit": {
             "state": "translated",
             "value": "стало: %@"
+          }
+        }
+      }
+    },
+    "print: %lld labels, %lld s": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "print: %lld labels, %lld s"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "слепок: подписей %lld, секунд %lld"
+          }
+        }
+      }
+    },
+    "prints %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "prints %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "слепков %lld"
+          }
+        }
+      }
+    },
+    "prints from %lld labelled · unnamed %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "prints from %lld labelled · unnamed %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "слепки по %lld подписанным · без имени %lld"
+          }
+        }
+      }
+    },
+    "recognised from memory %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "recognised from memory %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "узнано по памяти %lld"
+          }
+        }
+      }
+    },
+    "text": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "text"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "текст"
+          }
+        }
+      }
+    },
+    "unrecognised %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "unrecognised %lld"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "не узнано %lld"
+          }
+        }
+      }
+    },
+    "voice": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "voice"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "голос"
           }
         }
       }

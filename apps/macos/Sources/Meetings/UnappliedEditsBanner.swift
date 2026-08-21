@@ -50,9 +50,9 @@ struct UnappliedEditsBanner: View {
     }
 
     private var title: String {
-        edits.count == 1
-            ? "1 правка не легла на текущую версию"
-            : "\(edits.count) правок не легли на текущую версию"
+        // Форма числа — забота каталога, а не ветки `== 1`: в русском
+        // форм три, и ручная развилка верна ровно для единицы.
+        String(localized: "\(edits.count) edits did not land on the current version")
     }
 
     private func card(_ edit: FfiSegmentEdit) -> some View {

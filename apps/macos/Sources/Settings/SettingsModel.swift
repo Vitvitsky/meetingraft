@@ -171,7 +171,7 @@ final class SettingsModel {
             countStyle: .file
         )
         var report = String(
-            localized: "Удалено записей: \(result.deletedCount), освобождено \(freed)"
+            localized: "Deleted \(result.deletedCount) recordings, freed \(freed)"
         )
         if !result.skipped.isEmpty {
             // Пропуски называются вслух: молчание сделало бы число

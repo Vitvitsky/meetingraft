@@ -148,9 +148,11 @@ struct AppShellView: View {
             captionsViewModel.applyTranslationSettings(translationStore)
         }
         .alert(
-            "Нет доступа к микрофону",
+            "No microphone access",
             isPresented: Binding(
-                get: { captureCoordinator.lastError?.contains("микрофон") == true && !captureCoordinator.isRecording },
+                // Признак, а не поиск подстроки в тексте сообщения:
+                // перевод интерфейса погасил бы такое условие молча.
+                get: { captureCoordinator.lastErrorIsMicrophone && !captureCoordinator.isRecording },
                 set: {
                     if !$0 {
                         captureCoordinator.clearError()

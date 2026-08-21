@@ -47,15 +47,20 @@ CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 # `LocalizedStringKey` — литерал в них локализуем как есть. `String(
 # localized:` — то же самое вне вьюхи.
 KEY_POSITIONS = [
-    (re.compile(r'\bText\(\s*$'), "Text"),
-    (re.compile(r'\bButton\(\s*$'), "Button"),
-    (re.compile(r'\.help\(\s*$'), "help"),
-    (re.compile(r'\.navigationTitle\(\s*$'), "navigationTitle"),
-    (re.compile(r'\.alert\(\s*$'), "alert"),
-    (re.compile(r'\bPicker\(\s*$'), "Picker"),
-    (re.compile(r'\bToggle\(\s*$'), "Toggle"),
-    (re.compile(r'\bLabel\(\s*$'), "Label"),
-    (re.compile(r'String\(\s*localized:\s*$'), "String(localized:)"),
+    (re.compile(r"\bText\("), "Text"),
+    (re.compile(r"\bButton\("), "Button"),
+    (re.compile(r"\.help\("), "help"),
+    (re.compile(r"\.navigationTitle\("), "navigationTitle"),
+    (re.compile(r"\.alert\("), "alert"),
+    (re.compile(r"\.confirmationDialog\("), "confirmationDialog"),
+    (re.compile(r"\.accessibilityLabel\("), "accessibilityLabel"),
+    (re.compile(r"\bContentUnavailableView\("), "ContentUnavailableView"),
+    (re.compile(r"\bPicker\("), "Picker"),
+    (re.compile(r"\bToggle\("), "Toggle"),
+    (re.compile(r"\bLabel\("), "Label"),
+    (re.compile(r"\bMenu\("), "Menu"),
+    (re.compile(r"\bTextField\("), "TextField"),
+    (re.compile(r"\blocalized:"), "String(localized:)"),
 ]
 
 # Файлы, которым кириллица положена по существу (спека, решение 3).
@@ -70,6 +75,14 @@ CYRILLIC_ALLOWED = {
     # Эндонимы языков: список языков принято показывать на них самих.
     "App/SpeechLanguage.swift",
 }
+
+# Построчное послабление: `// loc:allow` в конце строки.
+#
+# Пофайловый список для этого груб. Есть строки, которым кириллица
+# положена не потому, что файл особый, а потому, что строка — данные:
+# имя спикера по умолчанию уходит в транскрипт и следует языку встречи,
+# а не языку интерфейса. Помечать такое надо там, где оно живёт.
+LINE_ALLOW = "// loc:allow"
 
 # Ключи, которые в коде не встречаются буквально, потому что собираются
 # из вариаций числа. Каталог обязан их содержать, код — нет.
@@ -111,7 +124,7 @@ def string_literals(line: str) -> list[tuple[int, str]]:
     return out
 
 
-INTERPOLATION = re.compile(r"\\\((?:[^()]|\([^()]*\))*\)")
+INTERPOLATION = re.compile(r"\\\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)")
 # Имена и обёртки, по которым подстановка считается числовой.
 #
 # Тип из текста не выводится, и это лучшая доступная догадка. Цена
@@ -119,7 +132,8 @@ INTERPOLATION = re.compile(r"\\\((?:[^()]|\([^()]*\))*\)")
 # покажется по-английски. Несовпадение Xcode назовёт при сборке.
 NUMERIC_HINTS = re.compile(
     r"\b(?:Int|count|number|samples|seconds|months|statusCode|version|prints|"
-    r"signed|cleared|unknown|imported|skipped|deletedCount|labelled|candidates)\b"
+    r"signed|cleared|unknown|imported|skipped|deletedCount|labelled|candidates|"
+    r"withoutVector|signedFromMemory|sourceVersion|unidentifiedSegments)\b"
 )
 
 
@@ -144,12 +158,67 @@ def relative(path: Path) -> str:
     return str(path.relative_to(SOURCES))
 
 
-def key_kind(prefix: str) -> str | None:
-    """Позиция литерала — ключ локализации или обычная строка."""
-    for pattern, kind in KEY_POSITIONS:
-        if pattern.search(prefix):
-            return kind
+def key_kind(prefix: str, previous: str) -> str | None:
+    """Позиция литерала — ключ локализации или обычная строка.
+
+    Три вещи, каждая из которых стоила прибору правки.
+
+    Смотрит и на предыдущую строку: в `.alert(\n    "текст",` перед
+    литералом на его собственной строке нет ничего, кроме отступа. Пока
+    префикс брался только из текущей, ключи многострочных вызовов не
+    находились вовсе — и проверка полноты каталога их не требовала.
+    Нашла это проверка мёртвых ключей.
+
+    Вызов ищется где угодно в префиксе: у второй ветви тернарного
+    оператора `isPlaying ? "Stop" : "Play"` перед литералом стоит `:`, а
+    `.help(` осталось в начале строки.
+
+    Но ключом становится только **первый** литерал вызова: иначе
+    `Button("Title", systemImage: "mic.fill")` требовал бы перевода для
+    имени иконки. Признак — между вызовом и литералом нет чужой кавычки,
+    либо сразу перед литералом стоит `?` или `:` тернарного оператора.
+    """
+    for source in (prefix, "" if prefix.strip() else previous.rstrip()):
+        if not source:
+            continue
+        best = None
+        for pattern, kind in KEY_POSITIONS:
+            for match in pattern.finditer(source):
+                if best is None or match.end() > best[0]:
+                    best = (match.end(), kind)
+        if best is None:
+            continue
+        tail = source[best[0]:]
+        if NON_TEXT_ARGUMENT.search(tail):
+            return None
+        if '"' not in tail:
+            return best[1]
+        after_last_quote = tail.rsplit('"', 1)[1]
+        if TERNARY_BRANCH.match(after_last_quote):
+            return best[1]
     return None
+
+
+TERNARY_BRANCH = re.compile(r"^\s*[?:]\s*$")
+
+# Именованные аргументы, значение которых человеку не показывают.
+#
+# `Label(Self.sizeText(bytes), systemImage: "waveform")` — первый литерал
+# вызова здесь имя иконки, потому что заголовок литералом не был.
+# Правило «ключом становится первый литерал» на такое не рассчитано.
+NON_TEXT_ARGUMENT = re.compile(
+    r"\b(?:systemImage|systemName|image|imageName|key|forKey|withIdentifier|"
+    r"identifier|tag|id|separator|encoding|ofType|named)\s*:\s*$"
+)
+
+# Ключ без единой буквы переводить нечего: `—`, `, `, `%@ → %@` — это
+# разметка, а не текст. Требовать для них строку в каталоге значило бы
+# засорять его и приучать проходить проверку не глядя.
+LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
+
+
+def needs_catalog(key: str) -> bool:
+    return bool(LETTER.search(INTERPOLATION.sub("", key.replace("%@", "").replace("%lld", ""))))
 
 
 def scan() -> tuple[dict[str, list[str]], list[str], set[str]]:
@@ -161,19 +230,24 @@ def scan() -> tuple[dict[str, list[str]], list[str], set[str]]:
     for path in swift_files():
         rel = relative(path)
         allowed = rel in CYRILLIC_ALLOWED
+        previous = ""
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            line_allowed = LINE_ALLOW in line
             for start, literal in string_literals(line):
                 if not literal:
                     continue
-                kind = key_kind(line[:start])
+                kind = key_kind(line[:start], previous)
                 if kind is not None:
                     keys.setdefault(catalog_key(literal), []).append(f"{rel}:{number}")
                 if CYRILLIC.search(literal):
+                    if line_allowed:
+                        continue
                     if allowed:
                         used_allowances.add(rel)
                         continue
                     where = kind or "строка"
                     cyrillic_hits.append(f"{rel}:{number}  {where}  «{literal}»")
+            previous = line
     return keys, cyrillic_hits, used_allowances
 
 
@@ -250,7 +324,7 @@ def main() -> int:
     print(f"  ключей в каталоге: {len(strings)}")
 
     # Проверка 2 — каждый ключ из кода есть в каталоге.
-    missing = sorted(key for key in keys if key not in strings)
+    missing = sorted(key for key in keys if key not in strings and needs_catalog(key))
     if missing:
         failures.append(f"ключей нет в каталоге: {len(missing)}")
         print(f"\n[2] ПРОВАЛ — ключей из кода нет в каталоге: {len(missing)}")

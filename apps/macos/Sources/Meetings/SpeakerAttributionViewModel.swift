@@ -85,7 +85,7 @@ struct SpeakerRowModel: Identifiable, Equatable {
     /// Имя для показа: удалённая запись оставляет реплики без имени, но
     /// прятать их нельзя — это время встречи.
     var label: String {
-        displayName.isEmpty ? "Без имени" : displayName
+        displayName.isEmpty ? String(localized: "Unnamed") : displayName
     }
 
     /// Что сохранять из набранного в поле имени. `nil` — сохранять нечего.
@@ -179,7 +179,7 @@ final class SpeakerAttributionViewModel {
     func addSpeaker(primaryLanguage: String) {
         let number = speakers.count + 1
         let displayName = primaryLanguage == "ru"
-            ? "Спикер \(number)"
+            ? "Спикер \(number)" // loc:allow — имя следует языку встречи, не интерфейса
             : "Speaker \(number)"
         let error = core.upsertSpeaker(
             meetingId: meetingId,
@@ -341,7 +341,7 @@ final class SpeakerAttributionViewModel {
     /// человека гадать, нажал он или нет.
     func reportMissingFragment() {
         errorMessage = String(
-            localized: "Записи за этот фрагмент нет — прослушать нечего."
+            localized: "There is no recording for this fragment — nothing to play."
         )
     }
 
@@ -546,7 +546,7 @@ enum SpeakerFormat {
     }
 
     static func segmentCountText(_ count: UInt32) -> String {
-        "\(count) репл."
+        String(localized: "\(count) lines")
     }
 
     /// Из чего сложен слепок: сколько **ваших подписей** в нём и сколько
@@ -564,14 +564,14 @@ enum SpeakerFormat {
     /// приписывать ему лишнюю секунду незачем — как раз по таким крохам
     /// на замере и вышли самые тонкие места.
     static func voicePrintText(_ print: FfiVoicePrint) -> String {
-        "слепок: \(print.samples) подписей, \(Int(print.seconds)) с"
+        String(localized: "print: \(print.samples) labels, \(Int(print.seconds)) s")
     }
 
     /// Из чего сложен запомненный голос — тем же языком, что и слепок
     /// встречи: человеку это одна и та же величина, и разные подписи под
     /// ней он читал бы как разные вещи.
     static func knownVoiceText(_ voice: FfiKnownVoice) -> String {
-        "\(voice.samples) подписей, \(Int(voice.seconds)) с"
+        String(localized: "\(voice.samples) labels, \(Int(voice.seconds)) s")
     }
 
     /// Итог пересчёта числами.
@@ -581,26 +581,26 @@ enum SpeakerFormat {
     /// нехватку материала за несходство голосов, и человек искал бы
     /// причину не там.
     static func passSummary(_ pass: FfiVoicePrintPass) -> String {
-        var parts = ["подписано \(pass.signed)"]
+        var parts = [String(localized: "labelled \(pass.signed)")]
         if pass.cleared > 0 {
-            parts.append("снято \(pass.cleared)")
+            parts.append(String(localized: "cleared \(pass.cleared)"))
         }
         // «Не узнано», а не «без имени»: реплика, которую слепок не
         // опознал, сохраняет подпись по каналу и на экране имя имеет.
         // Пока оба числа звались «без имени», отчёт спорил с тем, что
         // человек видит в списке.
-        parts.append("не узнано \(pass.unknown)")
+        parts.append(String(localized: "unrecognised \(pass.unknown)"))
         if pass.withoutVector > 0 {
-            parts.append("без звука \(pass.withoutVector)")
+            parts.append(String(localized: "no audio \(pass.withoutVector)"))
         }
         if pass.signedFromMemory > 0 {
             // Отдельной строкой, а не внутри «подписано»: человек включил
             // память на голоса осознанно и вправе видеть, сколько она
             // сделала. Слитое в общую сумму, это исчезло бы у функции,
             // которая требует доверия больше прочих.
-            parts.append("узнано по памяти \(pass.signedFromMemory)")
+            parts.append(String(localized: "recognised from memory \(pass.signedFromMemory)"))
         }
-        parts.append("слепков \(pass.prints)")
+        parts.append(String(localized: "prints \(pass.prints)"))
         return parts.joined(separator: " · ")
     }
 

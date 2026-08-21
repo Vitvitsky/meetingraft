@@ -519,7 +519,7 @@ struct VoiceMemorySection: View {
                     if !voice.modelMatches {
                         // Не поломка: сравнивать с векторами другой модели
                         // нельзя, и голос просто не участвует.
-                        Chip(text: "другая модель", tint: Theme.warning)
+                        Chip(text: String(localized: "different model"), tint: Theme.warning)
                     }
                 }
             }

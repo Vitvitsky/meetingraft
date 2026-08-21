@@ -91,7 +91,7 @@ struct MeetingDetailView: View {
             }
         }
         .confirmationDialog(
-            "Удалить запись встречи?",
+            "Delete the recording of this meeting?",
             isPresented: $confirmingAudioDeletion,
             titleVisibility: .visible
         ) {
@@ -101,13 +101,11 @@ struct MeetingDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Транскрипт, правки и артефакты останутся. "
-                    + "Сам звук восстановить будет нельзя: "
-                    + "прослушать реплику и пересобрать транскрипт больше не получится."
+                "The transcript, edits and artifacts stay. The audio itself cannot be restored: playing a line and rebuilding the transcript will no longer be possible."
             )
         }
         .alert(
-            "Ошибка Meetings",
+            "Meetings error",
             isPresented: Binding(
                 get: { viewModel.errorMessage != nil },
                 set: {
@@ -122,7 +120,7 @@ struct MeetingDetailView: View {
             Text(viewModel.errorMessage ?? "")
         }
         .alert(
-            "Ошибка атрибуции",
+            "Attribution error",
             isPresented: Binding(
                 get: { attribution.errorMessage != nil },
                 set: {
@@ -147,7 +145,7 @@ struct MeetingDetailView: View {
     private var audioRow: some View {
         if meeting.audioDeletedAtMs > 0 {
             Label(
-                "Запись удалена \(Self.deletionDate.string(from: date(meeting.audioDeletedAtMs)))",
+                "Recording deleted \(Self.deletionDate.string(from: date(meeting.audioDeletedAtMs)))",
                 systemImage: "waveform.slash"
             )
             .font(Theme.Text.caption)
@@ -191,7 +189,10 @@ struct MeetingDetailView: View {
     private var liveCaptions: some View {
         VStack(spacing: 0) {
             provenanceBanner(
-                "Источник: Live STT · не используется для Brief / Follow-up"
+                // `provenanceBanner` берёт `String`, а не
+                // `LocalizedStringKey`: без обёртки строка не
+                // локализуется, сколько бы ключей ни завели.
+                String(localized: "Source: Live STT · not used for Brief / Follow-up")
             )
             List(viewModel.captions, id: \.id) { caption in
                 switch caption.phase {
@@ -206,7 +207,7 @@ struct MeetingDetailView: View {
             .overlay {
                 if viewModel.captions.isEmpty {
                     ContentUnavailableView(
-                        "Live-транскрипт пуст",
+                        "The live transcript is empty",
                         systemImage: "captions.bubble"
                     )
                 }
@@ -228,8 +229,8 @@ struct MeetingDetailView: View {
     /// точна, вручную — ровно настолько, насколько её проставили.
     private var speakersProvenance: String {
         attribution.hasSegments
-            ? "Атрибуция по дорожкам записи · правки вручную сохраняются"
-            : "Ручные метки · атрибуция по дорожкам появится после пересбора Final"
+            ? String(localized: "Attribution by recorded channel · manual edits are kept")
+            : String(localized: "Manual labels · channel attribution appears once Final is rebuilt")
     }
 
     private var finalTranscript: some View {
@@ -238,7 +239,7 @@ struct MeetingDetailView: View {
             rebuildBar
             if viewModel.finalVersions.isEmpty {
                 ContentUnavailableView(
-                    "Финальный транскрипт недоступен",
+                    "No final transcript available",
                     systemImage: "doc.text.magnifyingglass"
                 )
             } else {
@@ -276,9 +277,7 @@ struct MeetingDetailView: View {
     /// приложения не видна — значит, её надо назвать.
     private var noSegmentsNote: some View {
         Label(
-            "Эта версия собрана из live-субтитров: реплик в ней нет, "
-                + "поэтому правка текста и прослушивание недоступны. "
-                + "Их даёт пересбор Final — кнопка выше.",
+            "This version was assembled from live captions: it has no lines, so editing text and playback are unavailable. Rebuilding Final gives them — the button above.",
             systemImage: "info.circle"
         )
         .font(Theme.Text.caption)
@@ -292,8 +291,8 @@ struct MeetingDetailView: View {
     /// настоящего прохода — его, до него — честную сборку из live-финалов.
     private var finalProvenance: String {
         rebuild.provenance.isEmpty
-            ? "Источник: Live finals + glossary · вход для Brief / Follow-up"
-            : "Источник: \(rebuild.provenance) · вход для Brief / Follow-up"
+            ? String(localized: "Source: Live finals + glossary · input for Brief / Follow-up")
+            : String(localized: "Source: \(rebuild.provenance) · input for Brief / Follow-up")
     }
 
     private var rebuildBar: some View {
@@ -334,7 +333,7 @@ struct MeetingDetailView: View {
                 .overlay {
                     if liveText.isEmpty {
                         ContentUnavailableView(
-                            "Live finals пусты",
+                            "Live finals are empty",
                             systemImage: "captions.bubble"
                         )
                     }
@@ -346,7 +345,7 @@ struct MeetingDetailView: View {
                 provenanceBanner("Final")
                 if viewModel.finalVersions.isEmpty {
                     ContentUnavailableView(
-                        "Финальный транскрипт недоступен",
+                        "No final transcript available",
                         systemImage: "doc.text.magnifyingglass"
                     )
                 } else {
@@ -478,7 +477,7 @@ struct MeetingDetailView: View {
                 .overlay {
                     if viewModel.artifacts.isEmpty {
                         ContentUnavailableView(
-                            "Артефактов нет",
+                            "No artifacts",
                             systemImage: "doc.badge.plus"
                         )
                     }
@@ -503,18 +502,18 @@ struct MeetingDetailView: View {
 
     private var generateHelp: String {
         if viewModel.finalTranscript == nil {
-            return "Нужен Final transcript"
+            return String(localized: "A Final transcript is required")
         }
         if let backendCatalogGenerateHelp {
             return backendCatalogGenerateHelp
         }
-        return "Собрать артефакт из Final"
+        return String(localized: "Build an artifact from Final")
     }
 
     private var exportHelp: String {
         viewModel.finalTranscript == nil
-            ? "Нужен Final transcript"
-            : "Экспорт Final и артефактов в \(providerStore.exportFolderPath)"
+            ? String(localized: "A Final transcript is required")
+            : String(localized: "Export Final and artifacts to \(providerStore.exportFolderPath)")
     }
 
     private var exportStatusColor: Color {
@@ -570,7 +569,7 @@ struct MeetingDetailView: View {
             }
         } else {
             ContentUnavailableView(
-                "Выберите артефакт",
+                "Pick an artifact",
                 systemImage: "doc.text"
             )
         }
@@ -607,12 +606,12 @@ struct MeetingDetailView: View {
     /// Что именно разошлось: другая версия Final или правка внутри той же.
     private func stalenessDetail(_ artifact: FfiArtifact) -> String {
         guard let current = viewModel.finalTranscript else {
-            return "Текст транскрипта изменился после сборки"
+            return String(localized: "The transcript text changed after it was built")
         }
         if artifact.sourceVersion != current.version {
-            return "Собран по версии \(artifact.sourceVersion), сейчас \(current.version)"
+            return String(localized: "Built from version \(artifact.sourceVersion), now \(current.version)")
         }
-        return "Версия та же, но текст правился после сборки"
+        return String(localized: "Same version, but the text was edited after it was built")
     }
 
     private func provenanceBanner(_ text: String) -> some View {

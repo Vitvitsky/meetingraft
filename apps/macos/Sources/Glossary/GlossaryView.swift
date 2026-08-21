@@ -217,12 +217,12 @@ struct GlossaryView: View {
             }
             let data = try Data(contentsOf: url)
             guard let csv = String(data: data, encoding: .utf8) else {
-                viewModel.showError("CSV-файл должен быть в кодировке UTF-8")
+                viewModel.showError(String(localized: "The CSV file must be UTF-8 encoded"))
                 return
             }
             viewModel.importCsv(csv)
         } catch {
-            viewModel.showError("Не удалось прочитать CSV: \(error.localizedDescription)")
+            viewModel.showError(String(localized: "Could not read the CSV: \(error.localizedDescription)"))
         }
     }
 }
