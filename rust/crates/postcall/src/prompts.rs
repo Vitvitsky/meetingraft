@@ -14,6 +14,23 @@
 //! 3. **чего делать нельзя** — придумывать факты, решения, поручения и
 //!    сроки, которых в расшифровке нет.
 //!
+//! Четвёртое добавлено 2026-08-21, после первого живого прогона на
+//! `gemma` 12B: модель **не сделала бриф вовсе**. Вместо него она выдала
+//! отредактированную расшифровку с преамбулой «Ниже представлен
+//! отредактированный текст…» и математической разметкой `$\rightarrow$`
+//! в перечислении исправленных слов.
+//!
+//! Отсюда два правила и одна перестановка.
+//!
+//! **Задача повторяется после расшифровки.** Названная только до
+//! тридцати тысяч знаков, она к концу перестаёт действовать: модель
+//! помнит последнюю инструкцию лучше первой. Ради этого `</transcript>`
+//! больше не конец сообщения.
+//!
+//! **Форма вывода описывается явно.** «Верни Markdown» ничего не
+//! запрещает: ни преамбулы, ни рассказа о проделанной работе, ни LaTeX.
+//! Промпт, не запрещающий лишнего, получает лишнее.
+//!
 //! Проверить этим кодом можно только наличие инструкций. Выполняет ли их
 //! модель — вопрос к живому прогону (задача 5), а не к тесту.
 
@@ -31,20 +48,38 @@ fn transcript_preamble() -> &'static str {
      not guess who said it."
 }
 
+/// Что запрещено в выводе, независимо от вида артефакта.
+///
+/// Отдельной строкой на оба промпта по той же причине, что и преамбула:
+/// разойдись они, один из артефактов остался бы без запрета, и понять
+/// это можно было бы только по испорченному выводу.
+fn output_rules() -> &'static str {
+    "Return only the document itself. Do not add a preamble, do not explain what you did, \
+     do not comment on the transcript quality, and do not add closing remarks. \
+     Do not reproduce or re-edit the transcript: summarise it. \
+     Use plain Markdown only — no LaTeX, no math notation, no code fences around the answer."
+}
+
 /// Формирует инструкции для краткого итога встречи.
 pub fn brief_prompts(final_md: &str, primary_lang: SpeechLanguage) -> (String, String) {
     let system = format!(
         "{} Create a concise meeting brief in language `{}`. \
-         Return Markdown with a summary, decisions, and key discussion points. \
+         Structure it with these Markdown headings, in this order: \
+         `## Кратко`, `## Решения`, `## Обсудили`. \
          Attribute each decision and proposal to the person who voiced it, using the name \
          as it appears in the transcript. \
-         Do not invent facts, decisions, or speakers absent from the transcript.",
+         Do not invent facts, decisions, or speakers absent from the transcript. {}",
         transcript_preamble(),
-        primary_lang.code()
+        primary_lang.code(),
+        output_rules()
     );
+    // Задача названа и до расшифровки, и после неё. На длинном входе
+    // первая инструкция теряется, и модель берётся за то, что показалось
+    // ей уместным, — на живом прогоне за редактуру расшифровки.
     let user = format!(
         "Create the meeting brief from this final transcript:\n\n\
-         <transcript>\n{final_md}\n</transcript>"
+         <transcript>\n{final_md}\n</transcript>\n\n\
+         Now write the brief described above. Output the brief only."
     );
 
     (system, user)
@@ -60,13 +95,15 @@ pub fn follow_up_prompts(final_md: &str, primary_lang: SpeechLanguage) -> (Strin
          to it, using the name as it appears in the transcript; if the transcript does not say \
          who took it on, write that it is unassigned instead of guessing. \
          Keep a deadline only if it was spoken; do not turn a vague phrase into a date. \
-         Do not invent facts, assignments, or deadlines absent from the transcript.",
+         Do not invent facts, assignments, or deadlines absent from the transcript. {}",
         transcript_preamble(),
-        primary_lang.code()
+        primary_lang.code(),
+        output_rules()
     );
     let user = format!(
         "Draft a follow-up email from this final transcript:\n\n\
-         <transcript>\n{final_md}\n</transcript>"
+         <transcript>\n{final_md}\n</transcript>\n\n\
+         Now write the email described above. Output the email only."
     );
 
     (system, user)
@@ -133,6 +170,51 @@ mod tests {
         assert!(!system.contains("follow-up actions"));
         assert!(user.contains("Draft a follow-up email"));
         assert!(user.contains("# Final transcript\nSchedule the demo."));
+    }
+
+    /// Первый живой прогон дал не бриф, а отредактированную расшифровку
+    /// с преамбулой и `$\rightarrow$` в тексте. Промпт, не запрещающий
+    /// лишнего, получает лишнее.
+    #[test]
+    fn both_prompts_forbid_preamble_and_math_notation() {
+        for (system, _) in [
+            brief_prompts("текст", SpeechLanguage::Ru),
+            follow_up_prompts("текст", SpeechLanguage::Ru),
+        ] {
+            assert!(
+                system.contains("Return only the document itself"),
+                "{system}"
+            );
+            assert!(system.contains("Do not add a preamble"), "{system}");
+            assert!(system.contains("no LaTeX"), "{system}");
+            assert!(
+                system.contains("Do not reproduce or re-edit the transcript"),
+                "{system}"
+            );
+        }
+    }
+
+    /// Задача обязана стоять и после расшифровки: названная только до
+    /// неё, на длинном входе она перестаёт действовать.
+    #[test]
+    fn both_prompts_restate_the_task_after_the_transcript() {
+        for (_, user) in [
+            brief_prompts("длинная расшифровка", SpeechLanguage::Ru),
+            follow_up_prompts("длинная расшифровка", SpeechLanguage::Ru),
+        ] {
+            let closing = user
+                .split("</transcript>")
+                .nth(1)
+                .expect("расшифровка обязана быть закрыта тегом");
+            assert!(
+                closing.contains("Now write"),
+                "после расшифровки нет повтора задачи: {user}"
+            );
+            assert!(
+                closing.trim().len() > 20,
+                "повтор задачи слишком короток, чтобы что-то значить: {closing}"
+            );
+        }
     }
 
     #[test]
