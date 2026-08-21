@@ -1627,6 +1627,52 @@ impl AudioManifestStore {
         Ok(())
     }
 
+    /// Больше этого кандидата не предлагать.
+    ///
+    /// Ключ приводится к нижнему регистру: решение принято про слово, а
+    /// не про его написание в конкретной реплике.
+    ///
+    /// Время приходит параметром, как и у `upsert_glossary_term`:
+    /// хранилище часов не заводит, иначе его тесты зависели бы от них.
+    pub fn dismiss_candidate(
+        &mut self,
+        surface: &str,
+        dismissed_at_ms: u64,
+    ) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "INSERT INTO dismissed_candidates (surface, dismissed_at_ms)
+             VALUES (?1, ?2)
+             ON CONFLICT(surface) DO UPDATE SET dismissed_at_ms = excluded.dismissed_at_ms",
+            params![surface.to_lowercase(), dismissed_at_ms as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Снять отклонение: кандидат снова может быть предложен.
+    ///
+    /// Существует потому, что автоудаления у таблицы нет: решение
+    /// человека не исчезает само, значит нужен способ его пересмотреть.
+    pub fn restore_candidate(&mut self, surface: &str) -> Result<(), AudioManifestError> {
+        self.conn.execute(
+            "DELETE FROM dismissed_candidates WHERE surface = ?1",
+            params![surface.to_lowercase()],
+        )?;
+        Ok(())
+    }
+
+    /// Отклонённые кандидаты, в нижнем регистре.
+    pub fn list_dismissed_candidates(&self) -> Result<Vec<String>, AudioManifestError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT surface FROM dismissed_candidates ORDER BY surface")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Удалить термин по id.
     pub fn delete_glossary_term(&mut self, id: &str) -> Result<(), AudioManifestError> {
         self.conn
@@ -4312,6 +4358,68 @@ pub(crate) mod tests {
 
             store.delete_glossary_term("term-1").unwrap();
             assert!(store.list_glossary_terms().unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dismissed_candidate_is_remembered_in_lower_case() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+
+            store.dismiss_candidate("Jira", 1).unwrap();
+
+            assert_eq!(
+                store.list_dismissed_candidates().unwrap(),
+                vec!["jira".to_string()]
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Отклонение дважды — не ошибка: тот же кандидат приходит с каждой
+    /// встречи, где прозвучал, и человек может нажать повторно.
+    #[test]
+    fn dismissing_twice_is_not_an_error() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+
+            store.dismiss_candidate("jira", 1).unwrap();
+            store.dismiss_candidate("JIRA", 2).unwrap();
+
+            assert_eq!(store.list_dismissed_candidates().unwrap().len(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Снятие существует потому, что автоудаления у таблицы нет: решение
+    /// человека не исчезает само, значит нужен способ его пересмотреть.
+    #[test]
+    fn a_restored_candidate_can_be_offered_again() {
+        let root = tmp_root();
+        {
+            let mut store = AudioManifestStore::open(&root).unwrap();
+            store.dismiss_candidate("jira", 1).unwrap();
+
+            store.restore_candidate("Jira").unwrap();
+
+            assert!(store.list_dismissed_candidates().unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Заведомо положительный случай для двух тестов выше: пустой список
+    /// у свежей базы. Без него «отклонённых нет» после снятия могло бы
+    /// означать, что таблица не читается вовсе.
+    #[test]
+    fn a_fresh_database_has_no_dismissed_candidates() {
+        let root = tmp_root();
+        {
+            let store = AudioManifestStore::open(&root).unwrap();
+
+            assert!(store.list_dismissed_candidates().unwrap().is_empty());
         }
         let _ = fs::remove_dir_all(&root);
     }

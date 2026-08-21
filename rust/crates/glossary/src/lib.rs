@@ -2,10 +2,12 @@
 
 mod csv_import;
 mod engine;
+mod mine;
 mod normalize;
 
 pub use csv_import::parse_csv;
 pub use engine::{GlossaryEngine, active_terms};
+pub use mine::{MineInput, mine_candidates};
 
 #[cfg(test)]
 mod tests {

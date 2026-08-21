@@ -1,0 +1,13 @@
+[package]
+name = "meetingraft-term-probe"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "term-probe"
+path = "src/main.rs"
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+meetingraft-glossary = { path = "../glossary" }
+meetingraft-storage = { path = "../storage" }
