@@ -25,7 +25,7 @@ final class ProviderSettingsStoreTests: XCTestCase {
         XCTAssertFalse(LlmEngine.backend.needsUrl)
         XCTAssertEqual(
             store.artifactsPipelineCaption,
-            "Генерация из Final · LLM: backend"
+            String(localized: "Built from Final · LLM: backend")
         )
     }
 
@@ -36,7 +36,7 @@ final class ProviderSettingsStoreTests: XCTestCase {
         store.llmModelId = "gpt-4o-mini"
         XCTAssertEqual(
             store.artifactsPipelineCaption,
-            "Генерация из Final · LLM: backend (openai · gpt-4o-mini)"
+            String(localized: "Built from Final · LLM: backend (openai · gpt-4o-mini)")
         )
     }
 

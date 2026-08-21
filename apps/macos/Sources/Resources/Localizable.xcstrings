@@ -2079,23 +2079,6 @@
         }
       }
     },
-    "Meeting %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Meeting %@"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Встреча %@"
-          }
-        }
-      }
-    },
     "MeetingRaft": {
       "extractionState": "manual",
       "localizations": {
@@ -4578,19 +4561,19 @@
         }
       }
     },
-    "~%@ MB": {
+    "~%lld MB": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "~%@ MB"
+            "value": "~%lld MB"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "~%@ МБ"
+            "value": "~%lld МБ"
           }
         }
       }

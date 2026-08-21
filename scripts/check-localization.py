@@ -7,8 +7,12 @@ Swift на Linux-машине не собирается, но каталог и 
 
 1. ни одного кириллического строкового литерала в `Sources/`, кроме
    явного белого списка;
-5. числовые подстановки обёрнуты в `Int(...)` — иначе спецификатор ключа
-   неизвестен, и перевод недостижим;
+5. у каждой подстановки установлен тип: либо `Int(...)`, либо выражение
+   из списка заведомо строковых. Иначе спецификатор ключа неизвестен, и
+   перевод недостижим;
+6. тесты не утверждают про переведённый текст: строка, совпавшая с
+   русским значением из каталога, делает тест зависимым от языка машины,
+   а чаще — просто красным;
 2. каждый ключ из кода есть в каталоге;
 3. в каталоге нет ключей, которых нет в коде;
 4. у каждого ключа есть русский перевод.
@@ -39,6 +43,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCES = ROOT / "apps/macos/Sources"
+TESTS = ROOT / "apps/macos/Tests"
 CATALOG = SOURCES / "Resources/Localizable.xcstrings"
 
 CYRILLIC = re.compile(r"[Ѐ-ӿ]")
@@ -144,12 +149,29 @@ INTERPOLATION = re.compile(r"\\\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)")
 # `подписей %lld` не нашёлся бы никогда, и русский перевод девяти строк
 # был бы недостижим — вместе с единственными двумя блоками форм числа,
 # написанными вручную.
-NUMERIC_HINTS = re.compile(
-    r"\b(?:count|number|samples|seconds|months|statusCode|version|prints|"
-    r"signed|cleared|unknown|imported|skipped|deletedCount|labelled|candidates|"
-    r"withoutVector|signedFromMemory|sourceVersion|unidentifiedSegments)\b"
-)
+# Выражения, про которые известно, что они строки.
+#
+# Список закрытый и работает как разрешение: **всё, что не `Int(...)` и
+# не здесь, — провал**. Так задумано после второго разбора ревью.
+#
+# Прежняя версия шла от обратного: перечисляла числовые *имена* и всё
+# прочее молча считала строкой. Дыра нашлась сразу — `~\(size) MB`, где
+# `size` это `Int?`: имени `size` в списке не было, ключ ушёл в каталог
+# как `~%@ MB`, а рантайм спросил бы `~%lld MB`. Закрытый список
+# запретов не закрывает ничего: мимо него проходит любое новое имя.
+STRING_EXPRESSIONS = {
+    "llmModelId", "llmProviderId", "connectionError", "displayName",
+    "error", "error.localizedDescription", "term.surface", "term.canonical",
+    "term.language.uppercased()", "segment.originalText", "edit.originalText",
+    "edit.editedText", "rebuild.provenance", "providerStore.exportFolderPath",
+    "stamp", "freed", "detectedApp.displayName",
+    "SpeakerFormat.channelLabel(code)",
+    "Self.deletionDate.string(from: date(meeting.audioDeletedAtMs))",
+}
+
 INT_WRAPPED = re.compile(r"^\\\(Int\(")
+# Спецификаторы в готовом значении каталога.
+INTERPOLATION_SPEC = re.compile(r"%(?:lld|@|u|d|lf|f)")
 
 
 def catalog_key(literal: str) -> str:
@@ -170,12 +192,75 @@ def catalog_key(literal: str) -> str:
 
 
 def unwrapped_numbers(literal: str) -> list[str]:
-    """Числовые подстановки без `Int(...)` — их спецификатор неизвестен."""
-    return [
-        match.group(0)
-        for match in INTERPOLATION.finditer(literal)
-        if not INT_WRAPPED.match(match.group(0)) and NUMERIC_HINTS.search(match.group(0))
-    ]
+    """Подстановки, спецификатор которых неизвестен.
+
+    Ни `Int(...)`, ни строка из списка — значит тип не установлен, а
+    вместе с ним и спецификатор ключа. Такую строку прибор не пропускает
+    вовсе: догадка здесь уже стоила девяти недостижимых переводов.
+    """
+    out = []
+    for match in INTERPOLATION.finditer(literal):
+        expression = match.group(0)
+        if INT_WRAPPED.match(expression):
+            continue
+        if expression[2:-1].strip() in STRING_EXPRESSIONS:
+            continue
+        out.append(expression)
+    return out
+
+
+def russian_values(strings: dict) -> dict[str, str]:
+    """Русские значения каталога — по ним ищутся утверждения в тестах."""
+    out: dict[str, str] = {}
+    for key, entry in strings.items():
+        ru = entry.get("localizations", {}).get("ru", {})
+        unit = ru.get("stringUnit")
+        if unit and unit.get("value"):
+            out[unit["value"]] = key
+        for form in ru.get("variations", {}).get("plural", {}).values():
+            value = form.get("stringUnit", {}).get("value") if isinstance(form, dict) else None
+            if value:
+                out[value] = key
+    return out
+
+
+def tests_asserting_translations(values: dict[str, str]) -> list[str]:
+    """Литералы в тестах, совпавшие с переводом.
+
+    Прибор смотрел только в `Sources/`, и шесть тестов, утверждавших про
+    русский текст интерфейса, пережили перевод незамеченными: часть из
+    них падает в любой локали, часть зеленеет только на русской машине.
+    Сравнение идёт и по вхождению: `XCTAssertTrue(text.contains("…"))`
+    так же ломается, как равенство.
+    """
+    if not TESTS.exists():
+        return []
+    hits: list[str] = []
+    for path in sorted(TESTS.rglob("*.swift")):
+        rel = path.relative_to(TESTS)
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if LINE_ALLOW in line:
+                continue
+            for _, literal in string_literals(line):
+                if not literal or not CYRILLIC.search(literal):
+                    continue
+                for value, key in values.items():
+                    # Перевод без подстановок — то, с чем тест сравнил бы
+                    # напрямую или через `contains`.
+                    #
+                    # Одиночное слово совпадением не считается: `текст` в
+                    # тестовых данных совпадает с переводом чипа, а к
+                    # интерфейсу отношения не имеет. Отсюда и предел
+                    # проверки: тест, сравнивающий с однословным
+                    # переводом, она пропустит. Это сито, а не
+                    # доказательство.
+                    fragment = INTERPOLATION_SPEC.sub(" ", value).strip()
+                    if len(fragment.split()) < 2:
+                        continue
+                    if literal == value or fragment in literal:
+                        hits.append(f"{rel}:{number}  «{literal}»  ← перевод ключа «{key}»")
+                        break
+    return hits
 
 
 def swift_files() -> list[Path]:
@@ -249,7 +334,7 @@ def needs_catalog(key: str) -> bool:
     return bool(LETTER.search(INTERPOLATION.sub("", key.replace("%@", "").replace("%lld", ""))))
 
 
-def scan() -> tuple[dict[str, list[str]], list[str], set[str]]:
+def scan() -> tuple[dict[str, list[str]], list[str], set[str], list[str]]:
     """Ключи, кириллица, сработавшие послабления и необёрнутые числа."""
     keys: dict[str, list[str]] = {}
     cyrillic_hits: list[str] = []
@@ -395,8 +480,8 @@ def main() -> int:
     # Проверка 5 — числа подаются обёрнутыми, иначе спецификатор ключа
     # неизвестен и перевод недостижим.
     if unwrapped:
-        failures.append(f"чисел без Int(...): {len(unwrapped)}")
-        print(f"\n[5] ПРОВАЛ — числовых подстановок без Int(...): {len(unwrapped)}")
+        failures.append(f"подстановок без типа: {len(unwrapped)}")
+        print(f"\n[5] ПРОВАЛ — подстановок с неустановленным типом: {len(unwrapped)}")
         print("      UniFFI отдаёт u32 как UInt32, и его интерполяция даёт %u, а не %lld:")
         print("      ключ не совпадёт с каталогом, и перевод не найдётся никогда.")
         for hit in unwrapped[:20]:
@@ -404,7 +489,19 @@ def main() -> int:
         if len(unwrapped) > 20:
             print(f"      … ещё {len(unwrapped) - 20}")
     else:
-        print("[5] ок — числа в локализуемых строках обёрнуты в Int(...)")
+        print("[5] ок — у каждой подстановки установлен тип")
+
+    # Проверка 6 — тесты не утверждают про переведённый текст.
+    test_hits = tests_asserting_translations(russian_values(strings))
+    if test_hits:
+        failures.append(f"тестов на переведённом тексте: {len(test_hits)}")
+        print(f"\n[6] ПРОВАЛ — утверждений о переведённом тексте в тестах: {len(test_hits)}")
+        for hit in test_hits[:25]:
+            print(f"      {hit}")
+        if len(test_hits) > 25:
+            print(f"      … ещё {len(test_hits) - 25}")
+    else:
+        print("[6] ок — тесты не утверждают про переведённый текст")
 
     # Отдельным списком — ключи с подстановкой. Не провал: спецификатор
     # выведен догадкой по имени переменной, и подтвердить его может

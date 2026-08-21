@@ -49,7 +49,10 @@ final class GlossaryViewModelTests: XCTestCase {
         viewModel.importCsv("surface,canonical,language,scope")
 
         XCTAssertEqual(core.importedCsv, ["surface,canonical,language,scope"])
-        XCTAssertEqual(viewModel.importMessage, "Импортировано: 1, пропущено: 2")
+        XCTAssertEqual(
+            viewModel.importMessage,
+            String(localized: "Imported \(Int(1)), skipped \(Int(2))")
+        )
         XCTAssertEqual(viewModel.terms, [imported])
     }
 
