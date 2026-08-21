@@ -302,7 +302,7 @@ struct AudioRetentionSection: View {
                 HStack(spacing: Theme.Space.xs) {
                     Picker("", selection: $model.audioSweepMonths) {
                         ForEach([3, 6, 12, 24], id: \.self) { months in
-                            Text("\(months)").tag(months)
+                            Text("\(Int(months))").tag(months)
                         }
                     }
                     .labelsHidden()
@@ -364,7 +364,7 @@ struct AudioRetentionSection: View {
                 HStack {
                     Text(
                         String(
-                            localized: "\(model.audioSweepPreview.count) recordings, "
+                            localized: "\(Int(model.audioSweepPreview.count)) recordings, "
                         ) + Self.size(model.audioSweepTotalBytes)
                     )
                     .font(Theme.Text.caption)

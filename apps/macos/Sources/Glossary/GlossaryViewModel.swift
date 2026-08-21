@@ -104,7 +104,7 @@ final class GlossaryViewModel {
             errorMessage = result.error
             return
         }
-        importMessage = String(localized: "Imported \(result.imported), skipped \(result.skipped)")
+        importMessage = String(localized: "Imported \(Int(result.imported)), skipped \(Int(result.skipped))")
         reload()
     }
 

@@ -546,7 +546,7 @@ enum SpeakerFormat {
     }
 
     static func segmentCountText(_ count: UInt32) -> String {
-        String(localized: "\(count) lines")
+        String(localized: "\(Int(count)) lines")
     }
 
     /// Из чего сложен слепок: сколько **ваших подписей** в нём и сколько
@@ -564,14 +564,14 @@ enum SpeakerFormat {
     /// приписывать ему лишнюю секунду незачем — как раз по таким крохам
     /// на замере и вышли самые тонкие места.
     static func voicePrintText(_ print: FfiVoicePrint) -> String {
-        String(localized: "print: \(print.samples) labels, \(Int(print.seconds)) s")
+        String(localized: "print: \(Int(print.samples)) labels, \(Int(print.seconds)) s")
     }
 
     /// Из чего сложен запомненный голос — тем же языком, что и слепок
     /// встречи: человеку это одна и та же величина, и разные подписи под
     /// ней он читал бы как разные вещи.
     static func knownVoiceText(_ voice: FfiKnownVoice) -> String {
-        String(localized: "\(voice.samples) labels, \(Int(voice.seconds)) s")
+        String(localized: "\(Int(voice.samples)) labels, \(Int(voice.seconds)) s")
     }
 
     /// Итог пересчёта числами.
@@ -581,26 +581,26 @@ enum SpeakerFormat {
     /// нехватку материала за несходство голосов, и человек искал бы
     /// причину не там.
     static func passSummary(_ pass: FfiVoicePrintPass) -> String {
-        var parts = [String(localized: "labelled \(pass.signed)")]
+        var parts = [String(localized: "labelled \(Int(pass.signed))")]
         if pass.cleared > 0 {
-            parts.append(String(localized: "cleared \(pass.cleared)"))
+            parts.append(String(localized: "cleared \(Int(pass.cleared))"))
         }
         // «Не узнано», а не «без имени»: реплика, которую слепок не
         // опознал, сохраняет подпись по каналу и на экране имя имеет.
         // Пока оба числа звались «без имени», отчёт спорил с тем, что
         // человек видит в списке.
-        parts.append(String(localized: "unrecognised \(pass.unknown)"))
+        parts.append(String(localized: "unrecognised \(Int(pass.unknown))"))
         if pass.withoutVector > 0 {
-            parts.append(String(localized: "no audio \(pass.withoutVector)"))
+            parts.append(String(localized: "no audio \(Int(pass.withoutVector))"))
         }
         if pass.signedFromMemory > 0 {
             // Отдельной строкой, а не внутри «подписано»: человек включил
             // память на голоса осознанно и вправе видеть, сколько она
             // сделала. Слитое в общую сумму, это исчезло бы у функции,
             // которая требует доверия больше прочих.
-            parts.append(String(localized: "recognised from memory \(pass.signedFromMemory)"))
+            parts.append(String(localized: "recognised from memory \(Int(pass.signedFromMemory))"))
         }
-        parts.append(String(localized: "prints \(pass.prints)"))
+        parts.append(String(localized: "prints \(Int(pass.prints))"))
         return parts.joined(separator: " · ")
     }
 

@@ -7,6 +7,8 @@ Swift на Linux-машине не собирается, но каталог и 
 
 1. ни одного кириллического строкового литерала в `Sources/`, кроме
    явного белого списка;
+5. числовые подстановки обёрнуты в `Int(...)` — иначе спецификатор ключа
+   неизвестен, и перевод недостижим;
 2. каждый ключ из кода есть в каталоге;
 3. в каталоге нет ключей, которых нет в коде;
 4. у каждого ключа есть русский перевод.
@@ -125,16 +127,29 @@ def string_literals(line: str) -> list[tuple[int, str]]:
 
 
 INTERPOLATION = re.compile(r"\\\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)")
-# Имена и обёртки, по которым подстановка считается числовой.
+# Имена, по которым подстановка выглядит числовой.
 #
-# Тип из текста не выводится, и это лучшая доступная догадка. Цена
-# ошибки известна и невелика: ключ не совпадёт с каталогом, и строка
-# покажется по-английски. Несовпадение Xcode назовёт при сборке.
+# Раньше по этому списку **угадывался** спецификатор, и каталог был
+# написан по той же догадке — то есть проверки сравнивали догадку сама с
+# собой и зеленели всегда. Ровно тот случай, о котором предупреждает
+# `CLAUDE.md`: прибор, который не может покраснеть.
+#
+# Теперь список работает наоборот: он не назначает спецификатор, а
+# **требует** обёртки `Int(...)`. Правило простое и проверяемое — число
+# в локализуемой строке подаётся как `Int(...)`, — и тогда `%lld` не
+# догадка, а следствие.
+#
+# Почему это важно: UniFFI отображает `u32` в Swift `UInt32`, а
+# интерполяция `UInt32` даёт спецификатор `%u`, не `%lld`. Ключ
+# `подписей %lld` не нашёлся бы никогда, и русский перевод девяти строк
+# был бы недостижим — вместе с единственными двумя блоками форм числа,
+# написанными вручную.
 NUMERIC_HINTS = re.compile(
-    r"\b(?:Int|count|number|samples|seconds|months|statusCode|version|prints|"
+    r"\b(?:count|number|samples|seconds|months|statusCode|version|prints|"
     r"signed|cleared|unknown|imported|skipped|deletedCount|labelled|candidates|"
     r"withoutVector|signedFromMemory|sourceVersion|unidentifiedSegments)\b"
 )
+INT_WRAPPED = re.compile(r"^\\\(Int\(")
 
 
 def catalog_key(literal: str) -> str:
@@ -143,11 +158,24 @@ def catalog_key(literal: str) -> str:
     `Text("Meeting \(stamp)")` даёт ключ `Meeting %@`, а не текст
     исходника. Без этой нормализации проверка полноты каталога врала бы
     ровно на строках с подстановкой — там, где ошибиться проще всего.
+
+    Спецификатор здесь не угадывается: `Int(...)` даёт `%lld`, всё
+    остальное — `%@`. За тем, чтобы числа приходили обёрнутыми, следит
+    отдельная проверка.
     """
     return INTERPOLATION.sub(
-        lambda match: "%lld" if NUMERIC_HINTS.search(match.group(0)) else "%@",
+        lambda match: "%lld" if INT_WRAPPED.match(match.group(0)) else "%@",
         literal,
     )
+
+
+def unwrapped_numbers(literal: str) -> list[str]:
+    """Числовые подстановки без `Int(...)` — их спецификатор неизвестен."""
+    return [
+        match.group(0)
+        for match in INTERPOLATION.finditer(literal)
+        if not INT_WRAPPED.match(match.group(0)) and NUMERIC_HINTS.search(match.group(0))
+    ]
 
 
 def swift_files() -> list[Path]:
@@ -222,10 +250,11 @@ def needs_catalog(key: str) -> bool:
 
 
 def scan() -> tuple[dict[str, list[str]], list[str], set[str]]:
-    """Ключи из кода, кириллические литералы и сработавшие послабления."""
+    """Ключи, кириллица, сработавшие послабления и необёрнутые числа."""
     keys: dict[str, list[str]] = {}
     cyrillic_hits: list[str] = []
     used_allowances: set[str] = set()
+    unwrapped: list[str] = []
 
     for path in swift_files():
         rel = relative(path)
@@ -239,6 +268,8 @@ def scan() -> tuple[dict[str, list[str]], list[str], set[str]]:
                 kind = key_kind(line[:start], previous)
                 if kind is not None:
                     keys.setdefault(catalog_key(literal), []).append(f"{rel}:{number}")
+                    for expression in unwrapped_numbers(literal):
+                        unwrapped.append(f"{rel}:{number}  {expression}")
                 if CYRILLIC.search(literal):
                     if line_allowed:
                         continue
@@ -248,7 +279,7 @@ def scan() -> tuple[dict[str, list[str]], list[str], set[str]]:
                     where = kind or "строка"
                     cyrillic_hits.append(f"{rel}:{number}  {where}  «{literal}»")
             previous = line
-    return keys, cyrillic_hits, used_allowances
+    return keys, cyrillic_hits, used_allowances, unwrapped
 
 
 def load_catalog() -> tuple[dict, str | None]:
@@ -285,7 +316,7 @@ def russian_translation(entry: dict) -> str | None:
 
 
 def main() -> int:
-    keys, cyrillic_hits, used_allowances = scan()
+    keys, cyrillic_hits, used_allowances, unwrapped = scan()
     catalog, catalog_error = load_catalog()
     failures: list[str] = []
 
@@ -361,12 +392,26 @@ def main() -> int:
     else:
         print("[4] ок — у каждого ключа есть русский перевод")
 
+    # Проверка 5 — числа подаются обёрнутыми, иначе спецификатор ключа
+    # неизвестен и перевод недостижим.
+    if unwrapped:
+        failures.append(f"чисел без Int(...): {len(unwrapped)}")
+        print(f"\n[5] ПРОВАЛ — числовых подстановок без Int(...): {len(unwrapped)}")
+        print("      UniFFI отдаёт u32 как UInt32, и его интерполяция даёт %u, а не %lld:")
+        print("      ключ не совпадёт с каталогом, и перевод не найдётся никогда.")
+        for hit in unwrapped[:20]:
+            print(f"      {hit}")
+        if len(unwrapped) > 20:
+            print(f"      … ещё {len(unwrapped) - 20}")
+    else:
+        print("[5] ок — числа в локализуемых строках обёрнуты в Int(...)")
+
     # Отдельным списком — ключи с подстановкой. Не провал: спецификатор
     # выведен догадкой по имени переменной, и подтвердить его может
     # только сборка на Маке.
     interpolated = sorted(key for key in keys if "%" in key)
     if interpolated:
-        print(f"\n  ключей с подстановкой: {len(interpolated)} — спецификатор проверяется сборкой")
+        print(f"\n  ключей с подстановкой: {len(interpolated)}")
         for key in interpolated[:15]:
             print(f"      «{key}»")
         if len(interpolated) > 15:

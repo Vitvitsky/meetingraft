@@ -609,7 +609,7 @@ struct MeetingDetailView: View {
             return String(localized: "The transcript text changed after it was built")
         }
         if artifact.sourceVersion != current.version {
-            return String(localized: "Built from version \(artifact.sourceVersion), now \(current.version)")
+            return String(localized: "Built from version \(Int(artifact.sourceVersion)), now \(Int(current.version))")
         }
         return String(localized: "Same version, but the text was edited after it was built")
     }

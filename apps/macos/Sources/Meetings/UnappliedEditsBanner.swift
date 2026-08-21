@@ -52,7 +52,7 @@ struct UnappliedEditsBanner: View {
     private var title: String {
         // Форма числа — забота каталога, а не ветки `== 1`: в русском
         // форм три, и ручная развилка верна ровно для единицы.
-        String(localized: "\(edits.count) edits did not land on the current version")
+        String(localized: "\(Int(edits.count)) edits did not land on the current version")
     }
 
     private func card(_ edit: FfiSegmentEdit) -> some View {

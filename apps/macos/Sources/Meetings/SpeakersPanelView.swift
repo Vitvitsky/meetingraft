@@ -85,7 +85,7 @@ struct SpeakersPanelView: View {
                 .listRowSeparator(.hidden)
             }
         } header: {
-            Text("Unnamed · \(viewModel.unidentifiedSegments.count)")
+            Text("Unnamed · \(Int(viewModel.unidentifiedSegments.count))")
                 .font(Theme.Text.bodySmall.weight(.semibold))
                 .foregroundStyle(Theme.textSecondary)
         } footer: {
@@ -196,7 +196,7 @@ private struct VoicePrintBar: View {
         }
         let labelled = viewModel.humanLabelledCount
         let candidates = viewModel.unidentifiedSegments.count
-        return String(localized: "prints from \(labelled) labelled · unnamed \(candidates)")
+        return String(localized: "prints from \(Int(labelled)) labelled · unnamed \(Int(candidates))")
     }
 }
 

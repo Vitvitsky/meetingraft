@@ -171,7 +171,7 @@ final class SettingsModel {
             countStyle: .file
         )
         var report = String(
-            localized: "Deleted \(result.deletedCount) recordings, freed \(freed)"
+            localized: "Deleted \(Int(result.deletedCount)) recordings, freed \(freed)"
         )
         if !result.skipped.isEmpty {
             // Пропуски называются вслух: молчание сделало бы число
@@ -229,7 +229,7 @@ final class SettingsModel {
             String(localized: "This option has no file to download.")
         case let WhisperModelDownloaderError.downloadFailed(statusCode):
             if let statusCode {
-                String(localized: "Download failed: HTTP \(statusCode).")
+                String(localized: "Download failed: HTTP \(Int(statusCode)).")
             } else {
                 String(localized: "Download from Hugging Face failed.")
             }
