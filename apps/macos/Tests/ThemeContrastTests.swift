@@ -92,6 +92,47 @@ final class ThemeContrastTests: XCTestCase {
         }
     }
 
+    /// Статусные цвета живут в интерфейсе дважды: как текст на
+    /// поверхности и как **заливка**, поверх которой лежит текст. Аудит
+    /// выше знал только первое, и мимо него прошло чёрное на тёмно-зелёном
+    /// в светлой теме — увидел человек, а не тест. В тёмной теме то же
+    /// место было ещё хуже: белое на жёлтом даёт 1.41:1.
+    private func assertFilledBadges(_ name: NSAppearance.Name, file: StaticString = #filePath, line: UInt = #line) {
+        let fills: [(String, Color)] = [
+            ("success", Theme.success),
+            ("warning", Theme.warning),
+            ("error", Theme.error),
+        ]
+        for (fillName, fill) in fills {
+            let value = ratio(Theme.textOnStatus, on: fill, in: name)
+            XCTAssertGreaterThanOrEqual(
+                value,
+                4.5,
+                "\(name.rawValue): textOnStatus на заливке \(fillName) даёт \(String(format: "%.2f", value)):1",
+                file: file,
+                line: line
+            )
+        }
+    }
+
+    func testFilledBadgesAreReadableInDark() {
+        assertFilledBadges(.darkAqua)
+    }
+
+    func testFilledBadgesAreReadableInLight() {
+        assertFilledBadges(.aqua)
+    }
+
+    /// Заведомо положительный случай для двух тестов выше: `textPrimary`
+    /// — то, что стояло там раньше, — обязан их валить. Иначе проверка
+    /// прошла бы и на прежнем, неверном коде.
+    func testTheOldInkWouldHaveFailedTheseBadges() {
+        let worst = [Theme.success, Theme.warning, Theme.error]
+            .map { ratio(Theme.textPrimary, on: $0, in: .darkAqua) }
+            .min() ?? .infinity
+        XCTAssertLessThan(worst, 4.5, "textPrimary на статусной заливке проходит порог — тест ничего не доказывает")
+    }
+
     func testDarkPaletteMeetsContrastFloors() {
         assertPalette(.darkAqua)
     }

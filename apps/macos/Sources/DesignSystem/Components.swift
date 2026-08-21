@@ -53,13 +53,17 @@ struct StatusBadge: View {
         HStack(spacing: Theme.Space.xxs) {
             if showsDot {
                 Circle()
-                    .fill(Theme.textPrimary)
+                    .fill(Theme.textOnStatus)
                     .frame(width: 6, height: 6)
             }
             Text(text)
                 .font(Theme.Text.caption.weight(.semibold))
         }
-        .foregroundStyle(kind == .neutral ? kind.color : Theme.textPrimary)
+        // Заполненный бейдж красится `textOnStatus`, а не `textPrimary`:
+        // текст лежит на статусном цвете, и спорить ему надо с ним, а не
+        // с фоном страницы. У нейтрального заливки нет — там обычная
+        // пара «цвет на поверхности».
+        .foregroundStyle(kind == .neutral ? kind.color : Theme.textOnStatus)
         .padding(.horizontal, Theme.Space.xs)
         .padding(.vertical, Theme.Space.xxs)
         .background(
