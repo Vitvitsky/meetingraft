@@ -1079,6 +1079,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "meetingraft-term-probe"
+version = "0.1.0"
+dependencies = [
+ "meetingraft-domain",
+ "meetingraft-glossary",
+ "meetingraft-storage",
+]
+
+[[package]]
 name = "meetingraft-translate"
 version = "0.1.0"
 dependencies = [
