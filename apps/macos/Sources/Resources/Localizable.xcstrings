@@ -192,19 +192,19 @@
         }
       }
     },
-    "%lld%": {
+    "%lld%%": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld%"
+            "value": "%lld%%"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld%"
+            "value": "%lld%%"
           }
         }
       }
@@ -2963,19 +2963,19 @@
         }
       }
     },
-    "Rebuilding… %lld%": {
+    "Rebuilding… %lld%%": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Rebuilding… %lld%"
+            "value": "Rebuilding… %lld%%"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Пересборка… %lld%"
+            "value": "Пересборка… %lld%%"
           }
         }
       }
@@ -3367,6 +3367,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Адрес сервиса"
+          }
+        }
+      }
+    },
+    "Session": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Session"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сессия"
           }
         }
       }

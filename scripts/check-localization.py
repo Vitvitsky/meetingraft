@@ -66,6 +66,7 @@ KEY_POSITIONS = [
     (re.compile(r"\bToggle\("), "Toggle"),
     (re.compile(r"\bLabel\("), "Label"),
     (re.compile(r"\bMenu\("), "Menu"),
+    (re.compile(r"\bCommandMenu\("), "CommandMenu"),
     (re.compile(r"\bTextField\("), "TextField"),
     (re.compile(r"\blocalized:"), "String(localized:)"),
 ]
@@ -185,9 +186,13 @@ def catalog_key(literal: str) -> str:
     остальное — `%@`. За тем, чтобы числа приходили обёрнутыми, следит
     отдельная проверка.
     """
+    # Литеральный процент Xcode экранирует: `\(n)%` даёт ключ `%lld%%`.
+    # Вопрос был нерешаем без тулчейна, и первая же сборка на Маке его
+    # решила — каталог тогда разъехался с кодом на двух ключах.
+    escaped = literal.replace("%", "%%")
     return INTERPOLATION.sub(
         lambda match: "%lld" if INT_WRAPPED.match(match.group(0)) else "%@",
-        literal,
+        escaped,
     )
 
 
@@ -331,6 +336,13 @@ LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
 def needs_catalog(key: str) -> bool:
+    """Ключу нужен перевод, только если в нём есть буквы.
+
+    Пустой ключ приходит из `Picker("", selection:)` — метка там скрыта
+    `labelsHidden()`, а Xcode всё равно извлекает пустую строку. Ключи
+    вроде `%@ → %@, %@` — разметка. Требовать для них перевода значило бы
+    засорять каталог и приучать проходить проверку не глядя.
+    """
     return bool(LETTER.search(INTERPOLATION.sub("", key.replace("%@", "").replace("%lld", ""))))
 
 
@@ -452,7 +464,11 @@ def main() -> int:
         print("[2] ок — каждый ключ из кода есть в каталоге")
 
     # Проверка 3 — мёртвых ключей нет.
-    dead = sorted(key for key in strings if key not in keys and key not in PLURAL_KEYS)
+    dead = sorted(
+        key
+        for key in strings
+        if key not in keys and key not in PLURAL_KEYS and needs_catalog(key)
+    )
     if dead:
         failures.append(f"мёртвых ключей: {len(dead)}")
         print(f"\n[3] ПРОВАЛ — в каталоге ключи, которых нет в коде: {len(dead)}")
@@ -465,7 +481,9 @@ def main() -> int:
 
     # Проверка 4 — у каждого ключа есть русский.
     untranslated = sorted(
-        key for key, entry in strings.items() if russian_translation(entry) is None
+        key
+        for key, entry in strings.items()
+        if russian_translation(entry) is None and needs_catalog(key)
     )
     if untranslated:
         failures.append(f"без русского перевода: {len(untranslated)}")
