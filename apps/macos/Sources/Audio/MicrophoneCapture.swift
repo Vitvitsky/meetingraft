@@ -55,7 +55,7 @@ final class MicrophoneCapture: AudioTapping {
             } catch {
                 // Не на всех устройствах VPIO доступен. Отказ здесь — не
                 // повод не записать встречу.
-                NSLog("MeetingRaft: голосовая обработка недоступна (\(error))")
+                NSLog("MeetingRaft: voice processing unavailable (\(error))")
             }
         }
         timer.step("mic:voice_processing")
@@ -110,7 +110,7 @@ final class MicrophoneCapture: AudioTapping {
     /// буфера, зато не врёт на секунду.
     private func hostTime(of when: AVAudioTime) -> UInt64 {
         guard when.isHostTimeValid else {
-            log.error("у буфера микрофона нет hostTime — метка канала взята по времени приёма")
+            log.error("microphone buffer has no hostTime — the channel stamp came from arrival time")
             return HostClock.system.now()
         }
         return when.hostTime

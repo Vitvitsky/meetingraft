@@ -50,9 +50,9 @@ struct UnappliedEditsBanner: View {
     }
 
     private var title: String {
-        edits.count == 1
-            ? "1 правка не легла на текущую версию"
-            : "\(edits.count) правок не легли на текущую версию"
+        // Форма числа — забота каталога, а не ветки `== 1`: в русском
+        // форм три, и ручная развилка верна ровно для единицы.
+        String(localized: "\(Int(edits.count)) edits did not land on the current version")
     }
 
     private func card(_ edit: FfiSegmentEdit) -> some View {
@@ -65,23 +65,23 @@ struct UnappliedEditsBanner: View {
             }
             .foregroundStyle(Theme.textTertiary)
 
-            Text("было: \(edit.originalText)")
+            Text("was: \(edit.originalText)")
                 .font(Theme.Text.bodySmall)
                 .foregroundStyle(Theme.textTertiary)
-            Text("стало: \(edit.editedText)")
+            Text("now: \(edit.editedText)")
                 .font(Theme.Text.bodySmall)
                 .foregroundStyle(Theme.textPrimary)
 
             HStack(spacing: Theme.Space.xs) {
-                Button("▶ Прослушать") { onPlay(edit) }
+                Button("▶ Play") { onPlay(edit) }
                     .buttonStyle(.themedSecondary)
                 // Перенести правку на место нельзя: `originalText` служит
                 // и поиском при пересборе, и признаком возврата к
                 // исходному. Поэтому копируем текст, а правится нужный
                 // сегмент обычным путём.
-                Button("Скопировать текст") { onCopy(edit) }
+                Button("Copy text") { onCopy(edit) }
                     .buttonStyle(.themedSecondary)
-                Button("Удалить правку") { onDismiss(edit) }
+                Button("Delete edit") { onDismiss(edit) }
                     .buttonStyle(.themedSecondary)
                 Spacer()
             }

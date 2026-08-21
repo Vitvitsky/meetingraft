@@ -287,7 +287,7 @@ final class SystemAudioCapture: AudioTapping {
     private func hostTime(of inputTime: UnsafePointer<AudioTimeStamp>) -> UInt64 {
         let stamp = inputTime.pointee
         guard stamp.mFlags.contains(.hostTimeValid) else {
-            log.error("у буфера системного канала нет mHostTime — метка взята по времени приёма")
+            log.error("system buffer has no mHostTime — the stamp came from arrival time")
             return HostClock.system.now()
         }
         return stamp.mHostTime

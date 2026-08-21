@@ -171,12 +171,12 @@ final class SettingsModel {
             countStyle: .file
         )
         var report = String(
-            localized: "Удалено записей: \(result.deletedCount), освобождено \(freed)"
+            localized: "Deleted \(Int(result.deletedCount)) recordings, freed \(freed)"
         )
         if !result.skipped.isEmpty {
             // Пропуски называются вслух: молчание сделало бы число
             // удалённых враньём.
-            report += "\n" + String(localized: "Пропущено: ") + result.skipped.joined(separator: ", ")
+            report += "\n" + String(localized: "Skipped: ") + result.skipped.joined(separator: ", ")
         }
         audioSweepReport = report
         previewAudioSweep()
@@ -229,7 +229,7 @@ final class SettingsModel {
             String(localized: "This option has no file to download.")
         case let WhisperModelDownloaderError.downloadFailed(statusCode):
             if let statusCode {
-                String(localized: "Download failed: HTTP \(statusCode).")
+                String(localized: "Download failed: HTTP \(Int(statusCode)).")
             } else {
                 String(localized: "Download from Hugging Face failed.")
             }

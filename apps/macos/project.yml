@@ -1,6 +1,10 @@
 name: MeetingRaft
 options:
   bundleIdPrefix: com.vitvitsky
+  # Базовый язык — английский; русский приходит переводом из
+  # Localizable.xcstrings. До 2026-08-21 локали не было вовсе: строки
+  # были размечены `String(localized:)`, но каталога не существовало.
+  developmentLanguage: en
   deploymentTarget:
     macOS: "15.0"
 targets:
@@ -20,6 +24,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.vitvitsky.meetingraft
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         SWIFT_VERSION: "6.0"
+        # Строки из кода извлекаются в каталог при сборке; без этого
+        # новый `String(localized:)` не доехал бы до переводчика.
+        SWIFT_EMIT_LOC_STRINGS: YES
         LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../rust/target/debug
         OTHER_LDFLAGS: -lmeetingraft_ffi
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../../rust/target/debug"
@@ -29,8 +36,9 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: MeetingRaft
-        NSMicrophoneUsageDescription: MeetingRaft записывает микрофон для субтитров встречи.
-        NSAudioCaptureUsageDescription: MeetingRaft записывает системный звук встречи (другие участники).
+        CFBundleDevelopmentRegion: en
+        NSMicrophoneUsageDescription: MeetingRaft records the microphone to caption your meeting.
+        NSAudioCaptureUsageDescription: MeetingRaft records the system audio of the meeting (the other participants).
   MeetingRaftTests:
     type: bundle.unit-test
     platform: macOS

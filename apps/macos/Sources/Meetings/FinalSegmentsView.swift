@@ -80,8 +80,7 @@ struct FinalSegmentsView: View {
 private struct EditHintBar: View {
     var body: some View {
         Label(
-            "Нажмите на реплику, чтобы поправить текст. ▶ под тайм-кодом "
-                + "проигрывает её, не открывая правку",
+            "Click a line to edit its text. ▶ under the timecode plays it without opening the editor",
             systemImage: "hand.tap"
         )
         .font(Theme.Text.caption)
@@ -187,10 +186,10 @@ private struct FinalSegmentRow: View {
                     .contentShape(Rectangle())
                     .onTapGesture(perform: onBeginEdit)
                     .onHover { isHovered = $0 }
-                    .help("Нажмите, чтобы поправить текст реплики")
+                    .help("Click to edit the text of this line")
                 }
                 if segment.textEdited, !isEditing {
-                    Text("было: \(segment.originalText)")
+                    Text("was: \(segment.originalText)")
                         .font(Theme.Text.caption)
                         .foregroundStyle(Theme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -205,28 +204,26 @@ private struct FinalSegmentRow: View {
     private var editingBar: some View {
         HStack(spacing: Theme.Space.sm) {
             if !segment.originalText.isEmpty {
-                Button("Вернуть исходное", action: onRevert)
+                Button("Restore original", action: onRevert)
                     .buttonStyle(.themedSecondary)
             }
             if canPromote {
-                Button("Заменять всюду") { isConfirmingPromote = true }
+                Button("Replace everywhere") { isConfirmingPromote = true }
                     .buttonStyle(.themedSecondary)
             }
             Spacer()
         }
         .padding(.top, Theme.Space.xxs)
         .confirmationDialog(
-            "Заменять всюду в этой встрече?",
+            "Replace everywhere in this meeting?",
             isPresented: $isConfirmingPromote,
             titleVisibility: .visible
         ) {
-            Button("Заменять всюду", role: .destructive, action: onPromote)
-            Button("Отмена", role: .cancel) {}
+            Button("Replace everywhere", role: .destructive, action: onPromote)
+            Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Все совпадения в этой встрече будут заменены. "
-                    + "Каждая изменённая реплика получит пометку вашей правки, "
-                    + "и отменить их можно будет только по одной."
+                "Every match in this meeting will be replaced. Each changed line gets your edit mark, and undoing them is one at a time."
             )
         }
     }
@@ -252,8 +249,8 @@ private struct FinalSegmentRow: View {
         }
         .buttonStyle(.borderless)
         .foregroundStyle(isPlaying ? Theme.accent : Theme.textTertiary)
-        .help(isPlaying ? "Остановить" : "Прослушать эту реплику")
-        .accessibilityLabel(isPlaying ? "Остановить" : "Прослушать реплику")
+        .help(isPlaying ? "Stop" : "Play this line")
+        .accessibilityLabel(isPlaying ? "Stop" : "Play the line")
     }
 
     /// Звук читается с диска по нажатию, а не при отрисовке: список
@@ -280,7 +277,7 @@ private struct FinalSegmentRow: View {
                 }
                 if segment.source == .human {
                     Divider()
-                    Button("Вернуть под дорожку") { onUnpin() }
+                    Button("Back to the channel") { onUnpin() }
                 }
             } label: {
                 Text(speakerLabel)
@@ -294,19 +291,19 @@ private struct FinalSegmentRow: View {
             // Правку помечаем: иначе непонятно, почему смена имени
             // дорожки эту реплику не задела.
             if segment.source == .human {
-                Chip(text: "правка")
+                Chip(text: String(localized: "edit"))
             }
             // Подпись слепком отличается от подписи человеком (ADR-013).
             // Одинаковые они выглядели бы одинаково достоверными, и
             // доверие к именам пришлось бы строить на вере.
             if segment.source == .voiceprint {
-                Chip(text: "голос")
+                Chip(text: String(localized: "voice"))
             }
             // Две пометки различаются словом: «правка» уже занята
             // ручным назначением спикера, и одинаковые чипы рядом были
             // бы неразличимы.
             if segment.textEdited {
-                Chip(text: "текст")
+                Chip(text: String(localized: "text"))
             }
         }
     }

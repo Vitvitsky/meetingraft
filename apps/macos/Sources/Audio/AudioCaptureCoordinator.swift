@@ -7,6 +7,14 @@ import Observation
 final class AudioCaptureCoordinator {
     private(set) var isRecording = false
     private(set) var lastError: String?
+    /// Ошибка про микрофон, а не любая другая.
+    ///
+    /// Признаком, а не разбором текста `lastError`. Раньше алерт в
+    /// оболочке искал в сообщении подстроку «микрофон» — и перевод
+    /// интерфейса на английский погасил бы его молча: сообщения стали бы
+    /// английскими, условие перестало бы совпадать, а человек, которому
+    /// отказали в доступе, не узнал бы об этом ниоткуда.
+    private(set) var lastErrorIsMicrophone = false
     private(set) var systemAudioAvailable = false
     /// Почему системный звук недоступен — для actionable-состояния в UI.
     private(set) var systemAudioStatus: SystemAudioStatus = .unknown
@@ -144,6 +152,7 @@ final class AudioCaptureCoordinator {
     /// Старт recording: permission → Rust session → taps.
     func startRecording() async {
         lastError = nil
+        lastErrorIsMicrophone = false
         chunkCount = 0
         captionEventCount = 0
         sttBackend = "idle"
@@ -153,7 +162,8 @@ final class AudioCaptureCoordinator {
         // показать, что запись невозможна, пока разрешение не выдано.
         microphonePermission = readMicrophonePermission()
         guard granted else {
-            lastError = "Доступ к микрофону запрещён"
+            lastError = String(localized: "Microphone access denied")
+            lastErrorIsMicrophone = true
             return
         }
 
@@ -210,7 +220,8 @@ final class AudioCaptureCoordinator {
                 }
             }
         } catch {
-            lastError = "Не удалось запустить микрофон: \(error.localizedDescription)"
+            lastError = String(localized: "Could not start the microphone: \(error.localizedDescription)")
+            lastErrorIsMicrophone = true
             microphone.stop()
             // lastError уже содержит настоящую причину — не перетирать.
             // Записывать нечего: запись не началась.
@@ -258,7 +269,7 @@ final class AudioCaptureCoordinator {
         systemAudio.stop()
         let error = core.stopRecording()
         if !error.isEmpty {
-            lastError = "Не удалось сохранить хвост записи: \(error)"
+            lastError = String(localized: "Could not save the tail of the recording: \(error)")
         }
         core.setSystemAudioExpected(expected: false)
         isRecording = false
@@ -278,6 +289,7 @@ final class AudioCaptureCoordinator {
     /// Сбросить сообщение об ошибке (UI alert).
     func clearError() {
         lastError = nil
+        lastErrorIsMicrophone = false
     }
 
     /// Насколько быстро индикатор следует за звуком. Ниже — плавнее, но

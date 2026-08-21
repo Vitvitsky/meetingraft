@@ -77,23 +77,23 @@ final class ProviderSettingsStore {
 
     /// Подпись, когда Generate заблокирован из‑за пустого каталога backend.
     var backendCatalogMissingHelp: String {
-        "Нет каталога моделей — Settings → Обновить или PROVIDERS_JSON / LLM_*"
+        String(localized: "No model catalog — Settings → Refresh, or PROVIDERS_JSON / LLM_*")
     }
 
     /// Подпись для баннера Artifacts.
     var artifactsPipelineCaption: String {
         switch llmEngine {
         case .builtinTemplates:
-            "Генерация из Final · сейчас: builtin templates (без LLM)"
+            String(localized: "Built from Final · currently: built-in templates (no LLM)")
         case .ollama:
-            "Генерация из Final · LLM: Ollama (\(llmModelId))"
+            String(localized: "Built from Final · LLM: Ollama (\(llmModelId))")
         case .openaiCompat:
-            "Генерация из Final · LLM: OpenAI-compat (\(llmModelId))"
+            String(localized: "Built from Final · LLM: OpenAI-compatible (\(llmModelId))")
         case .backend:
             if llmModelId.isEmpty {
-                "Генерация из Final · LLM: backend"
+                String(localized: "Built from Final · LLM: backend")
             } else {
-                "Генерация из Final · LLM: backend (\(llmProviderId) · \(llmModelId))"
+                String(localized: "Built from Final · LLM: backend (\(llmProviderId) · \(llmModelId))")
             }
         }
     }
@@ -104,7 +104,7 @@ final class ProviderSettingsStore {
         connectionError: String? = nil
     ) {
         if let connectionError, !connectionError.isEmpty {
-            backendLlmModelsMessage = "Не удалось обновить каталог: \(connectionError)"
+            backendLlmModelsMessage = String(localized: "Could not refresh the catalog: \(connectionError)")
             return
         }
 
@@ -112,7 +112,7 @@ final class ProviderSettingsStore {
         if models.isEmpty {
             clearBackendLlmSelection()
             backendLlmModelsMessage =
-                "Нет моделей — настройте PROVIDERS_JSON / LLM_* на backend"
+                String(localized: "No models — configure PROVIDERS_JSON / LLM_* on the backend")
             return
         }
 
@@ -185,7 +185,7 @@ enum PostCallSttEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
     }
 
     var pickerLabel: String {
-        isAvailable ? displayName : "\(displayName) — скоро"
+        isAvailable ? displayName : String(localized: "\(displayName) — coming soon")
     }
 }
 
@@ -215,7 +215,7 @@ enum LlmEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
     }
 
     var pickerLabel: String {
-        isAvailable ? displayName : "\(displayName) — скоро"
+        isAvailable ? displayName : String(localized: "\(displayName) — coming soon")
     }
 
     /// Free-text Model id (Ollama / OpenAI-compat). Backend — picker каталога.
