@@ -47,7 +47,7 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         viewModel.load(meetingId: "m1", version: 1)
 
         XCTAssertEqual(viewModel.rows[0].speakingMs, 4000)
-        XCTAssertEqual(viewModel.rows[0].label, "Без имени")
+        XCTAssertEqual(viewModel.rows[0].label, String(localized: "Unnamed"))
     }
 
     // MARK: - Версия
@@ -284,13 +284,16 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
             )
         )
 
-        XCTAssertTrue(summary.contains("не узнано 4"), summary)
+        // Утверждения строятся тем же ключом, а не русским текстом:
+        // после перевода интерфейса сравнение со словом «не узнано»
+        // падало бы на английской машине и зеленело только на русской.
+        XCTAssertTrue(summary.contains(String(localized: "unrecognised \(Int(4))")), summary)
         XCTAssertFalse(
-            summary.contains("без имени"),
+            summary.contains(String(localized: "Unnamed")),
             "не узнанная реплика сохраняет подпись по каналу и без имени не остаётся: \(summary)"
         )
-        XCTAssertTrue(summary.contains("без звука 3"), summary)
-        XCTAssertTrue(summary.contains("снято 1"), summary)
+        XCTAssertTrue(summary.contains(String(localized: "no audio \(Int(3))")), summary)
+        XCTAssertTrue(summary.contains(String(localized: "cleared \(Int(1))")), summary)
     }
 
     /// Ноль реплик без звука не показывается вовсе: строка отчёта должна
@@ -309,8 +312,15 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
             )
         )
 
-        XCTAssertFalse(summary.contains("без звука"), summary)
-        XCTAssertFalse(summary.contains("снято"), summary)
+        // Утверждение о числе частей, а не о словах: оно не зависит от
+        // языка и прямо выражает то, ради чего тест заведён — отчёт
+        // называет случившееся, а не перечисляет все исходы. Прежняя
+        // проверка «нет слова снято» на английской машине выполнялась бы
+        // сама собой, что бы код ни делал.
+        let parts = summary.components(separatedBy: " · ")
+        XCTAssertEqual(parts.count, 3, summary)
+        XCTAssertTrue(summary.contains(String(localized: "labelled \(Int(5))")), summary)
+        XCTAssertTrue(summary.contains(String(localized: "unrecognised \(Int(2))")), summary)
     }
 
     /// Без собранного движка вся ветка слепков не показывается.
@@ -355,9 +365,14 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
         let chip = SpeakerFormat.voicePrintText(voicePrint("s1", modelMatches: true))
         let count = SpeakerFormat.segmentCountText(120)
 
-        XCTAssertTrue(chip.contains("подписей"), chip)
-        XCTAssertFalse(chip.contains("репл."), "две разные величины названы одним словом: \(chip)")
-        XCTAssertTrue(count.contains("репл."), count)
+        // Проверяется свойство, а не слова: две разные величины не должны
+        // называться одинаково. Сравнение со словом «репл.» держалось на
+        // русском тексте и после перевода не значило бы ничего.
+        XCTAssertFalse(
+            chip.contains(count),
+            "две разные величины названы одним словом: chip=\(chip) count=\(count)"
+        )
+        XCTAssertNotEqual(chip, count)
     }
 
     // MARK: - Память на голоса (задача 7)
@@ -438,8 +453,11 @@ final class SpeakerAttributionViewModelTests: XCTestCase {
             )
         )
 
-        XCTAssertTrue(summary.contains("подписано 10"), summary)
-        XCTAssertTrue(summary.contains("узнано по памяти 3"), summary)
+        XCTAssertTrue(summary.contains(String(localized: "labelled \(Int(10))")), summary)
+        XCTAssertTrue(
+            summary.contains(String(localized: "recognised from memory \(Int(3))")),
+            summary
+        )
     }
 
     // MARK: - Спикеры

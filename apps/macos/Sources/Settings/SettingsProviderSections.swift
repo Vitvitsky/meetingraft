@@ -80,7 +80,7 @@ struct SttSettingsSection: View {
                         .foregroundStyle(Theme.textSecondary)
                 }
                 if let size = selected.approximateSizeMB {
-                    Text("~\(size) MB")
+                    Text("~\(Int(size)) MB")
                         .font(Theme.Text.bodySmall)
                         .foregroundStyle(Theme.textTertiary)
                 }

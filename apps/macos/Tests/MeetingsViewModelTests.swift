@@ -260,8 +260,9 @@ final class MeetingsViewModelTests: XCTestCase {
         guard case let .failure(error) = result else {
             return XCTFail("expected failure")
         }
-        XCTAssertEqual(error.message, "Нужен Final transcript")
-        XCTAssertEqual(vm.exportStatusMessage, "Нужен Final transcript")
+        let expected = String(localized: "A Final transcript is required")
+        XCTAssertEqual(error.message, expected)
+        XCTAssertEqual(vm.exportStatusMessage, expected)
     }
 
     func testApplyProviderConfigUpdatesCoreBeforeGenerate() async {
