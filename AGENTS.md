@@ -138,6 +138,9 @@ Swift собирается только на Mac, поэтому `swiftformat --
   правило не попадают.
 - **`wrapFunctionBodies`.** Тело функции в одну строку
   (`func f() -> Float { 0.45 }`) — ошибка, включая тестовые заглушки.
+- **`wrapPropertyBodies`.** То же для свойств: `var id: String {
+  rawValue }` — ошибка. Поймано 2026-08-21 на `AppearanceSettingsStore`.
+  Протоколов не касается: `var isAvailable: Bool { get }` законно.
 
 Шаг 6 (`xcodebuild test`) ловит то же самое, но компилятором. Пойманное:
 
