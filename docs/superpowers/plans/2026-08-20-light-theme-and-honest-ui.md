@@ -469,7 +469,7 @@ xcodebuild -project MeetingRaft.xcodeproj -scheme MeetingRaft \
 ```
 
 Ожидается провал `testLightPaletteMeetsContrastFloors` с сообщениями про
-`textTertiary` (3.26 на белом), `success` (2.02), `warning` (1.41),
+`textTertiary` (2.99 на `surface`), `success` (2.02), `warning` (1.41),
 `error` (3.41), `info` (1.72). `testDarkPaletteMeetsContrastFloors`
 обязан остаться зелёным — иначе тест ловит не тему, а что-то другое.
 
@@ -1096,7 +1096,7 @@ git commit -m "fix: a button that honestly says stub is still a stub"
 
 В `docs/mac-verification.md` добавить раздел «Тема и контраст»: как
 гонять `ThemeContrastTests`, какие числа даёт отрицательный контроль
-(пять провалов: 3.26 / 2.02 / 1.41 / 3.41 / 1.72), и что проверяется
+(пять провалов: 2.99 / 2.02 / 1.41 / 3.41 / 1.72), и что проверяется
 глазом — переключение System / Light / Dark на трёх поверхностях
 (главное окно, настройки, накладка поверх встречи).
 
