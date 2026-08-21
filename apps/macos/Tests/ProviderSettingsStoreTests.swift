@@ -82,10 +82,18 @@ final class ProviderSettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.llmEngine, .openaiCompat)
     }
 
-    func testArtifactsCaptionMentionsFinalAndTemplates() {
+    func testArtifactsCaptionNamesFinalAndBuiltInTemplates() {
         let store = ProviderSettingsStore()
-        XCTAssertTrue(store.artifactsPipelineCaption.contains("Final"))
-        XCTAssertTrue(store.artifactsPipelineCaption.contains("builtin"))
+
+        // Сравнение с тем же ключом, а не с куском текста: проверка
+        // `contains("builtin")` держалась на написании слова и упала на
+        // первом же прогоне, когда оно стало `built-in`. А
+        // `contains("Final")` вдобавок зависела от языка машины —
+        // по-русски здесь «финала».
+        XCTAssertEqual(
+            store.artifactsPipelineCaption,
+            String(localized: "Built from Final · currently: built-in templates (no LLM)")
+        )
     }
 
     func testExportFolderPathDefault() {
