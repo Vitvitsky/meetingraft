@@ -17,7 +17,9 @@ mod templates;
 mod term_from_edit;
 
 pub use assemble::assemble_final;
-pub use corrections::{EMPTY_ANSWER, fix_prompts};
+pub use corrections::{
+    EMPTY_ANSWER, ParsedFixes, RawFix, RejectReport, fix_prompts, parse_fixes, resolve_fixes,
+};
 pub use dedup::{
     CONTROL_GAP_MS, CollapseError, CollapseReport, Collapsed, TwinPair, TwinScan, collapse_doubles,
     collapse_note, collapse_skipped_note, overlap_ms, scan_twins, word_count, word_overlap,
