@@ -14,6 +14,7 @@ pub use caption::{CaptionEvent, CaptionPhase};
 pub use diagnostics::{SttDiagnostic, SttDiagnosticKind};
 pub use glossary::{
     CandidateExample, CandidateRule, GlossaryKind, GlossaryScope, GlossaryTerm, TermCandidate,
+    TermFix,
 };
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use postcall::{

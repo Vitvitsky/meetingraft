@@ -1019,6 +1019,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "meetingraft-fix-probe"
+version = "0.1.0"
+dependencies = [
+ "meetingraft-domain",
+ "meetingraft-postcall",
+ "meetingraft-storage",
+]
+
+[[package]]
 name = "meetingraft-gate-probe"
 version = "0.1.0"
 dependencies = [

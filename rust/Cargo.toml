@@ -18,6 +18,7 @@ members = [
     "crates/dup-probe",
     "crates/term-probe",
     "crates/brief-probe",
+    "crates/fix-probe",
 ]
 
 [workspace.package]
