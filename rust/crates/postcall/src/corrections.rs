@@ -27,6 +27,14 @@ use crate::polish::format_batch;
 /// разбора, а «исправлений нет» — от «прибор ослеп».
 pub const EMPTY_ANSWER: &str = "НЕТ";
 
+/// Что ещё считается словом «пусто».
+///
+/// Промпт написан по-английски, а слово требует русское, и модель на
+/// англоязычной встрече отвечает `NO` или `NONE`, выполнив просьбу по
+/// сути. Считать это поломкой значит объявить прибор слепым на модели,
+/// которая вела себя правильно.
+const EMPTY_ANSWER_ALIASES: [&str; 2] = ["NO", "NONE"];
+
 /// Сколько слов с каждой стороны ещё считается термином.
 ///
 /// Та же величина, что в [`crate::term_from_edit`], и по той же причине:
@@ -35,6 +43,15 @@ pub const EMPTY_ANSWER: &str = "НЕТ";
 /// Разбор ответа проверяет это сам (модель просьбу нарушает), но сказать
 /// границу вслух дешевле, чем потом её сторожить.
 const MAX_WORDS: usize = 3;
+
+/// Обрамление, которое снимается с краёв названного моделью текста.
+///
+/// Список разрешающий, а не запрещающий: снимается перечисленное, а не
+/// «всё, что не буква». Иначе `C++` потерял бы плюсы, а `C#` — решётку.
+const EDGE_NOISE: &[char] = &[
+    '«', '»', '"', '“', '”', '„', '‘', '’', '\'', '(', ')', '[', ']', '{', '}', ',', '.', ';', ':',
+    '!', '?', '…', '—', '–', '-',
+];
 
 /// Инструкции для поиска неверно распознанных терминов.
 ///
@@ -103,6 +120,14 @@ pub struct RawFix {
 pub struct RejectReport {
     pub out_of_range: usize,
     pub not_in_replica: usize,
+    /// Предложение нашлось в реплике и ничего в ней не меняет.
+    ///
+    /// Считается отдельно от [`RejectReport::not_in_replica`], хотя оба
+    /// про одну проверку: причины разные по сути, а сложенные вместе они
+    /// врут. Десять пар, которые все стоят в тексте и девять из которых
+    /// пустые, отчитались бы как «нет в реплике: 9», и это прочли бы как
+    /// выдуманные места.
+    pub no_change: usize,
     pub too_long: usize,
     pub already_known: usize,
     pub duplicates: usize,
@@ -113,6 +138,7 @@ impl RejectReport {
     pub fn total(&self) -> usize {
         self.out_of_range
             + self.not_in_replica
+            + self.no_change
             + self.too_long
             + self.already_known
             + self.duplicates
@@ -133,7 +159,7 @@ pub fn parse_fixes(response: &str) -> Result<ParsedFixes, String> {
             "LLM вернул пустой ответ вместо слова «{EMPTY_ANSWER}»"
         ));
     }
-    if trimmed.eq_ignore_ascii_case(EMPTY_ANSWER) {
+    if is_empty_answer(trimmed) {
         return Ok(ParsedFixes::default());
     }
 
@@ -156,6 +182,23 @@ pub fn parse_fixes(response: &str) -> Result<ParsedFixes, String> {
         ));
     }
     Ok(parsed)
+}
+
+/// Сказала ли модель «предлагать нечего».
+///
+/// Регистр снимается [`str::to_lowercase`], а не `eq_ignore_ascii_case`:
+/// последний складывает только `a-z` и на кириллице не делает ничего.
+/// Ответ `нет` строчными — самый вероятный у локальной модели — уходил
+/// бы в разбор строк, не разбирался и объявлялся поломкой формата. То
+/// есть модель, выполнившую просьбу дословно, прибор счёл бы слепой:
+/// ровно то слияние «пусто» и «сломано», ради запрета которого весь этот
+/// разбор и написан.
+fn is_empty_answer(trimmed: &str) -> bool {
+    let lowered = trimmed.to_lowercase();
+    lowered == EMPTY_ANSWER.to_lowercase()
+        || EMPTY_ANSWER_ALIASES
+            .iter()
+            .any(|alias| lowered == alias.to_lowercase())
 }
 
 /// `"3 | кобриаты | ковариаты | рядом «регрессия»"` → [`RawFix`].
@@ -188,7 +231,15 @@ pub fn resolve_fixes(
     let mut out: Vec<TermFix> = Vec::new();
 
     for raw in &parsed.fixes {
-        let Some(segment) = segments.get(raw.reply - 1) else {
+        // `checked_sub`, а не `raw.reply - 1`: нумерация с единицы —
+        // договор с моделью, а `RawFix` собирается и снаружи. Ноль дал бы
+        // панику в debug и `usize::MAX` в release, то есть попадание в
+        // `out_of_range` по случайности, а не по решению.
+        let Some(segment) = raw
+            .reply
+            .checked_sub(1)
+            .and_then(|index| segments.get(index))
+        else {
             report.out_of_range += 1;
             continue;
         };
@@ -199,7 +250,7 @@ pub fn resolve_fixes(
             continue;
         };
         if surface == raw.canonical {
-            report.not_in_replica += 1;
+            report.no_change += 1;
             continue;
         }
         if word_count(&surface) > MAX_WORDS || word_count(&raw.canonical) > MAX_WORDS {
@@ -242,8 +293,15 @@ pub fn resolve_fixes(
 /// Совпадение обязано стоять на границах слов. Кусок слова термином быть
 /// не может: `term_from_edit` разбирает правку по словам и такой пары не
 /// увидит, а замена по куску переписывала бы чужие слова целиком.
+///
+/// Кавычки и знаки препинания по краям иголки снимаются: просьбу «текст
+/// в точности как в реплике» модель понимает буквально и цитирует слово
+/// вместе с обрамлением. Такое совпадение проходит границы слов —
+/// кавычка сама не буква, — и в глоссарий уехало бы `«кобриаты»`, то
+/// есть мусор, который не найдётся в тексте никогда. Плюс и решётка не
+/// снимаются: `C++` и `C#` — законные термины.
 fn find_surface(text: &str, needle: &str) -> Option<String> {
-    let needle = needle.trim();
+    let needle = needle.trim().trim_matches(EDGE_NOISE);
     if needle.is_empty() {
         return None;
     }
@@ -514,15 +572,90 @@ mod tests {
     }
 
     /// А пара, не меняющая ничего, — не исправление.
+    ///
+    /// Причина отброса своя: пара **стоит** в реплике. Считать её вместе
+    /// с выдуманными местами значит отчитаться «нет в реплике: 9» там,
+    /// где все девять на месте и просто пусты.
     #[test]
-    fn a_pair_that_changes_nothing_is_dropped() {
+    fn a_pair_that_changes_nothing_is_counted_apart_from_a_missing_one() {
         let segments = [segment(0, "смотри релиз завтра")];
         let parsed = parse_fixes("1 | релиз | релиз | так и есть").unwrap();
 
         let (fixes, report) = resolve_fixes(&parsed, &segments, &[]);
 
         assert!(fixes.is_empty());
-        assert_eq!(report.not_in_replica, 1);
+        assert_eq!(report.no_change, 1);
+        assert_eq!(report.not_in_replica, 0);
+    }
+
+    /// Регистр снимается по-настоящему, а не по-ASCII: `eq_ignore_ascii_case`
+    /// на кириллице не делает ничего, и ответ `нет` строчными уходил бы в
+    /// разбор строк и объявлялся поломкой формата.
+    #[test]
+    fn a_lowercase_no_is_still_an_empty_answer() {
+        for answer in ["нет", "Нет", "НЕТ", "  нет  "] {
+            let parsed = parse_fixes(answer)
+                .unwrap_or_else(|error| panic!("«{answer}» — законное «пусто», а не {error}"));
+            assert!(parsed.fixes.is_empty(), "{answer}");
+        }
+    }
+
+    /// Промпт английский, слово требует русское. На англоязычной встрече
+    /// модель отвечает `NO` или `NONE`, выполнив просьбу по сути.
+    #[test]
+    fn an_english_no_is_an_empty_answer_too() {
+        for answer in ["NO", "none", "None"] {
+            let parsed = parse_fixes(answer).unwrap_or_else(|error| panic!("{answer}: {error}"));
+            assert!(parsed.fixes.is_empty(), "{answer}");
+        }
+    }
+
+    /// Просьбу «текст в точности как в реплике» модель понимает
+    /// буквально и цитирует слово вместе с кавычками. Обрамление в
+    /// глоссарии — мусор: такого surface в тексте не будет никогда.
+    #[test]
+    fn quotes_around_the_needle_do_not_reach_the_glossary() {
+        let segments = [segment(0, "а «кобриаты», в регрессии считаем иначе")];
+        let parsed = parse_fixes("1 | «кобриаты», | ковариаты | рядом «регрессия»").unwrap();
+
+        let (fixes, _) = resolve_fixes(&parsed, &segments, &[]);
+
+        assert_eq!(fixes.len(), 1);
+        assert_eq!(fixes[0].surface, "кобриаты");
+    }
+
+    /// А плюс и решётка — часть термина, а не обрамление.
+    #[test]
+    fn a_plus_or_a_hash_is_part_of_the_term() {
+        let segments = [segment(0, "переписали на си плюс плюс и на си шарп")];
+        let parsed = parse_fixes("1 | си плюс плюс | C++ | язык\n1 | си шарп | C# | язык").unwrap();
+
+        let (fixes, _) = resolve_fixes(&parsed, &segments, &[]);
+
+        assert_eq!(fixes.len(), 2);
+        assert_eq!(fixes[0].canonical, "C++");
+        assert_eq!(fixes[1].canonical, "C#");
+    }
+
+    /// Номер реплики приходит из ответа модели, а `RawFix` собирается и
+    /// снаружи: ноль обязан быть отказом, а не паникой.
+    #[test]
+    fn a_zero_reply_number_is_out_of_range_not_a_panic() {
+        let segments = [segment(0, "одна реплика")];
+        let parsed = ParsedFixes {
+            fixes: vec![RawFix {
+                reply: 0,
+                surface: "одна".into(),
+                canonical: "одну".into(),
+                reason: String::new(),
+            }],
+            skipped_lines: 0,
+        };
+
+        let (fixes, report) = resolve_fixes(&parsed, &segments, &[]);
+
+        assert!(fixes.is_empty());
+        assert_eq!(report.out_of_range, 1);
     }
 
     #[test]

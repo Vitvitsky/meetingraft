@@ -76,6 +76,23 @@ fn main() -> ExitCode {
         }
     };
 
+    // База открывается до самопроверки, но **не читается**: проверяется
+    // только, что путь и встреча существуют. Правило «сперва прибор,
+    // потом данные» про суждение о данных, а не про опечатку в пути — а
+    // три запроса самопроверки с потолком в десять минут каждый стоят
+    // получаса, потраченного впустую на неверный id.
+    let store = match AudioManifestStore::open(Path::new(&options.root)) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("База не открылась: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if matches!(store.get_final_transcript(&options.meeting), Ok(None)) {
+        eprintln!("Размечать нечего: у встречи {} нет Final.", options.meeting);
+        return ExitCode::FAILURE;
+    }
+
     let client = OllamaNativeClient::with_timeout(&options.url, &options.model, TIMEOUT);
 
     // Сперва прибор, потом данные: обратный порядок позволил бы прочитать
@@ -124,7 +141,8 @@ fn planted() -> Vec<FinalSegment> {
     ]
 }
 
-/// Что обязано найтись в подложенной расшифровке.
+/// Что обязано найтись в подложенной расшифровке — обе стороны пары.
+const PLANTED_SURFACE: &str = "кобриаты";
 const PLANTED_CANONICAL: &str = "ковариат";
 
 /// Расшифровка без единой порчи: здесь предлагать нечего.
@@ -176,9 +194,14 @@ fn self_check(client: &dyn LlmClient) -> Verdict {
         }
     };
     let (fixes, _) = resolve_fixes(&parsed, &planted_segments, &[]);
-    let found = fixes
-        .iter()
-        .any(|fix| fix.canonical.to_lowercase().contains(PLANTED_CANONICAL));
+    // Сверяются обе стороны пары. По одному canonical положительный
+    // контроль выполнялся бы ответом «выборке → ковариаты»: слово то
+    // самое, место не то, подложенное не найдено — а прибор объявил бы
+    // себя годным и пошёл к настоящим данным.
+    let found = fixes.iter().any(|fix| {
+        fix.surface.to_lowercase() == PLANTED_SURFACE
+            && fix.canonical.to_lowercase().contains(PLANTED_CANONICAL)
+    });
     if !found {
         println!("  подложенная порча: НЕ НАЙДЕНА");
         println!("    ответ: {}", shorten(&first, 120));
@@ -336,6 +359,7 @@ fn print_rejects(parsed: &ParsedFixes, report: &RejectReport, accepted: usize) {
         parsed.fixes.len()
     );
     println!("  нет в названной реплике: {}", report.not_in_replica);
+    println!("  ничего не меняет: {}", report.no_change);
     println!("  номер реплики вне расшифровки: {}", report.out_of_range);
     println!("  длиннее трёх слов: {}", report.too_long);
     println!("  уже в глоссарии: {}", report.already_known);
@@ -507,6 +531,19 @@ mod tests {
     #[test]
     fn a_model_that_misses_the_planted_fix_is_blind() {
         let client = scripted(["НЕТ", "НЕТ", "НЕТ"]);
+
+        let reason = blind_reason(self_check(&client)).expect("прибор обязан признать себя слепым");
+        assert!(reason.contains("подложенн"), "{reason}");
+    }
+
+    /// Верное слово не с того места — тоже промах. Пара «выборке →
+    /// ковариаты» разрешается без единой придирки: слово стоит в первой
+    /// реплике, отличается от предложения и коротко. Но подложенное
+    /// осталось ненайденным, и по одному canonical это неотличимо.
+    #[test]
+    fn the_right_canonical_in_the_wrong_place_is_not_a_hit() {
+        let misplaced = "1 | выборке | ковариаты | звучит похоже";
+        let client = scripted([misplaced, misplaced, "НЕТ"]);
 
         let reason = blind_reason(self_check(&client)).expect("прибор обязан признать себя слепым");
         assert!(reason.contains("подложенн"), "{reason}");
