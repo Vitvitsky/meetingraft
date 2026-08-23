@@ -1,0 +1,13 @@
+[package]
+name = "meetingraft-fix-probe"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "fix-probe"
+path = "src/main.rs"
+
+[dependencies]
+meetingraft-domain = { path = "../domain" }
+meetingraft-postcall = { path = "../postcall" }
+meetingraft-storage = { path = "../storage" }
