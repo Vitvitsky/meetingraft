@@ -1,6 +1,6 @@
 //! Термины глоссария и область действия (Phase 5).
 
-use crate::SpeechLanguage;
+use crate::{AudioChannel, SpeechLanguage};
 
 /// Область действия термина глоссария.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +91,31 @@ pub struct TermCandidate {
     pub examples: Vec<CandidateExample>,
 }
 
+/// Предложение модели: как слово стоит в расшифровке и чем оно, по её
+/// мнению, было.
+///
+/// Отличие от [`TermCandidate`] — в одном поле и в одном праве. Добыча
+/// верной формы не знает и потому её не называет; модель называет
+/// (`canonical`), но **звука не слышала**: это априорная вероятность, а
+/// не свидетельство. Свидетельством пара становится только после того,
+/// как человек послушал фрагмент, — ради этого здесь лежит место
+/// (`channel`, `start_ms`, `end_ms`), а не один текст.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TermFix {
+    pub channel: AudioChannel,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    /// Форма **как в расшифровке**, а не как её написала модель.
+    pub surface: String,
+    /// Что предложила модель. Догадка.
+    pub canonical: String,
+    /// На что она опёрлась — соседние слова. Пустая опора сама по себе
+    /// сигнал, и видит его человек, а не порог.
+    pub reason: String,
+    /// Реплика целиком: без неё пара неодобряема глазами.
+    pub replica_text: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +149,24 @@ mod tests {
 
         assert_eq!(candidate.rule, CandidateRule::Latin);
         assert_eq!(candidate.examples[0].start_ms, 12_000);
+    }
+
+    /// Предложение неодобряемо без места и без реплики: одно ради ▶,
+    /// другое ради глаз. Пара сама по себе — только догадка.
+    #[test]
+    fn a_fix_carries_the_place_you_can_listen_to() {
+        let fix = TermFix {
+            channel: AudioChannel::System,
+            start_ms: 762_000,
+            end_ms: 767_500,
+            surface: "кобриаты".into(),
+            canonical: "ковариаты".into(),
+            reason: "рядом «регрессия» и «выборка»".into(),
+            replica_text: "кобриаты в регрессии считаем по той же выборке".into(),
+        };
+
+        assert_eq!(fix.start_ms, 762_000);
+        assert!(fix.replica_text.contains(&fix.surface));
     }
 
     /// Правило `Repeated` держится на частоте, а не на форме, и потому
