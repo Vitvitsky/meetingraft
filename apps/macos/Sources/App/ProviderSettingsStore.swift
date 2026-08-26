@@ -41,14 +41,37 @@ final class ProviderSettingsStore {
     var selectedSttModelId: WhisperModelId = .auto
     /// Движок post-call прохода; `auto` — по языку сессии.
     ///
-    /// Русский вариант доступен только со скачанной моделью — её кладёт
-    /// `scripts/fetch-gigaam-models.sh`, приложение её не качает. Список
-    /// вариантов поэтому спрашивается у ядра, а не берётся из `allCases`.
-    var postCallRecognizer: PostCallRecognizer = .auto
+    /// Русский вариант доступен только со скачанной моделью, поэтому
+    /// список вариантов спрашивается у ядра, а не берётся из `allCases`.
+    ///
+    /// **Переживает перезапуск**, в отличие от соседей по этому стору.
+    /// Разница не в аккуратности: остальные поля здесь — адреса и токены,
+    /// которые видно в том же окне, а этот выбор виден только по тому,
+    /// чем распозналась встреча. Сброс на «авто» никак себя не проявил бы
+    /// — человек узнал бы о нём по расшифровке, сделанной другим движком.
+    var postCallRecognizer: PostCallRecognizer {
+        didSet {
+            defaults.set(postCallRecognizer.rawValue, forKey: Keys.postCallRecognizer)
+        }
+    }
 
     let postCallEngines = PostCallSttEngine.allCases
     let sttModelIds = WhisperModelId.allCases
     let llmEngines = LlmEngine.allCases
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let stored = defaults.string(forKey: Keys.postCallRecognizer)
+        // Неизвестное значение — это «не выбрано», а не повод упасть или
+        // молча взять русский движок.
+        postCallRecognizer = stored.flatMap(PostCallRecognizer.init(rawValue:)) ?? .auto
+    }
+
+    private enum Keys {
+        static let postCallRecognizer = "postCall.recognizer"
+    }
 
     /// Элементы Picker для backend LLM (`provider_id|model`).
     var backendLlmSelections: [BackendLlmSelection] {
