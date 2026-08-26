@@ -171,6 +171,38 @@ pub fn words_from_tokens(tokens: &[(String, u64)]) -> Vec<HypothesisWord> {
     words
 }
 
+/// Собрать слова из посимвольных токенов.
+///
+/// GigaAM отдаёт не subword-токены, а буквы: его `tokens.txt` — русский
+/// алфавит плюс пробел (id 0) плюс `<blk>`. Слово здесь кончается не
+/// ведущим пробелом следующего токена, а **отдельным токеном-пробелом**,
+/// и [`words_from_tokens`] на таком входе склеит всю фразу в одно слово:
+/// пробел он выбрасывает как пустой, а буква после него не начинается с
+/// пробела и приклеивается к предыдущему.
+///
+/// Время слова — время его последней буквы, как и у соседа.
+pub fn words_from_char_tokens(tokens: &[(String, u64)]) -> Vec<HypothesisWord> {
+    let mut words: Vec<HypothesisWord> = Vec::new();
+    let mut open = false;
+    for (raw, end_ms) in tokens {
+        if raw.trim().is_empty() {
+            // Пробел закрывает слово. Подряд идущих пробелов модель не
+            // отдаёт, но пустое слово от них не заводится и так.
+            open = false;
+            continue;
+        }
+        if open && let Some(last) = words.last_mut() {
+            last.text.push_str(raw);
+            last.end_ms = *end_ms;
+        } else {
+            words.push(HypothesisWord::new(raw.clone(), *end_ms));
+            open = true;
+        }
+    }
+    words.retain(|word| !word.text.trim().is_empty());
+    words
+}
+
 /// Подставить время сегмента словам, которым модель его не дала.
 ///
 /// Whisper заполняет `t1` токенов только когда сам посчитал token-level
@@ -414,6 +446,67 @@ mod tests {
 
         assert_eq!(after.committed_text, "три");
         assert_eq!(after.committed_until_ms, Some(400));
+    }
+
+    /// Посимвольные токены: слово кончается токеном-пробелом.
+    #[test]
+    fn char_tokens_split_on_the_space_token() {
+        let tokens = vec![
+            ("с".to_string(), 100),
+            ("л".to_string(), 150),
+            ("о".to_string(), 200),
+            (" ".to_string(), 220),
+            ("в".to_string(), 300),
+            ("о".to_string(), 380),
+        ];
+
+        let words = words_from_char_tokens(&tokens);
+
+        assert_eq!(words.len(), 2, "слов должно быть два: {words:?}");
+        assert_eq!(words[0].text, "сло");
+        assert_eq!(words[0].end_ms, 200, "время слова — время последней буквы");
+        assert_eq!(words[1].text, "во");
+        assert_eq!(words[1].end_ms, 380);
+    }
+
+    /// А вот зачем эта функция вообще заведена: соседняя, рассчитанная на
+    /// subword-токены Whisper, на том же входе даёт **одно** слово.
+    ///
+    /// Без этой проверки `words_from_char_tokens` выглядит дублем и
+    /// однажды будет выброшена как лишняя — а разница между ними молчит:
+    /// склеенная в одно слово фраза выглядит как плохое распознавание,
+    /// а не как ошибка сборки слов.
+    #[test]
+    fn the_whisper_reader_glues_the_same_char_tokens_into_one_word() {
+        let tokens = vec![
+            ("с".to_string(), 100),
+            ("л".to_string(), 150),
+            ("о".to_string(), 200),
+            (" ".to_string(), 220),
+            ("в".to_string(), 300),
+            ("о".to_string(), 380),
+        ];
+
+        let glued = words_from_tokens(&tokens);
+
+        assert_eq!(glued.len(), 1, "ожидалась склейка: {glued:?}");
+        assert_eq!(glued[0].text, "слово");
+    }
+
+    /// Ведущий и хвостовой пробелы пустых слов не заводят.
+    #[test]
+    fn leading_and_trailing_space_tokens_add_no_empty_words() {
+        let tokens = vec![
+            (" ".to_string(), 10),
+            ("д".to_string(), 100),
+            ("а".to_string(), 140),
+            (" ".to_string(), 160),
+        ];
+
+        let words = words_from_char_tokens(&tokens);
+
+        assert_eq!(words.len(), 1, "{words:?}");
+        assert_eq!(words[0].text, "да");
     }
 
     #[test]

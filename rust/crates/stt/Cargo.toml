@@ -7,10 +7,23 @@ edition.workspace = true
 default = []
 # On-device Whisper. Включать при локальной сборке macOS / generate-ffi.
 whisper = ["dep:whisper-rs"]
+# Русский GigaAM v3 через sherpa-onnx. Выключен по умолчанию по той же
+# причине, что и `diarize/model`: `build.rs` крейта `sherpa-onnx` **ходит
+# в сеть** за готовыми статическими библиотеками, а обычная сборка —
+# включая CI и Linux — не должна качать ничего.
+#
+# Отличие от `whisper` в нашу пользу: ускоритель тут не Metal, а
+# onnxruntime, поэтому фича собирается и работает на Linux. Движок можно
+# проверить компилятором и прогнать прибором без Мака.
+gigaam = ["dep:sherpa-onnx"]
 
 [dependencies]
 meetingraft-domain = { path = "../domain" }
 uuid = { version = "1", features = ["v4"] }
+# Тот же крейт и та же версия, что у `meetingraft-diarize`: тулкит
+# линкуется целиком, и разъехавшиеся версии означали бы две его копии в
+# бинаре.
+sherpa-onnx = { version = "1.13", optional = true }
 
 # Ускоритель выбирается по платформе, а не по фиче: Metal существует только
 # на Apple, и без этого разделения крейт с `--features whisper` вообще не
