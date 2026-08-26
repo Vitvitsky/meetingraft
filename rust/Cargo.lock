@@ -1081,8 +1081,16 @@ name = "meetingraft-stt"
 version = "0.1.0"
 dependencies = [
  "meetingraft-domain",
+ "sherpa-onnx",
  "uuid",
  "whisper-rs",
+]
+
+[[package]]
+name = "meetingraft-stt-probe"
+version = "0.1.0"
+dependencies = [
+ "meetingraft-stt",
 ]
 
 [[package]]

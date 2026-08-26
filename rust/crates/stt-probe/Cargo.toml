@@ -1,0 +1,17 @@
+[package]
+name = "meetingraft-stt-probe"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "stt-probe"
+path = "src/main.rs"
+
+[features]
+default = []
+# Прогон с настоящим движком GigaAM. Без неё прибор отказывает на
+# самопроверке — и это его честный ответ, а не поломка.
+gigaam = ["meetingraft-stt/gigaam"]
+
+[dependencies]
+meetingraft-stt = { path = "../stt" }

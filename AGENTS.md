@@ -90,7 +90,7 @@ MeetingRaft развивается **как личный инструмент и
 |---|---|---|
 | `domain` | `meetingraft-domain` | сущности: caption, session, glossary, speaker, language, postcall |
 | `session` | `meetingraft-session` | машина состояний сессии, `ChannelMixer` (ADR-009) |
-| `stt` | `meetingraft-stt` | live-окна, local agreement (ADR-010), отсев галлюцинаций, noise gate, batch-проход для post-call |
+| `stt` | `meetingraft-stt` | live-окна, local agreement (ADR-010), отсев галлюцинаций, noise gate, batch-проход для post-call; русский GigaAM v3 за фичей `gigaam` |
 | `glossary` | `meetingraft-glossary` | нормализация терминов, CSV-импорт, добыча кандидатов |
 | `postcall` | `meetingraft-postcall` | сборка финала, диффы, правки сегментов, спикеры, LLM-промпты и артефакты |
 | `storage` | `meetingraft-storage` | SQLite: миграции, манифест аудио, правки, журнал диагностики |
@@ -102,7 +102,8 @@ MeetingRaft развивается **как личный инструмент и
 Отдельно — приборы, в приложение не входящие: `echo-probe` (детектор эха),
 `gate-probe` (гейт речи и число запусков модели), `diarize-probe`
 (разделение голосов), `dup-probe` (удвоение реплик), `term-probe`
-(кандидаты в глоссарий). Плюс `uniffi-bindgen`.
+(кандидаты в глоссарий), `stt-probe` (WER и время русского движка
+GigaAM). Плюс `uniffi-bindgen`.
 
 **Каждый прибор начинает с заведомо положительного и заведомо
 отрицательного случая** и до настоящих данных не доходит, если те не
@@ -216,6 +217,32 @@ CPU-сборка whisper.cpp (нужен `cmake`) в остальных случ
 
 `generate-ffi.sh` собирает с `whisper` по умолчанию; для CI/Linux —
 `MEETINGRAFT_FFI_FEATURES= apps/macos/Scripts/generate-ffi.sh`.
+
+## GigaAM за фичей (2026-08-26)
+
+Второй распознаватель в том же крейте: русский GigaAM v3 (MIT, Sber)
+через `sherpa-onnx`, фича `gigaam`, по умолчанию выключена — `build.rs`
+крейта ходит в сеть, как и у `diarize/model`.
+
+Три отличия от whisper, каждое существенное:
+
+1. **Собирается и работает на Linux.** Ускоритель — onnxruntime, а не
+   Metal, поэтому движок проверяется компилятором и гоняется прибором без
+   Мака. `cargo run --release -p meetingraft-stt-probe --features gigaam
+   -- <каталог-данных>`.
+2. **Только русский.** ADR-003 требует ru/en/es, поэтому это второй
+   движок, а не замена. В живом пути его нет вовсе: там всё настроено под
+   поведение Whisper, и подставлять другой движок до чисел — менять две
+   вещи разом.
+3. **На не-речи почти молчит.** `hallucination.rs` — про Whisper; GigaAM
+   на одиннадцати секундах шума выдал одно слово. Переносить туда
+   whisper'овские фильтры нельзя, но и считать вопрос закрытым — рано.
+
+Числа и три отрицательных контроля —
+`docs/superpowers/plans/2026-08-26-gigaam-v3-russian-stt.md`. Оттуда же
+правило, стоившее строки кода: **параметры признаков задаются метаданными
+ONNX, а `feat_config` на этот экспорт не влияет вовсе** — настройка
+размерности стояла в коде с уверенным комментарием и не делала ничего.
 
 ## Guardrails for coding agents
 

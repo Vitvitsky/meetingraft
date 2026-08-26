@@ -114,8 +114,14 @@ mod tests {
     }
 
     fn write(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        // Имя крейта в пути обязательно: этот файл включён и в
+        // `stt-probe` (через `#[path]`), то есть тесты живут в **двух**
+        // бинарях. Идентификаторы потоков в разных процессах совпадают,
+        // и без разделения два прогона под параллельным раннером
+        // удаляли бы фикстуры друг друга.
         let path = std::env::temp_dir().join(format!(
-            "mr-wav-{name}-{:?}.wav",
+            "mr-wav-{}-{name}-{:?}.wav",
+            env!("CARGO_CRATE_NAME"),
             std::thread::current().id()
         ));
         std::fs::write(&path, bytes).expect("файл");
