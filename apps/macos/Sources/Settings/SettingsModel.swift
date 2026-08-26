@@ -43,6 +43,9 @@ final class SettingsModel {
     // нельзя — это заглушка в интерфейсе.
     /// Собран ли движок и лежит ли модель на диске.
     private(set) var russianEngineReady = false
+    private(set) var isDownloadingRussianEngine = false
+    private(set) var russianEngineProgress: Double?
+    private(set) var russianEngineError = ""
     /// Чем пойдёт пересбор при нынешних настройках — словами ядра.
     ///
     /// Спрашивается у ядра, а не пересказывается здесь: своя копия
@@ -51,9 +54,14 @@ final class SettingsModel {
 
     private var core: MeetingCore?
     private let downloader: WhisperDownloading
+    private let gigaamDownloader: GigaamDownloading
 
-    init(downloader: WhisperDownloading = WhisperModelDownloader()) {
+    init(
+        downloader: WhisperDownloading = WhisperModelDownloader(),
+        gigaamDownloader: GigaamDownloading = GigaamModelDownloader()
+    ) {
         self.downloader = downloader
+        self.gigaamDownloader = gigaamDownloader
     }
 
     /// Движок, который реально поднимется при записи.
@@ -152,6 +160,38 @@ final class SettingsModel {
         guard let core else { return }
         russianEngineReady = core.gigaamModelReady()
         postCallEngineNote = core.postCallEngineNote()
+    }
+
+    /// Скачать модель русского движка — четыре файла, ~230 МБ.
+    ///
+    /// Ответ на вопрос «готов ли движок» после загрузки берётся **у
+    /// ядра**, а не выводится из того, что загрузка не упала: файлы могли
+    /// доехать, а сборка быть без фичи `gigaam`, и тогда выбор всё равно
+    /// не сработает. Показать «готово» в такой ситуации — соврать.
+    func downloadRussianEngine() {
+        guard let core, !isDownloadingRussianEngine else { return }
+        let directory = URL(fileURLWithPath: core.modelsDirectory(), isDirectory: true)
+        isDownloadingRussianEngine = true
+        russianEngineError = ""
+        russianEngineProgress = 0
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await gigaamDownloader.download(modelsDirectory: directory) { value in
+                    self.russianEngineProgress = value
+                }
+                refreshPostCallEngine()
+                if !russianEngineReady {
+                    russianEngineError = String(
+                        localized: "Files are in place, but this build has no Russian engine."
+                    )
+                }
+            } catch {
+                russianEngineError = Self.message(for: error)
+            }
+            isDownloadingRussianEngine = false
+            russianEngineProgress = nil
+        }
     }
 
     /// Локальное ядро нужно для проверки API; запись применяет те же

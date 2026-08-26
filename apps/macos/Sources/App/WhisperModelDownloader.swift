@@ -16,7 +16,21 @@ protocol WhisperDownloading: Sendable {
     ) async throws -> URL
 }
 
-struct WhisperModelDownloader: WhisperDownloading {
+/// Скачивание одного файла по адресу.
+///
+/// Заведено, когда понадобился второй движок: его модель — четыре файла,
+/// и своя реализация загрузки была бы **второй правдой** об одном и том
+/// же (докачка, `.partial`, прогресс, коды HTTP). Здесь тот же
+/// транспорт, только без знания о том, что за файл едет.
+protocol FileDownloading: Sendable {
+    func downloadFile(
+        from sourceURL: URL,
+        to destination: URL,
+        progress: @escaping @MainActor (Double) -> Void
+    ) async throws
+}
+
+struct WhisperModelDownloader: WhisperDownloading, FileDownloading {
     /// `(sourceURL, partialDestination, onProgress)` — для unit-тестов без live HF.
     private let downloadTransport: @Sendable (URL, URL, @Sendable @escaping (Double) -> Void) async throws -> Void
     private let session: URLSession
@@ -108,6 +122,45 @@ struct WhisperModelDownloader: WhisperDownloading {
 
         await progress(1)
         return destination
+    }
+
+    /// Скачать произвольный файл тем же транспортом, что и модели.
+    ///
+    /// Файл на месте — загрузка не начинается: 225 МБ по второму разу не
+    /// качаются ради того, чтобы получить тот же байт в байт файл.
+    func downloadFile(
+        from sourceURL: URL,
+        to destination: URL,
+        progress: @escaping @MainActor (Double) -> Void
+    ) async throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: destination.path) {
+            await progress(1)
+            return
+        }
+
+        await progress(0)
+        let partial = Self.partialURL(for: destination)
+        if fileManager.fileExists(atPath: partial.path) {
+            try fileManager.removeItem(at: partial)
+        }
+
+        do {
+            try await downloadTransport(sourceURL, partial) { fraction in
+                Task { @MainActor in progress(fraction) }
+            }
+            try Self.installDownloadedFile(tempPartial: partial, destination: destination)
+        } catch let error as WhisperModelDownloaderError {
+            try? fileManager.removeItem(at: partial)
+            throw error
+        } catch {
+            // Недокачанный файл не остаётся на диске: он неотличим от
+            // целого для всех, кто просто проверяет наличие.
+            try? fileManager.removeItem(at: partial)
+            throw WhisperModelDownloaderError.downloadFailed(statusCode: nil)
+        }
+
+        await progress(1)
     }
 
     private static func defaultDownloadTransport(

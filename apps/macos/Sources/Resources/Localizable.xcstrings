@@ -1365,6 +1365,23 @@
         }
       }
     },
+    "Download the Russian engine": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download the Russian engine"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скачать русский движок"
+          }
+        }
+      }
+    },
     "Downloading…": {
       "extractionState": "manual",
       "localizations": {
@@ -1565,6 +1582,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Подача в распознаватель; вручную не настраивается."
+          }
+        }
+      }
+    },
+    "Files are in place, but this build has no Russian engine.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files are in place, but this build has no Russian engine."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Файлы на месте, но в этой сборке русского движка нет."
           }
         }
       }

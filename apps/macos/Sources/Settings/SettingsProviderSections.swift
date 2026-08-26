@@ -84,6 +84,48 @@ struct SttSettingsSection: View {
                 .font(Theme.Text.bodySmall)
                 .foregroundStyle(Theme.textTertiary)
         }
+
+        russianEngineDownloadRow
+    }
+
+    /// Загрузка русского движка. Показывается, только пока он не готов —
+    /// кнопка «скачать уже скачанное» ничего не значит.
+    @ViewBuilder
+    private var russianEngineDownloadRow: some View {
+        if !model.russianEngineReady {
+            HStack(spacing: Theme.Space.sm) {
+                Button(
+                    model.isDownloadingRussianEngine
+                        ? String(localized: "Downloading…")
+                        : String(localized: "Download the Russian engine")
+                ) {
+                    model.downloadRussianEngine()
+                }
+                .buttonStyle(.themedPrimary)
+                .disabled(model.isDownloadingRussianEngine)
+
+                if let progress = model.russianEngineProgress {
+                    ProgressView(value: progress).frame(width: 140)
+                    Text("\(Int(progress * 100))%")
+                        .font(Theme.Text.mono())
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                // Размер называется до загрузки, а не после: четверть
+                // гигабайта без предупреждения — неприятный сюрприз на
+                // мобильном интернете.
+                Text("~\(Int(GigaamModelCatalog.approximateTotalBytes / 1_000_000)) MB")
+                    .font(Theme.Text.bodySmall)
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+            }
+        }
+
+        if !model.russianEngineError.isEmpty {
+            Text(model.russianEngineError)
+                .font(Theme.Text.bodySmall)
+                .foregroundStyle(Theme.error)
+                .textSelection(.enabled)
+        }
     }
 
     private var engineStatus: some View {
