@@ -20,6 +20,12 @@ pub fn gigaam_models_dir(data_root: impl AsRef<Path>) -> PathBuf {
     data_root.as_ref().join("models").join("gigaam")
 }
 
+/// Как эта модель называется в ошибках и в интерфейсе.
+///
+/// Живёт рядом с путями, а не в `gigaam.rs`: имя движка нужно называть и
+/// в сборке **без** фичи — например объясняя, почему выбор недоступен.
+pub const MODEL_ID: &str = "gigaam-v3";
+
 /// Энкодер Conformer (int8).
 pub const ENCODER_FILE: &str = "encoder.int8.onnx";
 /// Предсказатель RNNT.

@@ -3,6 +3,7 @@
 mod batch;
 mod echo;
 mod engine;
+mod engine_choice;
 mod gigaam_path;
 mod hallucination;
 mod local_agreement;
@@ -23,9 +24,10 @@ mod whisper_batch;
 pub use batch::{BatchTranscribeError, BatchTranscriber, MockBatchTranscriber, normalize_segments};
 pub use echo::{EchoReport, EchoWindow, detect_echo};
 pub use engine::SttEngine;
+pub use engine_choice::{BatchEngine, EngineDecision, decide_batch_engine, gigaam_ready};
 pub use gigaam_path::{
-    DECODER_FILE, ENCODER_FILE, GigaamModels, JOINER_FILE, TOKENS_FILE, gigaam_models_dir,
-    resolve_gigaam_models,
+    DECODER_FILE, ENCODER_FILE, GigaamModels, JOINER_FILE, MODEL_ID as GIGAAM_MODEL_ID,
+    TOKENS_FILE, gigaam_models_dir, resolve_gigaam_models,
 };
 pub use hallucination::{is_hallucination_prefix, is_whisper_hallucination};
 pub use local_agreement::{
@@ -39,9 +41,7 @@ pub use pacing::{InferencePacer, MIN_SPEECH_FRAMES, PARTIAL_MIN_FRAMES, SILENCE_
 pub use window::{LiveCaptionPipeline, SttBackendKind, pcm_bytes_to_i16};
 
 #[cfg(feature = "gigaam")]
-pub use gigaam::{
-    GigaamBatchTranscriber, GigaamHypothesis, GigaamRecognizer, MODEL_ID as GIGAAM_MODEL_ID,
-};
+pub use gigaam::{GigaamBatchTranscriber, GigaamHypothesis, GigaamRecognizer};
 
 #[cfg(feature = "whisper")]
 pub use whisper::WhisperSttEngine;

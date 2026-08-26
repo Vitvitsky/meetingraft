@@ -9,7 +9,8 @@
 use std::path::PathBuf;
 
 use domain::{
-    AudioChannel, FinalSegment, FinalTranscript, LanguagePolicy, Speaker, TranscriptSegment,
+    AudioChannel, FinalSegment, FinalTranscript, LanguagePolicy, PostCallRecognizer, Speaker,
+    TranscriptSegment,
 };
 use glossary::{GlossaryEngine, active_terms};
 use postcall::{
@@ -29,6 +30,9 @@ pub struct RebuildParams {
     pub meeting_id: String,
     pub policy: LanguagePolicy,
     pub post_call_model: String,
+    /// Чем распознавать: настройка человека, `Auto` — правило по языку
+    /// сессии (`stt::decide_batch_engine`).
+    pub recognizer: PostCallRecognizer,
     pub llm_engine: String,
     pub llm_base_url: String,
     pub llm_model_id: String,
@@ -233,12 +237,33 @@ fn provenance(engine_note: &str, polish: &PolishReport) -> String {
     }
 }
 
-/// Модель качается по требованию, поэтому её отсутствие — не сбой
-/// прохода, а внятное сообщение пользователю.
-#[cfg(feature = "whisper")]
+/// Открыть тот движок, который выбрало правило.
+///
+/// Выбор считается **до** открытия модели и целиком в `stt`: здесь
+/// только исполнение. Причина выбора едет в note и оттуда в provenance
+/// — человек видит, чем распознана встреча, не заходя в настройки.
 fn open_transcriber(
     params: &RebuildParams,
     prompt: &str,
+) -> Result<(Box<dyn BatchTranscriber>, String), String> {
+    let decision = stt::decide_batch_engine(
+        params.recognizer,
+        params.policy.primary,
+        stt::gigaam_ready(&params.data_root),
+    )?;
+    match decision.engine {
+        stt::BatchEngine::Gigaam => open_gigaam(params, &decision.reason),
+        stt::BatchEngine::Whisper => open_whisper(params, prompt, &decision.reason),
+    }
+}
+
+/// Модель качается по требованию, поэтому её отсутствие — не сбой
+/// прохода, а внятное сообщение пользователю.
+#[cfg(feature = "whisper")]
+fn open_whisper(
+    params: &RebuildParams,
+    prompt: &str,
+    reason: &str,
 ) -> Result<(Box<dyn BatchTranscriber>, String), String> {
     use stt::WhisperBatchTranscriber;
 
@@ -254,7 +279,7 @@ fn open_transcriber(
     transcriber.set_initial_prompt(prompt);
     Ok((
         Box::new(transcriber),
-        format!("re-ASR {}", params.post_call_model),
+        format!("re-ASR {} ({reason})", params.post_call_model),
     ))
 }
 
@@ -262,14 +287,47 @@ fn open_transcriber(
 /// post-call был бы непроверяемым вне Mac. В note честно сказано, что
 /// распознавания не было.
 #[cfg(not(feature = "whisper"))]
-fn open_transcriber(
+fn open_whisper(
     params: &RebuildParams,
     _prompt: &str,
+    reason: &str,
 ) -> Result<(Box<dyn BatchTranscriber>, String), String> {
     Ok((
         Box::new(MockBatchTranscriber::new()),
-        format!("mock re-ASR (вместо {})", params.post_call_model),
+        format!("mock re-ASR (вместо {}, {reason})", params.post_call_model),
     ))
+}
+
+/// Русский движок. Подсказку глоссарием он не принимает: у transducer
+/// нет `initial_prompt`, вместо него hotwords — другой механизм, и
+/// заводить его вслепую, без замера, здесь нечего.
+#[cfg(feature = "gigaam")]
+fn open_gigaam(
+    params: &RebuildParams,
+    reason: &str,
+) -> Result<(Box<dyn BatchTranscriber>, String), String> {
+    let transcriber =
+        stt::GigaamBatchTranscriber::open(&params.data_root).map_err(|error| match error {
+            BatchTranscribeError::ModelMissing { model_id } => {
+                format!("модель {model_id} не скачана")
+            }
+            other => other.to_string(),
+        })?;
+    Ok((
+        Box::new(transcriber),
+        format!("re-ASR {} ({reason})", stt::GIGAAM_MODEL_ID),
+    ))
+}
+
+/// Сюда попасть нельзя: без фичи `gigaam_ready` отдаёт `false`, а явный
+/// выбор GigaAM правило отвергает раньше. Ветка существует, чтобы это
+/// свойство держал компилятор, а не память.
+#[cfg(not(feature = "gigaam"))]
+fn open_gigaam(
+    _params: &RebuildParams,
+    _reason: &str,
+) -> Result<(Box<dyn BatchTranscriber>, String), String> {
+    Err("сборка без --features gigaam: русского движка в ней нет".to_string())
 }
 
 fn transcribe_track(

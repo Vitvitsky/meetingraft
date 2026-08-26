@@ -587,3 +587,80 @@ mod tests {
         assert_eq!(by_position.values().next().expect("правка").id, "e1");
     }
 }
+
+/// Чем распознавать запись в пост-обработке.
+///
+/// Настройка, а не свойство встречи: она живёт в настройках приложения и
+/// едет через UniFFI строкой, как и остальные (`llm_engine`).
+///
+/// `Auto` — не «любой», а конкретное правило: русская сессия идёт на
+/// GigaAM, если модель скачана, остальные — на Whisper. Само правило
+/// живёт в `stt`, потому что там знают, какие движки вообще есть.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PostCallRecognizer {
+    /// По языку сессии.
+    #[default]
+    Auto,
+    /// Всегда Whisper: ru/en/es и смешанные встречи.
+    Whisper,
+    /// Всегда GigaAM: только русский, латиницы в словаре нет вовсе.
+    Gigaam,
+}
+
+impl PostCallRecognizer {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Whisper => "whisper",
+            Self::Gigaam => "gigaam",
+        }
+    }
+
+    /// Разбор кода из UI / UniFFI.
+    ///
+    /// Неизвестный код — `None`, а не тихий `Auto`: настройка, молча
+    /// понятая не так, потом объясняется расшифровкой не тем движком.
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "auto" => Some(Self::Auto),
+            "whisper" => Some(Self::Whisper),
+            "gigaam" => Some(Self::Gigaam),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod recognizer_tests {
+    use super::*;
+
+    /// Код и разбор — обратные друг другу на всех вариантах. Список
+    /// перечислен явно: забытый в разборе вариант иначе молчит.
+    #[test]
+    fn every_code_round_trips() {
+        for recognizer in [
+            PostCallRecognizer::Auto,
+            PostCallRecognizer::Whisper,
+            PostCallRecognizer::Gigaam,
+        ] {
+            assert_eq!(
+                PostCallRecognizer::from_code(recognizer.code()),
+                Some(recognizer),
+                "код {} не разобрался обратно",
+                recognizer.code()
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_code_is_refused_rather_than_defaulted() {
+        assert_eq!(PostCallRecognizer::from_code("gigaam-v3"), None);
+        assert_eq!(PostCallRecognizer::from_code(""), None);
+    }
+
+    /// Умолчание — правило по языку, а не конкретный движок.
+    #[test]
+    fn the_default_is_the_rule() {
+        assert_eq!(PostCallRecognizer::default(), PostCallRecognizer::Auto);
+    }
+}

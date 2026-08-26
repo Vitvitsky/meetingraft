@@ -19,8 +19,8 @@ pub use glossary::{
 pub use language::{LanguagePolicy, SpeechLanguage};
 pub use postcall::{
     Artifact, ArtifactKind, EditOrigin, EditPosition, FinalSegment, FinalTranscript,
-    MeetingSummary, SearchHit, SearchHitKind, SegmentEdit, SpeakerSource, TranscriptSegment,
-    body_fingerprint, edits_by_position,
+    MeetingSummary, PostCallRecognizer, SearchHit, SearchHitKind, SegmentEdit, SpeakerSource,
+    TranscriptSegment, body_fingerprint, edits_by_position,
 };
 pub use session::SessionState;
 pub use speaker::{KnownVoice, Speaker, StoredVoicePrint};

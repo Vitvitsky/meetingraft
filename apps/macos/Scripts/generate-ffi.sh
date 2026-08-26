@@ -20,7 +20,12 @@ export CARGO_TARGET_DIR="$TARGET_DIR"
 # работает вовсе, и вкладка Speakers прячет её целиком. Цена известна и
 # велика — sherpa качает готовый тулкит и линкует его весь, порядка 34 МБ
 # в бинаре; ужать это до одной модели эмбеддинга — задача 5.1 плана.
-FEATURES="${MEETINGRAFT_FFI_FEATURES-whisper,diarize}"
+#
+# `gigaam` — русский движок post-call. Тулкит тот же самый, что у
+# `diarize`, и распознаватель в нём уже линкуется: фича добавляет к
+# бинарю почти ничего, а без неё выбор движка в настройках был бы
+# заглушкой — переключатель, который не переключает.
+FEATURES="${MEETINGRAFT_FFI_FEATURES-whisper,diarize,gigaam}"
 if [[ -n "$FEATURES" ]]; then
   cargo build -p meetingraft-ffi --features "$FEATURES"
 else
