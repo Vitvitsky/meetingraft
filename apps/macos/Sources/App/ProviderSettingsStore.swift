@@ -39,6 +39,12 @@ final class ProviderSettingsStore {
     var exportFolderPath: String = "~/Documents/MeetingRaft"
     /// On-device Whisper ggml id; `auto` — resolve по установленным файлам (ADR-005).
     var selectedSttModelId: WhisperModelId = .auto
+    /// Движок post-call прохода; `auto` — по языку сессии.
+    ///
+    /// Русский вариант доступен только со скачанной моделью — её кладёт
+    /// `scripts/fetch-gigaam-models.sh`, приложение её не качает. Список
+    /// вариантов поэтому спрашивается у ядра, а не берётся из `allCases`.
+    var postCallRecognizer: PostCallRecognizer = .auto
 
     let postCallEngines = PostCallSttEngine.allCases
     let sttModelIds = WhisperModelId.allCases
@@ -186,6 +192,29 @@ enum PostCallSttEngine: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var pickerLabel: String {
         isAvailable ? displayName : String(localized: "\(displayName) — coming soon")
+    }
+}
+
+/// Чем распознавать запись после встречи (parity с Rust
+/// `domain::PostCallRecognizer`; коды обязаны совпадать).
+///
+/// Это не то же, что `PostCallSttEngine`: тот выбирает, **где** считать
+/// (локально или на backend), а этот — **каким движком** считать локально.
+enum PostCallRecognizer: String, CaseIterable, Identifiable, Hashable, Sendable {
+    case auto
+    case whisper
+    case gigaam
+
+    var id: String {
+        rawValue
+    }
+
+    var displayName: String {
+        switch self {
+        case .auto: String(localized: "Automatic — by session language")
+        case .whisper: String(localized: "Whisper (all languages)")
+        case .gigaam: String(localized: "GigaAM (Russian only)")
+        }
     }
 }
 

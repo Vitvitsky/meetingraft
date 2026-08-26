@@ -14,9 +14,9 @@ use diarize::{
 };
 use domain::{
     Artifact, ArtifactKind, AudioChannel, CaptionPhase, FinalTranscript, GlossaryKind,
-    GlossaryScope, GlossaryTerm, KnownVoice, LanguagePolicy, MeetingSummary, SearchHit,
-    SessionState, Speaker, SpeakerSource, SpeechLanguage, StoredVoicePrint, SttDiagnostic,
-    SttDiagnosticKind, body_fingerprint, edits_by_position, utc_date_label,
+    GlossaryScope, GlossaryTerm, KnownVoice, LanguagePolicy, MeetingSummary, PostCallRecognizer,
+    SearchHit, SessionState, Speaker, SpeakerSource, SpeechLanguage, StoredVoicePrint,
+    SttDiagnostic, SttDiagnosticKind, body_fingerprint, edits_by_position, utc_date_label,
 };
 use glossary::{GlossaryEngine, active_terms, parse_csv};
 use postcall::{
@@ -435,6 +435,9 @@ struct MeetingCoreInner {
     /// Модель для post-call прохода; отдельная от live, скачивается по
     /// требованию при первом пересборе.
     post_call_whisper_model: String,
+    /// Чем распознавать в post-call: `auto` (по языку сессии), Whisper
+    /// или русский GigaAM.
+    post_call_recognizer: PostCallRecognizer,
     /// Порог свёртки удвоенных реплик на входе артефакта (Epic 8).
     ///
     /// `None` — свёртка **выключена**, и это умолчание. Порог берётся из
@@ -1255,6 +1258,7 @@ fn core_with_spawner(
             llm_provider_id: String::new(),
             preferred_whisper_model: "auto".to_string(),
             post_call_whisper_model: "large-v3-turbo".to_string(),
+            post_call_recognizer: PostCallRecognizer::default(),
             artifact_dedup_threshold: None,
         }),
         jobs: RebuildJobs::new(spawner),
@@ -2714,6 +2718,60 @@ impl MeetingCore {
         guard.post_call_whisper_model = model_id;
     }
 
+    /// Чем распознавать в post-call: `auto` | `whisper` | `gigaam`.
+    ///
+    /// Пустая строка — успех, непустая — текст ошибки (соглашение
+    /// границы). Неизвестный код **не** приводит к тихому `auto`:
+    /// настройка, понятая не так, потом объясняется расшифровкой не тем
+    /// движком, а заметить это по тексту невозможно.
+    pub fn set_post_call_recognizer(&self, code: String) -> String {
+        let Some(recognizer) = PostCallRecognizer::from_code(&code) else {
+            return format!("неизвестный движок post-call: {code}");
+        };
+        let mut guard = self.inner.lock().expect("meeting core poisoned");
+        guard.post_call_recognizer = recognizer;
+        String::new()
+    }
+
+    /// Текущая настройка движка post-call.
+    pub fn post_call_recognizer(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        guard.post_call_recognizer.code().to_string()
+    }
+
+    /// Готов ли русский движок: фича собрана **и** модель скачана.
+    ///
+    /// Интерфейс спрашивает это, чтобы не показывать выбор, который не
+    /// сработает: заглушек в интерфейсе быть не должно.
+    pub fn gigaam_model_ready(&self) -> bool {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        stt::gigaam_ready(&guard.data_root)
+    }
+
+    /// Каким движком пойдёт пересбор при нынешних настройках, словами.
+    ///
+    /// Ровно то же решение, что примет проход, — не пересказ его своими
+    /// словами: своя копия правила показывала бы одно, а работало бы
+    /// другое.
+    pub fn post_call_engine_note(&self) -> String {
+        let guard = self.inner.lock().expect("meeting core poisoned");
+        let ready = stt::gigaam_ready(&guard.data_root);
+        match stt::decide_batch_engine(
+            guard.post_call_recognizer,
+            guard.language_policy.primary,
+            ready,
+        ) {
+            Ok(decision) => {
+                let engine = match decision.engine {
+                    stt::BatchEngine::Gigaam => stt::GIGAAM_MODEL_ID,
+                    stt::BatchEngine::Whisper => "whisper",
+                };
+                format!("{engine} ({})", decision.reason)
+            }
+            Err(error) => error,
+        }
+    }
+
     /// Запустить пересбор Final в фоне; возвращает id задачи.
     ///
     /// Повторный вызов для встречи с идущим проходом отдаёт тот же id:
@@ -2747,6 +2805,7 @@ impl MeetingCore {
             meeting_id: meeting_id.clone(),
             policy: guard.language_policy.clone(),
             post_call_model: guard.post_call_whisper_model.clone(),
+            recognizer: guard.post_call_recognizer,
             llm_engine: normalize_llm_engine(&guard.llm_engine).to_owned(),
             llm_base_url: guard.llm_base_url.clone(),
             llm_model_id: guard.llm_model_id.clone(),
@@ -6324,5 +6383,67 @@ mod tests {
             let error = CoreError::from(source);
             assert_eq!(error.to_string(), expected);
         }
+    }
+
+    /// Настройка движка post-call: неизвестный код отвергается, а не
+    /// понимается как `auto`. Молча понятая не так настройка потом
+    /// объясняется расшифровкой не тем движком, и по тексту это не
+    /// видно.
+    #[test]
+    fn an_unknown_post_call_recognizer_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-recognizer-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        let error = core.set_post_call_recognizer("gigaam-v3".into());
+
+        assert!(!error.is_empty(), "неизвестный код принят молча");
+        assert_eq!(core.post_call_recognizer(), "auto", "настройка уехала");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Известный код применяется, и ядро о нём помнит.
+    #[test]
+    fn a_known_post_call_recognizer_is_kept() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-recognizer-ok-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+
+        assert!(core.set_post_call_recognizer("whisper".into()).is_empty());
+
+        assert_eq!(core.post_call_recognizer(), "whisper");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Фраза «чем пойдёт пересбор» приходит из того же правила, что и
+    /// сам проход, и меняется вместе с настройкой. Без модели GigaAM
+    /// выбор всегда сходится на Whisper — и говорит почему.
+    #[test]
+    fn the_engine_note_follows_the_setting_and_names_the_reason() {
+        let root = std::env::temp_dir().join(format!(
+            "mr-ffi-engine-note-{}-{:?}",
+            now_ms(),
+            std::thread::current().id()
+        ));
+        let core = MeetingCore::with_data_root(root.to_string_lossy().into_owned());
+        // Модели в свежем каталоге данных заведомо нет: это и есть
+        // состояние, в котором выбор обязан объясняться.
+        assert!(!core.gigaam_model_ready(), "модель откуда-то взялась");
+
+        core.set_post_call_recognizer("auto".into());
+        let auto_note = core.post_call_engine_note();
+        core.set_post_call_recognizer("gigaam".into());
+        let gigaam_note = core.post_call_engine_note();
+
+        assert!(auto_note.starts_with("whisper"), "{auto_note}");
+        assert!(gigaam_note.contains("fetch-gigaam-models"), "{gigaam_note}");
+        assert_ne!(auto_note, gigaam_note, "фраза не зависит от настройки");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

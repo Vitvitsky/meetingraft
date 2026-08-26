@@ -44,6 +44,9 @@ struct SettingsView: View {
         .onChange(of: providerStore.selectedSttModelId) { _, _ in
             model.applySttPreference(providerStore)
         }
+        .onChange(of: providerStore.postCallRecognizer) { _, recognizer in
+            model.applyPostCallRecognizer(recognizer)
+        }
         .onChange(of: providerStore.apiBaseUrl) { _, _ in
             model.applyProviderConfig(providerStore)
         }

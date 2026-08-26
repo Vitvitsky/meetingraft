@@ -37,6 +37,18 @@ final class SettingsModel {
     private(set) var knownVoices: [FfiKnownVoice] = []
     private(set) var voiceMemoryError = ""
 
+    // Русский движок post-call (GigaAM). Признак читается из ядра по той
+    // же причине, что и признак движка голосов: модель качается руками
+    // отдельным скриптом, и предлагать выбор, который не сработает,
+    // нельзя — это заглушка в интерфейсе.
+    /// Собран ли движок и лежит ли модель на диске.
+    private(set) var russianEngineReady = false
+    /// Чем пойдёт пересбор при нынешних настройках — словами ядра.
+    ///
+    /// Спрашивается у ядра, а не пересказывается здесь: своя копия
+    /// правила показывала бы одно, а работало бы другое.
+    private(set) var postCallEngineNote = ""
+
     private var core: MeetingCore?
     private let downloader: WhisperDownloading
 
@@ -74,6 +86,11 @@ final class SettingsModel {
         refreshVoiceMemory()
         applySttPreference(providerStore)
         applyProviderConfig(providerStore)
+        // Порядок важен: сперва признак готовности русского движка, потом
+        // применение настройки — иначе выбор, сохранённый при живой
+        // модели, применялся бы к ядру, которое её уже не видит.
+        refreshPostCallEngine()
+        applyPostCallRecognizer(providerStore.postCallRecognizer)
     }
 
     func refreshVoiceMemory() {
@@ -114,6 +131,27 @@ final class SettingsModel {
 
     func applyPostCallModel(_ modelId: WhisperModelId) {
         core?.setPostCallWhisperModel(modelId: modelId.rawValue)
+    }
+
+    /// Варианты движка post-call: русский показывается только со
+    /// скачанной моделью.
+    func postCallRecognizers() -> [PostCallRecognizer] {
+        russianEngineReady
+            ? PostCallRecognizer.allCases
+            : PostCallRecognizer.allCases.filter { $0 != .gigaam }
+    }
+
+    func applyPostCallRecognizer(_ recognizer: PostCallRecognizer) {
+        guard let core else { return }
+        // Ошибка приезжает строкой (соглашение границы): пустая — успех.
+        let error = core.setPostCallRecognizer(code: recognizer.rawValue)
+        postCallEngineNote = error.isEmpty ? core.postCallEngineNote() : error
+    }
+
+    func refreshPostCallEngine() {
+        guard let core else { return }
+        russianEngineReady = core.gigaamModelReady()
+        postCallEngineNote = core.postCallEngineNote()
     }
 
     /// Локальное ядро нужно для проверки API; запись применяет те же

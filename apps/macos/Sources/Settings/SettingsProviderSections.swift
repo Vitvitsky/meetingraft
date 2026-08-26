@@ -35,6 +35,8 @@ struct SttSettingsSection: View {
                     .foregroundStyle(Theme.textSecondary)
             }
 
+            postCallRecognizerRow
+
             SettingsRow(
                 title: String(localized: "Post-call source"),
                 caption: String(localized: "Rebuild re-transcribes the stored audio instead of reusing live captions.")
@@ -47,6 +49,40 @@ struct SttSettingsSection: View {
                 .labelsHidden()
                 .frame(width: 200)
             }
+        }
+    }
+
+    /// Выбор движка пост-обработки.
+    ///
+    /// Показывается всегда, но русский вариант в списке появляется только
+    /// со скачанной моделью (`model.postCallRecognizers()`): выбор,
+    /// который не сработает, — заглушка.
+    ///
+    /// Под рядом — фраза ядра о том, что **фактически** произойдёт при
+    /// нынешних настройках. Она нужна именно здесь: «авто» само по себе
+    /// не говорит, какой движок получится на этой встрече, а расшифровка
+    /// не тем движком по тексту неотличима.
+    @ViewBuilder
+    private var postCallRecognizerRow: some View {
+        SettingsRow(
+            title: String(localized: "Post-call recognizer"),
+            caption: model.russianEngineReady
+                ? String(localized: "Automatic sends Russian sessions to GigaAM and everything else to Whisper.")
+                : String(localized: "Whisper handles ru/en/es. The Russian-only GigaAM appears here once its model is downloaded by scripts/fetch-gigaam-models.sh.")
+        ) {
+            Picker("", selection: Bindable(providerStore).postCallRecognizer) {
+                ForEach(model.postCallRecognizers()) { recognizer in
+                    Text(recognizer.displayName).tag(recognizer)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 200)
+        }
+
+        if !model.postCallEngineNote.isEmpty {
+            Text(String(localized: "Rebuild will use: \(model.postCallEngineNote)"))
+                .font(Theme.Text.bodySmall)
+                .foregroundStyle(Theme.textTertiary)
         }
     }
 

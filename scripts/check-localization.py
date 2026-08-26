@@ -165,7 +165,7 @@ STRING_EXPRESSIONS = {
     "error", "error.localizedDescription", "term.surface", "term.canonical",
     "term.language.uppercased()", "segment.originalText", "edit.originalText",
     "edit.editedText", "rebuild.provenance", "providerStore.exportFolderPath",
-    "stamp", "freed", "detectedApp.displayName",
+    "stamp", "freed", "detectedApp.displayName", "model.postCallEngineNote",
     "SpeakerFormat.channelLabel(code)",
     "Self.deletionDate.string(from: date(meeting.audioDeletedAtMs))",
 }

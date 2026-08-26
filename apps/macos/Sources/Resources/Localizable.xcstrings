@@ -515,6 +515,40 @@
         }
       }
     },
+    "Automatic sends Russian sessions to GigaAM and everything else to Whisper.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic sends Russian sessions to GigaAM and everything else to Whisper."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Автоматически» отправляет русские сессии в GigaAM, остальные — в Whisper."
+          }
+        }
+      }
+    },
+    "Automatic — by session language": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic — by session language"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Автоматически — по языку сессии"
+          }
+        }
+      }
+    },
     "Back to the channel": {
       "extractionState": "manual",
       "localizations": {
@@ -1671,6 +1705,23 @@
         }
       }
     },
+    "GigaAM (Russian only)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GigaAM (Russian only)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GigaAM (только русский)"
+          }
+        }
+      }
+    },
     "Global": {
       "extractionState": "manual",
       "localizations": {
@@ -2793,6 +2844,23 @@
         }
       }
     },
+    "Post-call recognizer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Post-call recognizer"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Движок после встречи"
+          }
+        }
+      }
+    },
     "Post-call source": {
       "extractionState": "manual",
       "localizations": {
@@ -2959,6 +3027,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Пересбор распознаёт сохранённый звук заново, а не переиспользует живые субтитры."
+          }
+        }
+      }
+    },
+    "Rebuild will use: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rebuild will use: %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пересбор пойдёт через: %@"
           }
         }
       }
@@ -4251,6 +4336,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Во время записи"
+          }
+        }
+      }
+    },
+    "Whisper (all languages)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisper (all languages)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisper (все языки)"
+          }
+        }
+      }
+    },
+    "Whisper handles ru/en/es. The Russian-only GigaAM appears here once its model is downloaded by scripts/fetch-gigaam-models.sh.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisper handles ru/en/es. The Russian-only GigaAM appears here once its model is downloaded by scripts/fetch-gigaam-models.sh."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisper понимает ru/en/es. Русский GigaAM появится здесь, когда его модель скачает scripts/fetch-gigaam-models.sh."
           }
         }
       }

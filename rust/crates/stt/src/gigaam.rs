@@ -62,11 +62,8 @@ use sherpa_onnx::{
 };
 
 use crate::batch::{BatchTranscribeError, BatchTranscriber, normalize_segments};
-use crate::gigaam_path::resolve_gigaam_models;
+use crate::gigaam_path::{MODEL_ID, resolve_gigaam_models};
 use crate::local_agreement::{HypothesisWord, words_from_char_tokens};
-
-/// Как эта модель называется в ошибках и настройках.
-pub const MODEL_ID: &str = "gigaam-v3";
 
 /// Ширина окна пакетного прохода.
 ///
