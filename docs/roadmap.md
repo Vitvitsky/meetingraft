@@ -12,9 +12,13 @@ Ground rules for every phase:
 - Architecture boundaries from `AGENTS.md` are non-negotiable (SwiftUI shell
   without business logic, Rust core behind UniFFI, backend outside the shell).
 - Language policy travels everywhere: `primary_language` = `ru`,
-  `allowed_languages` = `{ru, en, es}` (ADR-003).
+  `allowed_languages` = `{ru, en, es}` (ADR-003). `allowed` is fixed, so
+  "this meeting is Russian only" cannot be expressed — anything keyed on
+  the session language keys on `primary` and on nothing else. The
+  post-call recognizer choice is the first place where that limit bites.
 - TDD for core logic; every new state machine branch gets a test.
-- Conventional Commits with Russian subject.
+- Conventional Commits. Subjects were Russian until 2026-08-04 and are
+  **English** since; the old history is not rewritten (`AGENTS.md`).
 
 ## Phase 0 — Decisions and tooling bootstrap
 
@@ -271,6 +275,22 @@ Maps to: Epic 8, Epic 10, новый Epic 13. Status: **Rust готов и пр�
 (T1–T6, T8, T10); Swift написан, ждёт прогона (T9); backend WhisperX
 отложен (T7)**.
 
+**Дополнение 2026-08-26: локальных путей стало два.** Рядом с Whisper в
+пост-обработке живёт русский GigaAM v3 (MIT, Conformer-transducer через
+sherpa-onnx) за фичей `gigaam`. Выбор делает `stt::decide_batch_engine` по
+настройке и языку сессии: русская встреча уходит на GigaAM, если модель
+скачана, остальные — на Whisper. Причина выбора едет в provenance, потому
+что расшифровка одного движка от другого по виду неотличима.
+
+Замер на Linux: WER 0.000 на записи с известным текстом, 1.000 на шуме,
+96–102 мс на секунду речи без ускорителя. Чисел с Мака пока нет, и до них
+живого пути этот движок не касается.
+
+Цена, которая не снимается: **в словаре GigaAM нет латиницы**, поэтому
+английские термины в русской встрече он не выдаст никак. Отсюда правило
+«авто включается только при скачанной вручную модели» — это единственный
+способ, которым человек мог заранее согласиться на такой обмен.
+
 ## Phase 11 — Speakers: атрибуция и диаризация
 
 Закрывает Epic 9, от которого сейчас есть только skeleton (ручные метки, не
@@ -522,6 +542,36 @@ MeetingRaft развивается **как личный инструмент и
   Rust-трейтом. CoreML напрямую из Swift её **инвертирует** — это уже не
   замена движка, а перестройка архитектуры, и решать её надо отдельным
   ADR, а не мимоходом.
+
+  **Проверено на GigaAM 2026-08-26, и это меняет цену вопроса.** Второй
+  движок в проекте уже есть, и приехал он ровно тем путём, который здесь
+  назван безопасным: ONNX через sherpa-onnx, за существующими трейтами,
+  ADR-005 цел. Значит для Parakeet осталась не архитектурная работа, а
+  измерение — а на этот случай написан `stt-probe`, который считает WER и
+  время на записи с известным текстом.
+
+  Заодно снялась часть довода «энкодер-декодер против потокового»: RNNT в
+  пакетном проходе на CPU без ускорителя идёт вдесятеро быстрее реального
+  времени. Как это выглядит в **живом** пути — с окнами и local agreement
+  — не проверял никто, и это разные вопросы.
+- **GigaAM в живом пути.** Открывается **только** по числам с Мака
+  (`docs/mac-verification.md`, раздел «GigaAM v3»): время прохода на
+  Apple Silicon и расшифровка своей встречи рядом с whisper'овской. В
+  пост-обработке движок уже работает; живой путь — другая работа, там
+  окна, local agreement (ADR-010), пейсинг и обрезка буфера настроены под
+  поведение Whisper.
+
+  Три вещи придётся решить отдельно, и ни одна не решается сама:
+  подсказка глоссарием (у transducer вместо `initial_prompt` — hotwords,
+  другой механизм), отсев галлюцинаций (`hallucination.rs` написан про
+  Whisper; на шуме той же громкости GigaAM выдал одно слово за
+  одиннадцать секунд — мало, но не ноль) и нарезка на реплики (движок
+  отдаёт один кусок текста на окно, и привязка спикеров по сегментам с
+  ним грубее).
+
+  Время на Маке близко к реальному — ветка закрывается отрицательным
+  ответом, и GigaAM остаётся движком пост-обработки. Это законный исход.
+
 - **Альтернативные рантаймы STT (MLX, CoreML/WhisperKit).** Сейчас
   используется whisper.cpp через `whisper-rs` с Metal. MLX — Python-first,
   зрелой Whisper-реализации на `mlx-swift` нет, а Python-рантайм в
