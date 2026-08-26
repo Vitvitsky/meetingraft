@@ -6,22 +6,48 @@ import XCTest
 /// Проверяется то, что расходится молча: путь, по которому ядро ищет
 /// модель, формат метки, которую читает скрипт, и общий прогресс.
 final class GigaamModelCatalogTests: XCTestCase {
+    /// Каталог моделей приходит **снаружи** — его отдаёт ядро
+    /// (`modelsDirectory()` = `<данные>/models`). Имя фикстуры поэтому
+    /// нарочно ни на что не похоже: проверять надо то, что добавляет
+    /// каталог, а не то, что ему передали.
     private var modelsDirectory: URL {
-        URL(fileURLWithPath: "/tmp/mr-models", isDirectory: true)
+        URL(fileURLWithPath: "/tmp/mr-fixture", isDirectory: true)
     }
 
-    /// Файлы кладутся туда, где их ищет ядро (`models/gigaam/`).
+    /// Файл кладётся в `<каталог моделей>/gigaam/<имя>` — туда, где его
+    /// ищет `stt::gigaam_models_dir`.
     ///
     /// Разойдись это с Rust — приложение скачало бы 230 МБ, а выбор
     /// движка остался бы недоступным, и связать одно с другим было бы
     /// нечем.
+    ///
+    /// Первая версия проверки требовала суффикс `/models/gigaam/…` и
+    /// падала: сегмент `models/` добавляет ядро, а не этот каталог, и
+    /// тест утверждал про чужую половину пути. Проверяется добавленное:
+    /// подкаталог и имя файла, оба буквально.
     func testFilesLandWhereTheCoreLooksForThem() {
         let encoder = GigaamModelCatalog.destinationURL(
             modelsDirectory: modelsDirectory,
             file: .encoder
         )
 
-        XCTAssertTrue(encoder.path.hasSuffix("/models/gigaam/encoder.int8.onnx"), encoder.path)
+        let added = encoder.path.replacingOccurrences(of: modelsDirectory.path, with: "")
+        XCTAssertEqual(added, "/gigaam/encoder.int8.onnx", encoder.path)
+    }
+
+    /// И то же для каждого файла комплекта: подкаталог один, имена — из
+    /// перечисления. Забытый в `destinationURL` файл иначе уехал бы
+    /// мимо, а движок отказался бы открываться без объяснения.
+    func testEveryFileOfTheSetLandsInTheSameSubdirectory() {
+        for file in GigaamModelFile.allCases {
+            let destination = GigaamModelCatalog.destinationURL(
+                modelsDirectory: modelsDirectory,
+                file: file
+            )
+
+            let added = destination.path.replacingOccurrences(of: modelsDirectory.path, with: "")
+            XCTAssertEqual(added, "/gigaam/\(file.rawValue)", destination.path)
+        }
     }
 
     /// Метка совпадает по формату с тем, что пишет
