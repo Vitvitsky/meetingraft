@@ -39,7 +39,9 @@ pub use pacing::{InferencePacer, MIN_SPEECH_FRAMES, PARTIAL_MIN_FRAMES, SILENCE_
 pub use window::{LiveCaptionPipeline, SttBackendKind, pcm_bytes_to_i16};
 
 #[cfg(feature = "gigaam")]
-pub use gigaam::{GigaamBatchTranscriber, GigaamHypothesis, GigaamRecognizer};
+pub use gigaam::{
+    GigaamBatchTranscriber, GigaamHypothesis, GigaamRecognizer, MODEL_ID as GIGAAM_MODEL_ID,
+};
 
 #[cfg(feature = "whisper")]
 pub use whisper::WhisperSttEngine;

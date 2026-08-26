@@ -73,18 +73,22 @@ struct Heard {
 }
 
 /// Движок, спрятанный за фичей.
+///
+/// Отказ движка едет `Err`, а не пустым текстом: сломанный проход,
+/// выглядящий как молчание, — худшее, что прибор может показать.
 trait Recognize {
-    fn transcribe(&self, pcm: &[i16], sample_rate: u32) -> Heard;
+    fn transcribe(&self, pcm: &[i16], sample_rate: u32) -> Result<Heard, String>;
 }
 
 #[cfg(feature = "gigaam")]
 impl Recognize for stt::GigaamRecognizer {
-    fn transcribe(&self, pcm: &[i16], sample_rate: u32) -> Heard {
-        let hypothesis = stt::GigaamRecognizer::transcribe(self, pcm, sample_rate);
-        Heard {
+    fn transcribe(&self, pcm: &[i16], sample_rate: u32) -> Result<Heard, String> {
+        let hypothesis = stt::GigaamRecognizer::transcribe(self, pcm, sample_rate)
+            .map_err(|error| error.to_string())?;
+        Ok(Heard {
             text: hypothesis.text,
             word_end_ms: hypothesis.words.iter().map(|word| word.end_ms).collect(),
-        }
+        })
     }
 }
 
@@ -92,7 +96,13 @@ impl Recognize for stt::GigaamRecognizer {
 fn open_engine(root: &Path) -> Result<Box<dyn Recognize>, String> {
     stt::GigaamRecognizer::open(root)
         .map(|engine| Box::new(engine) as Box<dyn Recognize>)
-        .map_err(|error| error.to_string())
+        // Подробности про недостающие файлы `ModelMissing` не несёт
+        // намеренно (там идентификатор модели, который показывают
+        // человеку). Спрашиваем их у резолвера сами.
+        .map_err(|error| match stt::resolve_gigaam_models(root) {
+            Err(details) => details,
+            Ok(_) => error.to_string(),
+        })
 }
 
 #[cfg(not(feature = "gigaam"))]
@@ -105,9 +115,16 @@ fn open_engine(_root: &Path) -> Result<Box<dyn Recognize>, String> {
 /// Свой генератор, а не `rand`: приборам нужен **повторяемый** шум, иначе
 /// отрицательный случай сегодня и завтра — разные случаи. Линейный
 /// конгруэнтный, зерно зашито.
+///
+/// Размах — `rms * √3`, а не `rms`. У равномерного шума с размахом `a`
+/// собственный RMS равен `a/√3`, то есть прямая подстановка дала бы шум
+/// **тише** записи почти на 5 дБ — и «той же громкости» в описании было
+/// бы неправдой. Пики при этом упираются в потолок i16 и срезаются;
+/// на нашей записи это единицы отсчётов.
 fn noise_like(pcm: &[i16]) -> Vec<i16> {
     let energy: f64 = pcm.iter().map(|s| (*s as f64) * (*s as f64)).sum();
     let rms = (energy / pcm.len().max(1) as f64).sqrt().max(1.0);
+    let amplitude = rms * 3.0_f64.sqrt();
     let mut state: u64 = 0x2026_0826;
     pcm.iter()
         .map(|_| {
@@ -115,18 +132,31 @@ fn noise_like(pcm: &[i16]) -> Vec<i16> {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let unit = ((state >> 33) as f64 / (1u64 << 31) as f64) * 2.0 - 1.0;
-            (unit * rms).clamp(i16::MIN as f64, i16::MAX as f64) as i16
+            (unit * amplitude).clamp(i16::MIN as f64, i16::MAX as f64) as i16
         })
         .collect()
 }
 
 /// Один проход: услышанное и время на секунду аудио.
-fn run(engine: &dyn Recognize, pcm: &[i16], sample_rate: u32) -> (Heard, f32) {
+fn run(engine: &dyn Recognize, pcm: &[i16], sample_rate: u32) -> Result<(Heard, f32), String> {
     let started = Instant::now();
-    let heard = engine.transcribe(pcm, sample_rate);
+    let heard = engine.transcribe(pcm, sample_rate)?;
     let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
     let audio_seconds = pcm.len() as f32 / sample_rate as f32;
-    (heard, elapsed_ms / audio_seconds.max(0.001))
+    Ok((heard, elapsed_ms / audio_seconds.max(0.001)))
+}
+
+/// Прогреть движок до всяких замеров.
+///
+/// Первый проход на свежем `OfflineRecognizer` несёт разовую подготовку
+/// onnxruntime — графы, арены памяти. Без прогрева она целиком садится
+/// на **первый** замер, а решение про живой путь принимается именно по
+/// этому числу (`docs/mac-verification.md`). Полсекунды тишины стоят
+/// дёшево и снимают вопрос.
+fn warm_up(engine: &dyn Recognize, sample_rate: u32) -> Result<(), String> {
+    let silence = vec![0i16; (sample_rate / 2) as usize];
+    engine.transcribe(&silence, sample_rate)?;
+    Ok(())
 }
 
 /// Проверить, что тайм-коды слов пригодны для сборки сегментов.
@@ -134,13 +164,29 @@ fn run(engine: &dyn Recognize, pcm: &[i16], sample_rate: u32) -> (Heard, f32) {
 /// Без этой проверки потеря времени молчит: текст на месте, WER низкий,
 /// и прибор доволен — а пакетный проход кладёт всю тридцатисекундную
 /// пачку одним сегментом с границами окна.
-fn check_word_times(word_end_ms: &[u64], audio_ms: u64) -> Result<(), String> {
+///
+/// Число слов сверяется с текстом, и это не педантизм. Стоит подать
+/// посимвольные токены в `words_from_tokens` вместо
+/// `words_from_char_tokens` — ровно та путаница, о которой предупреждает
+/// шапка `stt::gigaam`, — и вся фраза склеится **в одно слово**. Список
+/// времён останется непустым и монотонным, WER не шелохнётся (он
+/// считается по `text`, а не по словам), и проверка без этой строки
+/// пройдёт. Проверка, которая не может сработать, хуже отсутствующей.
+fn check_word_times(word_end_ms: &[u64], text: &str, audio_ms: u64) -> Result<(), String> {
     if word_end_ms.is_empty() {
         return Err(
             "движок не отдал тайм-кодов слов: текст есть, времени нет — по такому \
              результату границы сегментов не построить"
                 .to_string(),
         );
+    }
+    let words_in_text = wer::normalize(text).len();
+    if word_end_ms.len() != words_in_text {
+        return Err(format!(
+            "слов с временем {}, а в тексте {words_in_text} — сборка слов из токенов \
+             разошлась с расшифровкой",
+            word_end_ms.len()
+        ));
     }
     if word_end_ms.windows(2).any(|pair| pair[0] > pair[1]) {
         return Err("тайм-коды слов идут назад".to_string());
@@ -201,7 +247,8 @@ fn self_check(engine: &dyn Recognize, root: &Path) -> Result<(), String> {
     );
 
     let audio_ms = (control.pcm.len() as u64 * 1000) / control.sample_rate.max(1) as u64;
-    let (heard, positive_pace) = run(engine, &control.pcm, control.sample_rate);
+    warm_up(engine, control.sample_rate)?;
+    let (heard, positive_pace) = run(engine, &control.pcm, control.sample_rate)?;
     let positive = wer(&reference, &heard.text);
     println!("  эталон:     {}", reference.trim());
     println!("  распознано: {}", heard.text);
@@ -230,7 +277,7 @@ fn self_check(engine: &dyn Recognize, root: &Path) -> Result<(), String> {
     // Тайм-коды проверяются здесь же, а не «как-нибудь потом»: без них
     // пакетный проход молча кладёт всё окно одним сегментом с границами
     // окна, и заметить это по тексту нельзя.
-    check_word_times(&heard.word_end_ms, audio_ms)?;
+    check_word_times(&heard.word_end_ms, &heard.text, audio_ms)?;
     println!(
         "  тайм-коды: {} слов, последнее на {} мс при длине {audio_ms} мс",
         heard.word_end_ms.len(),
@@ -238,7 +285,7 @@ fn self_check(engine: &dyn Recognize, root: &Path) -> Result<(), String> {
     );
 
     let noise = noise_like(&control.pcm);
-    let (on_noise, negative_pace) = run(engine, &noise, control.sample_rate);
+    let (on_noise, negative_pace) = run(engine, &noise, control.sample_rate)?;
     let negative = wer(&reference, &on_noise.text);
     println!(
         "  на шуме той же длины и громкости: {:?}",
@@ -265,7 +312,7 @@ fn self_check(engine: &dyn Recognize, root: &Path) -> Result<(), String> {
 /// Настоящий звук: текст и время. Вердикта о качестве здесь нет.
 fn transcribe_file(engine: &dyn Recognize, path: &Path) -> Result<(), String> {
     let wav = wav::read(path)?;
-    let (heard, pace) = run(engine, &wav.pcm, wav.sample_rate);
+    let (heard, pace) = run(engine, &wav.pcm, wav.sample_rate)?;
 
     println!();
     println!("{}", path.display());

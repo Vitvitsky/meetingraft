@@ -34,6 +34,17 @@
 //!   ресемплит к 16) дали пустую расшифровку. Ошибка в частоте — не
 //!   «чуть хуже», а «ничего», и прибор её ловит.
 //!
+//! ## Что означают тайм-коды. Тоже замер, а не догадка
+//!
+//! `timestamps` — время **выдачи каждого символа**, с шагом 40 мс:
+//! на контрольной записи «ничьих» это `0.04 0.08 0.16 0.24 0.32 0.36`, а
+//! пробел после него — `0.44`. То есть время слова лежит между первым и
+//! последним его символом, и границы куска речи берутся с **первого**
+//! символа, а не с конца первого слова.
+//!
+//! `durations` этот экспорт отдаёт **пустым списком** — не `None`, а
+//! `Some([])`. Длительность символа отсюда не берётся ни в каком виде.
+//!
 //! ## Два места, где ошибиться легко и молча
 //!
 //! 1. **Токены посимвольные.** Отсюда `words_from_char_tokens`, а не
@@ -53,6 +64,9 @@ use sherpa_onnx::{
 use crate::batch::{BatchTranscribeError, BatchTranscriber, normalize_segments};
 use crate::gigaam_path::resolve_gigaam_models;
 use crate::local_agreement::{HypothesisWord, words_from_char_tokens};
+
+/// Как эта модель называется в ошибках и настройках.
+pub const MODEL_ID: &str = "gigaam-v3";
 
 /// Ширина окна пакетного прохода.
 ///
@@ -91,6 +105,14 @@ pub struct GigaamHypothesis {
     /// результата — `Option`, и притворяться, что время известно, хуже,
     /// чем сказать, что его нет.
     pub words: Vec<HypothesisWord>,
+    /// Границы речи внутри куска: первый и последний символ.
+    ///
+    /// Отдельно от `words`, потому что у слова здесь известен только
+    /// конец, а начало куска — это начало **первого символа первого
+    /// слова**. Считать началом конец первого слова значит выкинуть его
+    /// из собственного сегмента, а на однословном окне — получить
+    /// сегмент нулевой длины.
+    pub speech_ms: Option<(u64, u64)>,
 }
 
 /// Открытый распознаватель. Держит модель в памяти; открывать на каждый
@@ -104,12 +126,17 @@ impl GigaamRecognizer {
     ///
     /// Модель качается руками (`scripts/fetch-gigaam-models.sh`), поэтому
     /// её отсутствие — ожидаемое состояние, а не сбой.
+    /// Подробностей о недостающих файлах здесь нет намеренно: `model_id`
+    /// — идентификатор, и `ffi::rebuild` показывает его человеку как
+    /// «модель {model_id} не скачана». Целая жалоба резолвера внутри
+    /// этой подстановки дала бы фразу, которую невозможно прочесть. Кому
+    /// нужны подробности — зовёт [`resolve_gigaam_models`] сам; так и
+    /// делает `stt-probe`.
     pub fn open(data_root: impl AsRef<Path>) -> Result<Self, BatchTranscribeError> {
-        let models = resolve_gigaam_models(data_root).map_err(|message| {
-            BatchTranscribeError::ModelMissing {
-                model_id: format!("gigaam-v3: {message}"),
-            }
-        })?;
+        let models =
+            resolve_gigaam_models(data_root).map_err(|_| BatchTranscribeError::ModelMissing {
+                model_id: MODEL_ID.to_string(),
+            })?;
 
         // Параметры признаков не задаются: они приезжают из метаданных
         // модели, и `feat_config` на этот экспорт не влияет (проверено —
@@ -136,38 +163,71 @@ impl GigaamRecognizer {
     }
 
     /// Один проход по куску аудио. PCM i16 mono.
-    pub fn transcribe(&self, pcm: &[i16], sample_rate: u32) -> GigaamHypothesis {
+    ///
+    /// Пустой вход — законная пустая гипотеза. А вот **отказ движка —
+    /// ошибка, а не тишина**: `get_result` отдаёт `None` и когда C-вызов
+    /// вернул null, и когда разбор его JSON не удался (схема результата
+    /// у sherpa между версиями менялась). Отдать на это пустой текст
+    /// значило бы превратить сломанный проход в успешную пустую
+    /// расшифровку — тот самый молчаливый отказ, который в этом проекте
+    /// считается худшим исходом.
+    pub fn transcribe(
+        &self,
+        pcm: &[i16],
+        sample_rate: u32,
+    ) -> Result<GigaamHypothesis, BatchTranscribeError> {
         if pcm.is_empty() || sample_rate == 0 {
-            return GigaamHypothesis::default();
+            return Ok(GigaamHypothesis::default());
         }
         let audio: Vec<f32> = pcm.iter().map(|sample| *sample as f32 / 32768.0).collect();
 
         let stream: OfflineStream = self.recognizer.create_stream();
         stream.accept_waveform(sample_rate as i32, &audio);
         self.recognizer.decode(&stream);
-        let Some(result) = stream.get_result() else {
-            return GigaamHypothesis::default();
-        };
+        let result = stream.get_result().ok_or_else(|| {
+            BatchTranscribeError::Decode(
+                "sherpa-onnx не отдал результат распознавания: null или неразобранный JSON"
+                    .to_string(),
+            )
+        })?;
 
-        let words = match &result.timestamps {
-            Some(times) if times.len() == result.tokens.len() => {
+        let times: Option<Vec<u64>> = result
+            .timestamps
+            .as_ref()
+            // Длины разошлись — время не наше, и приписывать словам
+            // чужие тайм-коды хуже, чем не приписывать никаких.
+            .filter(|times| times.len() == result.tokens.len())
+            .map(|times| {
+                times
+                    .iter()
+                    .map(|seconds| (seconds.max(0.0) * 1000.0) as u64)
+                    .collect()
+            });
+
+        let (words, speech_ms) = match times {
+            Some(times) => {
                 let tokens: Vec<(String, u64)> = result
                     .tokens
                     .iter()
-                    .zip(times.iter())
-                    .map(|(token, seconds)| (token.clone(), (seconds.max(0.0) * 1000.0) as u64))
+                    .cloned()
+                    .zip(times.iter().copied())
                     .collect();
-                words_from_char_tokens(&tokens)
+                // Границы речи — по первому и последнему символу, а не по
+                // словам: у слова здесь известен только конец.
+                let bounds = match (times.first(), times.last()) {
+                    (Some(first), Some(last)) => Some((*first, *last.max(first))),
+                    _ => None,
+                };
+                (words_from_char_tokens(&tokens), bounds)
             }
-            // Длины разошлись — время не наше, и приписывать словам
-            // чужие тайм-коды хуже, чем не приписывать никаких.
-            _ => Vec::new(),
+            None => (Vec::new(), None),
         };
 
-        GigaamHypothesis {
+        Ok(GigaamHypothesis {
             text: result.text.trim().to_string(),
             words,
-        }
+            speech_ms,
+        })
     }
 }
 
@@ -204,12 +264,12 @@ impl BatchTranscriber for GigaamBatchTranscriber {
                 return Err(BatchTranscribeError::Cancelled);
             }
 
-            let hypothesis = self.recognizer.transcribe(window, sample_rate);
+            let hypothesis = self.recognizer.transcribe(window, sample_rate)?;
             if hypothesis.text.is_empty() {
                 continue;
             }
 
-            // Тайм-коды слов локальны для окна — сдвигаем к началу записи.
+            // Тайм-коды локальны для окна — сдвигаем к началу записи.
             let window_start_ms = (index * WINDOW_SECONDS * 1000) as u64;
             let window_end_ms = window_start_ms + (window.len() as u64 * 1000) / sample_rate as u64;
             // Один сегмент на окно: делить речь на реплики движок не
@@ -217,26 +277,70 @@ impl BatchTranscriber for GigaamBatchTranscriber {
             // решение, и принимать его вслепую здесь не за чем. Пока
             // это значит, что привязка спикеров по сегментам (Phase 11)
             // с этим движком грубее, чем с Whisper.
-            let start_ms = hypothesis
-                .words
-                .first()
-                .map(|word| window_start_ms + word.end_ms)
-                .unwrap_or(window_start_ms)
-                .min(window_end_ms);
-            let end_ms = hypothesis
-                .words
-                .last()
-                .map(|word| window_start_ms + word.end_ms)
-                .unwrap_or(window_end_ms)
-                .min(window_end_ms);
-            segments.push(TranscriptSegment::new(
-                start_ms,
-                end_ms.max(start_ms),
-                hypothesis.text,
-            ));
+            let (start_ms, end_ms) =
+                segment_bounds(hypothesis.speech_ms, window_start_ms, window_end_ms);
+            segments.push(TranscriptSegment::new(start_ms, end_ms, hypothesis.text));
         }
 
         progress(1.0);
         Ok(normalize_segments(segments))
+    }
+}
+
+/// Границы сегмента из границ речи внутри окна.
+///
+/// Отдельной функцией, потому что это единственное место здесь, которое
+/// можно проверить тестом без модели, — а ошибиться в нём легче всего.
+/// Первая версия брала началом конец первого слова, и на окне с одним
+/// словом получался сегмент нулевой длины: `normalize_segments` такой
+/// пропускает, а привязка спикеров по перекрытию времени не находит на
+/// нём ничего.
+fn segment_bounds(
+    speech_ms: Option<(u64, u64)>,
+    window_start_ms: u64,
+    window_end_ms: u64,
+) -> (u64, u64) {
+    let Some((first, last)) = speech_ms else {
+        // Времени нет — сегмент занимает всё окно. Это грубо, но честно:
+        // речь в окне была, а где именно, движок не сказал.
+        return (window_start_ms, window_end_ms);
+    };
+    let start = (window_start_ms + first).min(window_end_ms);
+    let end = (window_start_ms + last).clamp(start, window_end_ms);
+    (start, end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Одно слово в окне: сегмент обязан иметь длину, а не схлопнуться.
+    #[test]
+    fn a_single_word_window_is_not_zero_length() {
+        // «да»: первый символ выдан на 640 мс, последний на 700.
+        let (start, end) = segment_bounds(Some((640, 700)), 30_000, 60_000);
+        assert_eq!(start, 30_640);
+        assert!(end > start, "сегмент схлопнулся: {start}..{end}");
+    }
+
+    /// Начало сегмента — начало первого слова, а не его конец.
+    #[test]
+    fn the_segment_starts_where_the_first_character_was_emitted() {
+        let (start, _) = segment_bounds(Some((40, 10_880)), 0, 30_000);
+        assert_eq!(start, 40);
+    }
+
+    /// Без тайм-кодов сегмент занимает окно целиком — и это видно.
+    #[test]
+    fn without_timestamps_the_segment_covers_the_window() {
+        assert_eq!(segment_bounds(None, 30_000, 60_000), (30_000, 60_000));
+    }
+
+    /// Тайм-код за пределами окна не выносит сегмент за его границу.
+    #[test]
+    fn bounds_never_leave_the_window() {
+        let (start, end) = segment_bounds(Some((45_000, 90_000)), 30_000, 60_000);
+        assert!(start <= end, "{start}..{end}");
+        assert!(end <= 60_000, "сегмент вышел за окно: {start}..{end}");
     }
 }

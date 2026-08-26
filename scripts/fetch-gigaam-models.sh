@@ -56,7 +56,10 @@ BASE="https://huggingface.co/csukuangfj/$EXPORT/resolve/main"
 # моделью голосов.
 fetch() {
     local url="$1" dest="$2"
-    local want="$EXPORT/$(basename "$url")"
+    # Объявление отдельно от присваивания: `local x="$(...)"` прячет код
+    # возврата подстановки, и `set -e` на ней не сработает.
+    local want
+    want="$EXPORT/$(basename "$url")"
     local mark="$dest.source"
 
     if [ -f "$dest" ]; then
