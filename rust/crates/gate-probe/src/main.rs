@@ -27,13 +27,22 @@
 //! (`CLAUDE.md`). Ноль пропущенных кадров от слепого прибора выглядит
 //! точно так же, как тишина в комнате.
 
+// Разбор WAV берётся у соседнего прибора **тем же файлом**, а не копией:
+// формат один (16-битный моно PCM живого пути), и вторая реализация
+// означала бы две правды об одном.
+#[path = "../../diarize-probe/src/wav.rs"]
+mod wav;
+
 use std::path::Path;
 use std::process::ExitCode;
 
 use domain::AudioChannel;
 use session::{ChannelMixer, MixedFrame};
 use storage::AudioManifestStore;
-use stt::{InferencePacer, MIN_SPEECH_FRAMES, NoiseGate, PARTIAL_MIN_FRAMES, SILENCE_FRAMES};
+use stt::{
+    InferencePacer, MIN_SPEECH_FRAMES, NoiseGate, PARTIAL_MIN_FRAMES, SILENCE_FRAMES,
+    SpeechDecider, frame_rms as rms,
+};
 
 /// Частота живого пути; ею же пишутся чанки на диск (ADR-005).
 const RATE: u32 = 16_000;
@@ -61,6 +70,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         [root] => list_sessions(Path::new(root)),
+        [root, wav] if wav.ends_with(".wav") => wav_mode(Path::new(root), Path::new(wav)),
         [root, session] => probe(Path::new(root), session),
         _ => {
             eprintln!("{USAGE}");
@@ -186,6 +196,7 @@ fn list_sessions(root: &Path) -> Result<(), String> {
         println!("  {mark} {} — mic {mic}, system {system}", meeting.id);
     }
     println!("\nСтрока с «+» годится для прогона: gate-probe <каталог> <сессия>");
+    println!("Отдельный файл: gate-probe <каталог> запись.wav (16 кГц моно)");
     Ok(())
 }
 
@@ -259,6 +270,8 @@ fn probe(root: &Path, session_id: &str) -> Result<(), String> {
             (quiet_path.total() + quiet_path.skipped) as f64 * 60.0 / seconds.max(1.0),
         );
     }
+    compare_with_vad(root, &pcm, seconds, quiet_path.total());
+
     if let Ok(raw) = raw_frames(&store, session_id)
         && raw.len() > 1
     {
@@ -450,15 +463,21 @@ fn raw_frames(store: &AudioManifestStore, session_id: &str) -> Result<Vec<RawTra
 /// Прогнать кадры через гейт ровно так, как это делает живой путь:
 /// один `accepts` на кадр, состояние между кадрами сохраняется.
 fn gated(frames: &[Vec<i16>]) -> Gated {
-    let mut gate = NoiseGate::new();
+    gated_by(frames, &mut NoiseGate::new())
+}
+
+/// То же любым решателем «есть ли речь».
+///
+/// Колонка постоянного порога считается здесь всегда и не зависит от
+/// решателя: она — общая точка отсчёта, с которой сравниваются оба.
+fn gated_by(frames: &[Vec<i16>], decider: &mut dyn SpeechDecider) -> Gated {
     let mut out = Gated::default();
     for frame in frames {
-        let level = rms(frame);
         out.total += 1;
-        if gate.accepts(level) {
+        if decider.accepts_frame(frame) {
             out.accepted += 1;
         }
-        if level > OLD_THRESHOLD {
+        if rms(frame) > OLD_THRESHOLD {
             out.accepted_old += 1;
         }
     }
@@ -476,15 +495,25 @@ fn gated(frames: &[Vec<i16>]) -> Gated {
 /// дважды, по обеим границам: 0 слов (на шуме модель ничего не отдаёт,
 /// темп разжимается до втрое реже) и 1 слово (речь идёт, темп базовый).
 fn inferences(frames: &[Vec<i16>], committed_words: usize) -> Inferences {
+    inferences_by(frames, committed_words, &mut NoiseGate::new())
+}
+
+/// То же любым решателем. **Меняется только он** — накопление речи,
+/// закрытие реплики и темп остаются теми же, иначе разница в запусках
+/// окажется разницей двух правил сразу.
+fn inferences_by(
+    frames: &[Vec<i16>],
+    committed_words: usize,
+    decider: &mut dyn SpeechDecider,
+) -> Inferences {
     let frame_len = RATE as usize * FRAME_MS / 1_000;
-    let mut gate = NoiseGate::new();
     let mut pacer = InferencePacer::new(PARTIAL_MIN_FRAMES);
     let mut out = Inferences::default();
 
     let (mut in_speech, mut speech, mut since_partial, mut silence) =
         (false, 0usize, 0usize, 0usize);
     for frame in frames {
-        if gate.accepts(rms(frame)) {
+        if decider.accepts_frame(frame) {
             in_speech = true;
             silence = 0;
             speech += frame_len;
@@ -698,13 +727,188 @@ fn frame_at(level: f32) -> Vec<i16> {
         .collect()
 }
 
-/// Уровень кадра — тот же расчёт, что и в живом пути (`whisper.rs`).
-fn rms(pcm: &[i16]) -> f32 {
-    if pcm.is_empty() {
-        return 0.0;
+/// Прогон по отдельному WAV — заведомо известному материалу.
+///
+/// Сессии в базе бывают только на Маке, а проверить, что колонка VAD
+/// вообще что-то слышит, надо там же, где её пишут. Годится любая
+/// запись 16 кГц моно; контрольная речь лежит рядом с моделью GigaAM
+/// (`models/gigaam/check/example.wav`).
+fn wav_mode(root: &Path, path: &Path) -> Result<(), String> {
+    let audio = wav::read(path)?;
+    if audio.sample_rate != RATE {
+        return Err(format!(
+            "{}: {} Гц, а живой путь работает на {RATE}",
+            path.display(),
+            audio.sample_rate
+        ));
     }
-    let sum: f64 = pcm.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
-    ((sum / pcm.len() as f64).sqrt()) as f32
+    let frame_len = RATE as usize * FRAME_MS / 1_000;
+    let pcm: Vec<Vec<i16>> = audio.pcm.chunks(frame_len).map(<[i16]>::to_vec).collect();
+    let seconds = audio.pcm.len() as f64 / RATE as f64;
+
+    println!(
+        "\n{} — {:.1} с, кадров {}",
+        path.display(),
+        seconds,
+        pcm.len()
+    );
+
+    let by_gate = gated(&pcm);
+    let gate_runs = inferences(&pcm, 0);
+    println!(
+        "  гейт по фону: пропущено {} кадров из {} ({:.1}%), запусков модели {}",
+        by_gate.accepted,
+        by_gate.total,
+        percent(by_gate.accepted, by_gate.total),
+        gate_runs.total()
+    );
+    println!(
+        "    первое «речь»: {}",
+        first_speech(&pcm, &mut NoiseGate::new())
+    );
+
+    compare_with_vad(root, &pcm, seconds, gate_runs.total());
+    Ok(())
+}
+
+/// Когда решатель впервые сказал «речь».
+///
+/// Число значит что-то **только на записи с известным началом речи** —
+/// например собранной из тихой комнаты и заведомо речевого куска. На
+/// произвольной встрече это просто «когда он открылся впервые», и
+/// выводов о запаздывании отсюда делать нельзя.
+///
+/// Ради него режим по WAV и заведён: у VAD запаздывание — главная
+/// известная плата, а у гейта её нет вовсе, и увидеть разницу можно
+/// только там, где начало речи знаешь заранее.
+fn first_speech(pcm: &[Vec<i16>], decider: &mut dyn SpeechDecider) -> String {
+    for (index, frame) in pcm.iter().enumerate() {
+        if decider.accepts_frame(frame) {
+            return format!("{:.1} с", (index * FRAME_MS) as f64 / 1_000.0);
+        }
+    }
+    "не сказал ни разу".to_string()
+}
+
+/// Открыть Silero VAD — или сказать, почему нельзя.
+#[cfg(feature = "vad")]
+fn open_vad(root: &Path) -> Result<Box<dyn SpeechDecider>, String> {
+    stt::SileroGate::open(root, RATE).map(|gate| Box::new(gate) as Box<dyn SpeechDecider>)
+}
+
+#[cfg(not(feature = "vad"))]
+fn open_vad(_root: &Path) -> Result<Box<dyn SpeechDecider>, String> {
+    Err("собрано без --features vad: сравнивать не с чем".to_string())
+}
+
+/// Вторая колонка: во что обходится тот же материал с Silero VAD.
+///
+/// Печатается **рядом** с гейтом, а не вместо него. Одно число без
+/// второго ничего не значит: «VAD дал 12 запусков в минуту» звучит
+/// хорошо ровно до вопроса, сколько дал гейт на этой же записи и не
+/// потерял ли VAD при этом речь.
+fn compare_with_vad(root: &Path, pcm: &[Vec<i16>], seconds: f64, gate_runs: usize) {
+    let mut vad = match open_vad(root) {
+        Ok(vad) => vad,
+        Err(error) => {
+            println!("\n  VAD: {error}");
+            return;
+        }
+    };
+
+    let runs = inferences_by(pcm, 0, vad.as_mut());
+    vad.reset();
+    let passed = gated_by(pcm, vad.as_mut());
+    let per_minute = runs.total() as f64 * 60.0 / seconds.max(1.0);
+
+    println!("\n  Silero VAD на том же материале ({}):", vad.name());
+    println!(
+        "    пропущено кадров {} из {} ({:.1}%)",
+        passed.accepted,
+        passed.total,
+        percent(passed.accepted, passed.total)
+    );
+    println!(
+        "    запусков модели {} ({:.1} в минуту), partial {}, по концам реплик {}",
+        runs.total(),
+        per_minute,
+        runs.partials,
+        runs.flushes
+    );
+    println!(
+        "    у гейта на этой же записи — {gate_runs} запусков ({:.1} в минуту)",
+        gate_runs as f64 * 60.0 / seconds.max(1.0)
+    );
+    vad.reset();
+    println!("    первое «речь»: {}", first_speech(pcm, vad.as_mut()));
+
+    // Ноль от VAD читается как «тишина» и выглядит прекрасно — ровно так
+    // же выглядит слепой прибор. Различает их только заведомо речевая
+    // запись, и здесь про неё сказано вслух.
+    if passed.accepted == 0 {
+        println!(
+            "\n    VAD не принял НИ ОДНОГО кадра. Прежде чем читать это как тишину,\n\
+             \x20   прогоните заведомо речевую запись: gate-probe <каталог> речь.wav —\n\
+             \x20   ноль на ней означает, что слеп прибор, а не запись молчит."
+        );
+    }
+
+    disagreements(root, pcm);
+}
+
+/// Где решатели разошлись — с временем, чтобы это можно было послушать.
+///
+/// Считать это ошибками VAD или ошибками гейта прибор не имеет права:
+/// правды о том, была ли там речь, у него нет. Он показывает места и
+/// молчит о том, кто прав, — судит человек, открыв запись на этой
+/// секунде.
+fn disagreements(root: &Path, pcm: &[Vec<i16>]) {
+    let Ok(mut vad) = open_vad(root) else {
+        return;
+    };
+    let mut gate = NoiseGate::new();
+
+    let mut runs: Vec<(usize, usize, bool)> = Vec::new();
+    for (index, frame) in pcm.iter().enumerate() {
+        let by_gate = gate.accepts_frame(frame);
+        let by_vad = vad.accepts_frame(frame);
+        if by_gate == by_vad {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(last) if last.1 + 1 == index && last.2 == by_vad => last.1 = index,
+            _ => runs.push((index, index, by_vad)),
+        }
+    }
+
+    if runs.is_empty() {
+        println!("    расхождений нет вовсе — а это подозрительно: два разных");
+        println!("    способа решать на настоящей записи так не совпадают");
+        return;
+    }
+
+    let frames_total = pcm.len().max(1);
+    let differing: usize = runs.iter().map(|(from, to, _)| to - from + 1).sum();
+    println!(
+        "\n    Разошлись на {} кадрах из {} ({:.1}%). Самые длинные места:",
+        differing,
+        frames_total,
+        percent(differing, frames_total)
+    );
+
+    let mut longest = runs.clone();
+    longest.sort_by_key(|(from, to, _)| std::cmp::Reverse(to - from));
+    for (from, to, vad_said_speech) in longest.into_iter().take(5) {
+        let start = (from * FRAME_MS) as f64 / 1_000.0;
+        let length = ((to - from + 1) * FRAME_MS) as f64 / 1_000.0;
+        let who = if vad_said_speech {
+            "речь слышит только VAD"
+        } else {
+            "речь слышит только гейт"
+        };
+        println!("      {start:8.1} с  длиной {length:5.1} с — {who}");
+    }
+    println!("    Кто из них прав, прибор не знает: эталона нет. Слушать по времени.");
 }
 
 fn percent(part: usize, whole: usize) -> f64 {
