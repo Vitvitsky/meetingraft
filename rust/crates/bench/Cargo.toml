@@ -1,0 +1,21 @@
+[package]
+name = "meetingraft-bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Движки прячутся за фичами по образцу `stt/gigaam` и `diarize/model`:
+# `build.rs` крейта sherpa-onnx ходит в сеть, и обычная сборка не должна
+# качать ничего.
+[features]
+default = []
+
+[dependencies]
+domain = { package = "meetingraft-domain", path = "../domain" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+
+[[bin]]
+name = "meetingraft-bench"
+path = "src/main.rs"

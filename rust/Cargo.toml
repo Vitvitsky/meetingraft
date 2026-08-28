@@ -20,6 +20,7 @@ members = [
     "crates/brief-probe",
     "crates/fix-probe",
     "crates/stt-probe",
+    "crates/bench",
 ]
 
 [workspace.package]
