@@ -100,7 +100,8 @@ MeetingRaft развивается **как личный инструмент и
 | `ffi` | `meetingraft-ffi` | фасад `MeetingCore` + все `Ffi*`-DTO |
 
 Отдельно — приборы, в приложение не входящие: `echo-probe` (детектор эха),
-`gate-probe` (гейт речи и число запусков модели), `diarize-probe`
+`gate-probe` (гейт речи, Silero VAD рядом с ним и число запусков
+модели), `diarize-probe`
 (разделение голосов), `dup-probe` (удвоение реплик), `term-probe`
 (кандидаты в глоссарий), `stt-probe` (WER и время русского движка
 GigaAM). Плюс `uniffi-bindgen`.

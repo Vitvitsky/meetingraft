@@ -11,10 +11,15 @@ mod mock;
 mod model_path;
 mod noise_gate;
 mod pacing;
+mod speech_decider;
+mod vad_path;
 mod window;
 
 #[cfg(feature = "gigaam")]
 mod gigaam;
+
+#[cfg(feature = "vad")]
+mod vad;
 
 #[cfg(feature = "whisper")]
 mod whisper;
@@ -36,12 +41,17 @@ pub use local_agreement::{
 };
 pub use mock::MockSttEngine;
 pub use model_path::{models_dir, resolve_whisper_model, whisper_filename_for_id};
-pub use noise_gate::NoiseGate;
+pub use noise_gate::{NoiseGate, frame_rms};
 pub use pacing::{InferencePacer, MIN_SPEECH_FRAMES, PARTIAL_MIN_FRAMES, SILENCE_FRAMES};
+pub use speech_decider::SpeechDecider;
+pub use vad_path::{SILERO_FILE, resolve_vad_model, vad_models_dir, vad_ready};
 pub use window::{LiveCaptionPipeline, SttBackendKind, pcm_bytes_to_i16};
 
 #[cfg(feature = "gigaam")]
 pub use gigaam::{GigaamBatchTranscriber, GigaamHypothesis, GigaamRecognizer};
+
+#[cfg(feature = "vad")]
+pub use vad::SileroGate;
 
 #[cfg(feature = "whisper")]
 pub use whisper::WhisperSttEngine;

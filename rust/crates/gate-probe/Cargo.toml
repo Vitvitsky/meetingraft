@@ -7,6 +7,12 @@ edition.workspace = true
 name = "gate-probe"
 path = "src/main.rs"
 
+[features]
+default = []
+# Silero VAD второй колонкой. Без неё прибор печатает нынешний гейт и
+# честно говорит, что сравнивать не с чем.
+vad = ["meetingraft-stt/vad"]
+
 [dependencies]
 meetingraft-domain = { path = "../domain" }
 meetingraft-session = { path = "../session" }
