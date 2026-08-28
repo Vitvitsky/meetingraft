@@ -11,6 +11,7 @@
 //! реплики, второе — не выдуманы ли границы вовсе.
 
 use domain::TranscriptSegment;
+use serde::Serialize;
 
 /// Насколько близко к краю реплики граница ещё считается «на краю», мс.
 ///
@@ -18,7 +19,7 @@ use domain::TranscriptSegment;
 /// краю движки расходятся между собой, а не с правдой.
 const EDGE_TOLERANCE_MS: u64 = 200;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SegmentStats {
     pub count: usize,
     pub median_ms: u64,

@@ -20,6 +20,8 @@ mod gigaam;
 
 #[cfg(feature = "vad")]
 mod vad;
+#[cfg(feature = "vad")]
+mod vad_segments;
 
 #[cfg(feature = "whisper")]
 mod whisper;
@@ -52,6 +54,8 @@ pub use gigaam::{GigaamBatchTranscriber, GigaamHypothesis, GigaamRecognizer};
 
 #[cfg(feature = "vad")]
 pub use vad::SileroGate;
+#[cfg(feature = "vad")]
+pub use vad_segments::speech_segments;
 
 #[cfg(feature = "whisper")]
 pub use whisper::WhisperSttEngine;

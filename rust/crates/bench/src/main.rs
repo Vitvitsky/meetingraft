@@ -1,7 +1,9 @@
 //! Командная строка стенда. Всё содержательное — в библиотеке рядом
 //! (`lib.rs`), здесь только разбор аргументов и печать.
 
-use meetingraft_bench::{case, wav};
+use meetingraft_bench::run as bench_run;
+use meetingraft_bench::segmentation::{self, Strategy};
+use meetingraft_bench::{case, engines, wav};
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -19,6 +21,10 @@ meetingraft-bench <подкоманда>
   export <каталог-данных> <id-встречи> <каталог-случая>
       выложить встречу из данных приложения в случай
       (только сборка с --features export, то есть на Маке)
+
+  run <каталог-случая> <каталог-данных> <движок> <нарезка> [каталог-выхода]
+      движок:  gigaam
+      нарезка: windows30 | vad | diarize
 ";
 
 fn main() -> ExitCode {
@@ -38,11 +44,199 @@ fn main() -> ExitCode {
         },
         "cut" => cut(&args[1..]),
         "export" => export(&args[1..]),
+        "run" => run(&args[1..]),
         other => {
             eprintln!("неизвестная подкоманда {other}\n{USAGE}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Один прогон: случай × движок × нарезка.
+fn run(args: &[String]) -> ExitCode {
+    let (Some(case_dir), Some(data_root), Some(engine_name), Some(strategy_name)) =
+        (args.first(), args.get(1), args.get(2), args.get(3))
+    else {
+        eprintln!("нужно: run <каталог-случая> <каталог-данных> <движок> <нарезка>\n{USAGE}");
+        return ExitCode::FAILURE;
+    };
+
+    let case = match case::load(Path::new(case_dir)) {
+        Ok(case) => case,
+        Err(error) => {
+            eprintln!("случай не прочитан: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let strategy = match Strategy::parse(strategy_name) {
+        Ok(strategy) => strategy,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let engine = match engines::open(engine_name, Path::new(data_root)) {
+        Ok(engine) => engine,
+        Err(error) => {
+            eprintln!("движок не открыт: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Разметка речи нужна не только нарезке по VAD: по ней считается доля
+    // границ, не разрезающих речь, — то есть по ней судят **все три**
+    // способа. Без неё метрика границ не печатается вовсе, и это честнее,
+    // чем печатать единицу от отсутствия разметки.
+    let speech = match speech_marks(Path::new(data_root), &case) {
+        Ok(speech) => speech,
+        Err(error) => {
+            eprintln!("речь не размечена: {error}");
+            Vec::new()
+        }
+    };
+
+    let split_started = std::time::Instant::now();
+    let pieces = match build_pieces(strategy, Path::new(data_root), &case, &speech) {
+        Ok(pieces) => pieces,
+        Err(error) => {
+            eprintln!("нарезка не вышла: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let split_ms = split_started.elapsed().as_secs_f32() * 1000.0;
+
+    let plan = bench_run::Plan {
+        pieces,
+        speech,
+        strategy,
+        split_ms,
+        engine: engine.as_ref(),
+    };
+    let result = bench_run::execute(&case, plan, "none");
+
+    let out = args
+        .get(4)
+        .cloned()
+        .unwrap_or_else(|| format!("{case_dir}/out/{engine_name}-{strategy_name}-none"));
+    if let Err(error) = bench_run::save(&result, Path::new(&out)) {
+        eprintln!("результат не записан: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    print_run(&result, &out);
+    if result.refused.is_some() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Разметка речи по независимому источнику.
+#[cfg(feature = "vad")]
+fn speech_marks(data_root: &Path, case: &case::Case) -> Result<Vec<(u64, u64)>, String> {
+    stt::speech_segments(data_root, &case.mic, case.sample_rate)
+}
+
+#[cfg(not(feature = "vad"))]
+fn speech_marks(_data_root: &Path, _case: &case::Case) -> Result<Vec<(u64, u64)>, String> {
+    Err("стенд собран без --features vad: границы судить нечем".to_string())
+}
+
+/// Куски по выбранному способу.
+fn build_pieces(
+    strategy: Strategy,
+    data_root: &Path,
+    case: &case::Case,
+    speech: &[(u64, u64)],
+) -> Result<Vec<segmentation::Piece>, String> {
+    match strategy {
+        Strategy::Windows30 => Ok(segmentation::split_windows(
+            case.duration_ms(),
+            segmentation::MAX_PIECE_MS,
+        )),
+        Strategy::Vad => {
+            if speech.is_empty() {
+                // Ноль отрезков речи и отсутствие разметки — разные вещи,
+                // но обе дают пустой прогон, а пустой прогон читается как
+                // «движок ничего не услышал». Отказываем вслух.
+                return Err("речи не размечено ни одного отрезка".to_string());
+            }
+            Ok(segmentation::from_speech(speech, case.duration_ms()))
+        }
+        Strategy::Diarize => diarize_pieces(data_root, case),
+    }
+}
+
+#[cfg(feature = "diarize")]
+fn diarize_pieces(data_root: &Path, case: &case::Case) -> Result<Vec<segmentation::Piece>, String> {
+    use diarize::Diarizer;
+
+    let models = diarize::resolve_diarize_models(data_root)?;
+    let mut engine = diarize::SherpaDiarizer::open(&models)?;
+    let report = engine.diarize(&case.mic, case.sample_rate);
+    if let Some(reason) = report.refused {
+        return Err(reason);
+    }
+    let turns: Vec<(u64, u64, u32)> = report
+        .turns
+        .iter()
+        .map(|turn| (turn.start_ms, turn.end_ms, turn.cluster))
+        .collect();
+    Ok(segmentation::from_turns(&turns))
+}
+
+#[cfg(not(feature = "diarize"))]
+fn diarize_pieces(
+    _data_root: &Path,
+    _case: &case::Case,
+) -> Result<Vec<segmentation::Piece>, String> {
+    Err("стенд собран без --features diarize".to_string())
+}
+
+fn print_run(result: &bench_run::Run, out: &str) {
+    println!("случай         {}", result.case);
+    println!(
+        "прогон         {} + {} + {}",
+        result.engine, result.segmentation, result.biasing
+    );
+    if let Some(reason) = &result.refused {
+        println!("ОТКАЗ          {reason}");
+        println!("результат      {out}");
+        return;
+    }
+    println!(
+        "кусков         {} подано, {} вернулись пустыми",
+        result.pieces_fed, result.pieces_empty
+    );
+    if let Some(found) = result.speakers_found {
+        println!("голосов        {found} нашла нарезка");
+    }
+    if let Some(stats) = &result.stats {
+        println!(
+            "сегментов      {} (медиана {} мс, p10 {} мс, p90 {} мс)",
+            stats.count, stats.median_ms, stats.p10_ms, stats.p90_ms
+        );
+        println!("покрытие       {:.3}", stats.coverage);
+        println!("границы в паузе {:.3}", stats.boundaries_in_pause);
+    }
+    match (result.wer, result.cer) {
+        (Some(wer), Some(cer)) => {
+            let caveat = if result.reference_kind == "EditedDraft" {
+                "  (эталон — правленный черновик, льстит своему движку)"
+            } else {
+                ""
+            };
+            println!("WER            {wer:.3}{caveat}");
+            println!("CER            {cer:.3}");
+        }
+        _ => println!("WER            — (эталона или его границ нет)"),
+    }
+    println!("нарезка        {:.0} мс", result.split_ms);
+    println!(
+        "модель         {:.0} мс на секунду речи",
+        result.model_ms_per_audio_second
+    );
+    println!("результат      {out}");
 }
 
 /// Выложить встречу из данных приложения в случай.

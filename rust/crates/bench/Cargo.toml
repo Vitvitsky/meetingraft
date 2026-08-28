@@ -12,6 +12,12 @@ default = []
 # Экспорт встречи из данных приложения. Тянет `storage` и гоняется на
 # Маке — там лежат встречи; на Linux он не нужен и не собирается.
 export = ["dep:storage"]
+# Русский распознаватель. Тянет sherpa-onnx через `stt`.
+gigaam = ["dep:stt", "stt/gigaam"]
+# Нарезка по речи.
+vad = ["dep:stt", "stt/vad"]
+# Нарезка по голосам.
+diarize = ["dep:diarize", "diarize/model"]
 
 [dependencies]
 domain = { package = "meetingraft-domain", path = "../domain" }
@@ -19,6 +25,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
 storage = { package = "meetingraft-storage", path = "../storage", optional = true }
+stt = { package = "meetingraft-stt", path = "../stt", optional = true }
+diarize = { package = "meetingraft-diarize", path = "../diarize", optional = true }
 
 [lib]
 name = "meetingraft_bench"
