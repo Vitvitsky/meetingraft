@@ -61,3 +61,44 @@ model, cloud STT, or a home-server worker — fixed later in ADR-007 scope.
 - Whisper may emit credit-style hallucinations on silence/noise (e.g. Russian
   «авторы субтитров…»). Live engine filters known markers and drops high
   `no_speech` segments; Silero VAD remains the longer-term fix.
+
+## Amendment 2026-08-27 — what actually shipped instead of Silero VAD
+
+This ADR names Silero VAD twice: once in the decision («segmented by
+Silero VAD») and once as the long-term fix for Whisper's hallucinations.
+**Neither happened.** What the live path runs is `stt::NoiseGate` — frame
+RMS against an adaptive estimate of the room floor, speech being anything
+that exceeds it threefold.
+
+The substitution was not a shortcut taken quietly; it was measured twice
+(Epic 18) and improved both times. But the two things are not the same
+kind of thing, and the difference matters where it decides:
+
+- a gate tells **louder than the room** from **not louder**. A knock on
+  the desk, a cough and music all pass it;
+- a VAD tells **speech** from **not speech**, and pays for that with
+  latency — it needs a window before it can decide.
+
+Numbers the gate stands on today (Mac, 2026-08-11): 26 model runs per
+minute on a silent room, down from 48, and 32.1 per minute on a real
+22-minute meeting.
+
+Silero now exists in the repository as a **second column in `gate-probe`**,
+not in the live path (PR #172). It costs a 0.6 MB model and no new
+dependency: sherpa-onnx is already linked for voice separation and
+carries `VoiceActivityDetector` inside.
+
+First numbers (Linux, synthetic room plus studio speech): on deliberate
+non-speech both give zero; on speech starting three seconds in they agree
+on 92.5% of frames, and Silero **did not clip the onset** — both opened
+on the same frame. That was its main expected cost.
+
+What decides whether the live path changes is not in these numbers:
+meetings instead of synthetic material, watts instead of run counts, and
+the VAD's own per-frame cost. Design:
+`docs/superpowers/specs/2026-08-27-silero-vad-vs-noise-gate-design.md`.
+
+The decision of this ADR is unchanged — the engine still sits behind
+`SttEngine` and segmentation still belongs to the Rust core. Only the
+statement «segmented by Silero VAD» is, for now, a plan rather than a
+description.
