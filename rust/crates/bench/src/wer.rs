@@ -49,14 +49,16 @@ pub fn normalize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Сравнить расшифровку с эталоном.
-pub fn wer(reference: &str, hypothesis: &str) -> WerReport {
-    let reference = normalize(reference);
-    let hypothesis = normalize(hypothesis);
+/// Классическая таблица правок; в клетке — тройка (замены, вставки,
+/// пропуски), чтобы отчёт называл вид ошибки, а не только их сумму.
+type Counts = (usize, usize, usize);
 
-    // Классическая таблица правок; в клетке — тройка (замены, вставки,
-    // пропуски), чтобы отчёт называл вид ошибки, а не только их сумму.
-    type Counts = (usize, usize, usize);
+/// Таблица правок над любыми сравнимыми единицами.
+///
+/// Обобщена не ради красоты: по ней считаются **обе** метрики — WER по
+/// словам и CER по символам. Вторая таблица под второй метрикой была бы
+/// вторым определением расстояния, и разошлись бы они молча.
+fn edit_counts<T: PartialEq>(reference: &[T], hypothesis: &[T]) -> Counts {
     let total = |c: Counts| c.0 + c.1 + c.2;
 
     let mut previous: Vec<Counts> = (0..=hypothesis.len()).map(|i| (0, i, 0)).collect();
@@ -85,13 +87,40 @@ pub fn wer(reference: &str, hypothesis: &str) -> WerReport {
         previous = current;
     }
 
-    let (substitutions, insertions, deletions) = previous[hypothesis.len()];
+    previous[hypothesis.len()]
+}
+
+/// Сравнить расшифровку с эталоном по словам.
+pub fn wer(reference: &str, hypothesis: &str) -> WerReport {
+    let reference = normalize(reference);
+    let hypothesis = normalize(hypothesis);
+    let (substitutions, insertions, deletions) = edit_counts(&reference, &hypothesis);
     WerReport {
         reference_words: reference.len(),
         substitutions,
         insertions,
         deletions,
     }
+}
+
+/// Доля ошибок по символам.
+///
+/// Отдельная метрика, потому что отвечает на другой вопрос. Движок,
+/// перепутавший окончание, теряет по WER **целое слово** и почти ничего
+/// по CER; движок, выдумавший фразу, теряет по обоим. Разница между
+/// двумя числами и есть подсказка, какого рода ошибка перед нами, — а
+/// одно только CER хвалило бы движок за верные буквы в неверном слове,
+/// потому WER и остаётся главным.
+pub fn cer(reference: &str, hypothesis: &str) -> f32 {
+    let reference: Vec<char> = normalize(reference).join(" ").chars().collect();
+    let hypothesis: Vec<char> = normalize(hypothesis).join(" ").chars().collect();
+    if reference.is_empty() {
+        // Как и в `WerReport::rate`: мерить было нечем, и ноль здесь
+        // означает «не мерялось», а не «идеально».
+        return 0.0;
+    }
+    let (substitutions, insertions, deletions) = edit_counts(&reference, &hypothesis);
+    (substitutions + insertions + deletions) as f32 / reference.len() as f32
 }
 
 #[cfg(test)]
@@ -159,5 +188,31 @@ mod tests {
     fn an_empty_reference_measures_nothing() {
         let report = wer("", "хоть что-нибудь");
         assert_eq!(report.reference_words, 0, "{report:?}");
+    }
+
+    /// CER и WER расходятся ровно там, ради чего заведён CER: одна
+    /// перепутанная буква стоит целого слова по WER и малой доли по CER.
+    ///
+    /// Обе величины выводятся из фикстуры, а не вписаны числами: WER —
+    /// одна ошибка на число слов, CER — одна правка на число символов.
+    #[test]
+    fn a_single_wrong_letter_costs_a_whole_word_but_almost_no_characters() {
+        let hypothesis = "у лукоморья дуб зелёные";
+        let words = normalize(REFERENCE).len() as f32;
+        let characters = normalize(REFERENCE).join(" ").chars().count() as f32;
+
+        assert_eq!(wer(REFERENCE, hypothesis).rate(), 1.0 / words);
+        assert_eq!(cer(REFERENCE, hypothesis), 1.0 / characters);
+    }
+
+    /// Заведомо отрицательный случай для CER: считалка, всегда
+    /// возвращающая маленькое число, проходит тест выше и валится здесь.
+    #[test]
+    fn a_completely_different_text_costs_characters_too() {
+        assert!(
+            cer(REFERENCE, "совершенно другие слова про другое") > 0.7,
+            "{}",
+            cer(REFERENCE, "совершенно другие слова про другое")
+        );
     }
 }
