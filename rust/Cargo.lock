@@ -955,6 +955,7 @@ name = "meetingraft-bench"
 version = "0.1.0"
 dependencies = [
  "meetingraft-domain",
+ "meetingraft-storage",
  "serde",
  "serde_json",
  "toml",

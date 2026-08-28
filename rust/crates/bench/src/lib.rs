@@ -20,6 +20,8 @@
 
 pub mod case;
 pub mod cpwer;
+#[cfg(feature = "export")]
+pub mod export;
 pub mod metrics;
 pub mod wav;
 pub mod wer;

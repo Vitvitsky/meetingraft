@@ -15,6 +15,10 @@ meetingraft-bench <подкоманда>
   cut <каталог-случая> <от-мс> <до-мс> [mic|system]
       вырезать отрезок в <каталог-случая>/cut-<от>-<до>.wav —
       то, по чему печатается эталон
+
+  export <каталог-данных> <id-встречи> <каталог-случая>
+      выложить встречу из данных приложения в случай
+      (только сборка с --features export, то есть на Маке)
 ";
 
 fn main() -> ExitCode {
@@ -33,11 +37,54 @@ fn main() -> ExitCode {
             }
         },
         "cut" => cut(&args[1..]),
+        "export" => export(&args[1..]),
         other => {
             eprintln!("неизвестная подкоманда {other}\n{USAGE}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Выложить встречу из данных приложения в случай.
+///
+/// Без фичи `export` подкоманда **отказывает вслух**, а не молчит: та же
+/// сборка на Маке и на Linux ведёт себя по-разному, и человек, набравший
+/// её здесь, должен узнать причину, а не увидеть «неизвестная
+/// подкоманда».
+#[cfg(feature = "export")]
+fn export(args: &[String]) -> ExitCode {
+    let (Some(data_root), Some(meeting), Some(out)) = (args.first(), args.get(1), args.get(2))
+    else {
+        eprintln!("нужно: export <каталог-данных> <id-встречи> <каталог-случая>\n{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    match meetingraft_bench::export::export(Path::new(data_root), meeting, Path::new(out)) {
+        Ok(done) => {
+            println!("микрофон       {} мс", done.mic_ms);
+            match done.system_ms {
+                Some(ms) => println!("система        {ms} мс"),
+                None => println!("система        нет канала"),
+            }
+            println!("общее время    {}", done.channel_clock_unified);
+            println!();
+            println!("дальше руками в {out}/meta.toml: speakers_expected, notes,");
+            println!("и — когда напечатан эталон — reference_kind с reference_covers_ms");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("встреча не выложена: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(feature = "export"))]
+fn export(_args: &[String]) -> ExitCode {
+    eprintln!(
+        "стенд собран без --features export: данных приложения здесь нет, \
+         и выкладывать нечего"
+    );
+    ExitCode::FAILURE
 }
 
 /// Вырезать отрезок записи в отдельный WAV.
