@@ -3,7 +3,7 @@
 
 use meetingraft_bench::run as bench_run;
 use meetingraft_bench::segmentation::{self, Strategy};
-use meetingraft_bench::{case, engines, wav};
+use meetingraft_bench::{case, engines, hotwords, wav};
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -22,9 +22,10 @@ meetingraft-bench <подкоманда>
       выложить встречу из данных приложения в случай
       (только сборка с --features export, то есть на Маке)
 
-  run <каталог-случая> <каталог-данных> <движок> <нарезка> [каталог-выхода]
+  run <каталог-случая> <каталог-данных> <движок> <нарезка> [смещение] [каталог-выхода]
       движок:  gigaam | parakeet | tone
       нарезка: windows30 | vad | diarize | stream (только tone)
+      смещение: none | hotwords (нужен <каталог-случая>/glossary.txt)
 ";
 
 fn main() -> ExitCode {
@@ -60,6 +61,12 @@ fn run(args: &[String]) -> ExitCode {
         eprintln!("нужно: run <каталог-случая> <каталог-данных> <движок> <нарезка>\n{USAGE}");
         return ExitCode::FAILURE;
     };
+
+    let biasing_name = args
+        .get(4)
+        .map(String::as_str)
+        .filter(|value| *value == "none" || *value == "hotwords")
+        .unwrap_or("none");
 
     let case = match case::load(Path::new(case_dir)) {
         Ok(case) => case,
@@ -105,6 +112,26 @@ fn run(args: &[String]) -> ExitCode {
         }
     };
 
+    // Термины читаются **до** открытия модели: движок со смещением
+    // открывается иначе, и узнать об отсутствии глоссария после загрузки
+    // 622 МБ было бы обидно.
+    let terms = if biasing_name == "hotwords" {
+        let path = Path::new(case_dir).join("glossary.txt");
+        match hotwords::read_terms(&path) {
+            Ok(terms) if terms.is_empty() => {
+                eprintln!("{} пуст: смещать нечем", path.display());
+                return ExitCode::FAILURE;
+            }
+            Ok(terms) => terms,
+            Err(error) => {
+                eprintln!("глоссарий не прочитан: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     let result = if streaming {
         let engine = match engines::open_streaming(engine_name, Path::new(data_root)) {
             Ok(Some(engine)) => engine,
@@ -117,9 +144,16 @@ fn run(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        bench_run::execute_stream(&case, engine.as_ref(), speech, "none")
+        bench_run::execute_stream(&case, engine.as_ref(), speech, biasing_name)
     } else {
-        let engine = match engines::open(engine_name, Path::new(data_root)) {
+        let biasing = match make_biasing(&terms, case_dir) {
+            Ok(biasing) => biasing,
+            Err(error) => {
+                eprintln!("смещение не настроено: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let engine = match engines::open(engine_name, Path::new(data_root), biasing.as_ref()) {
             Ok(engine) => engine,
             Err(error) => {
                 eprintln!("движок не открыт: {error}");
@@ -143,13 +177,16 @@ fn run(args: &[String]) -> ExitCode {
             split_ms,
             engine: engine.as_ref(),
         };
-        bench_run::execute(&case, plan, "none")
+        bench_run::execute(&case, plan, biasing_name)
     };
 
+    let mut result = result;
+    bench_run::add_biasing_report(&mut result, &case, &terms);
+
     let out = args
-        .get(4)
+        .get(5)
         .cloned()
-        .unwrap_or_else(|| format!("{case_dir}/out/{engine_name}-{strategy_name}-none"));
+        .unwrap_or_else(|| format!("{case_dir}/out/{engine_name}-{strategy_name}-{biasing_name}"));
     if let Err(error) = bench_run::save(&result, Path::new(&out)) {
         eprintln!("результат не записан: {error}");
         return ExitCode::FAILURE;
@@ -161,6 +198,31 @@ fn run(args: &[String]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Собрать файл терминов для sherpa рядом со случаем.
+///
+/// `None` означает «смещения нет», и это не ошибка: прогон без него —
+/// половина замера.
+#[cfg(feature = "biasing")]
+fn make_biasing(terms: &[String], case_dir: &str) -> Result<Option<stt::Biasing>, String> {
+    if terms.is_empty() {
+        return Ok(None);
+    }
+    let path = Path::new(case_dir).join("hotwords.txt");
+    hotwords::write_hotwords(terms, &path)?;
+    Ok(Some(stt::Biasing {
+        hotwords: path,
+        score: stt::DEFAULT_HOTWORDS_SCORE,
+    }))
+}
+
+#[cfg(not(feature = "biasing"))]
+fn make_biasing(terms: &[String], _case_dir: &str) -> Result<Option<()>, String> {
+    if terms.is_empty() {
+        return Ok(None);
+    }
+    Err("стенд собран без движка, умеющего смещение".to_string())
 }
 
 /// Разметка речи по независимому источнику.
@@ -255,6 +317,12 @@ fn print_run(result: &bench_run::Run, out: &str) {
         );
         println!("покрытие       {:.3}", stats.coverage);
         println!("границы в паузе {:.3}", stats.boundaries_in_pause);
+    }
+    if let Some(report) = &result.biasing_report {
+        println!(
+            "глоссарий      поймано {}, упущено {}, притянуто {}",
+            report.caught, report.missed, report.pulled_in
+        );
     }
     match (result.wer, result.cer) {
         (Some(wer), Some(cer)) => {

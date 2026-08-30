@@ -23,6 +23,7 @@ pub mod cpwer;
 pub mod engines;
 #[cfg(feature = "export")]
 pub mod export;
+pub mod hotwords;
 pub mod metrics;
 pub mod run;
 pub mod segmentation;

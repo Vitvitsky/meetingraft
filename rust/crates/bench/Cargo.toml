@@ -13,12 +13,15 @@ default = []
 # Маке — там лежат встречи; на Linux он не нужен и не собирается.
 export = ["dep:storage"]
 # Русский распознаватель. Тянет sherpa-onnx через `stt`.
-gigaam = ["dep:stt", "stt/gigaam"]
+gigaam = ["dep:stt", "stt/gigaam", "biasing"]
 # Многоязычный parakeet. В отличие от прибора, здесь он живёт **рядом** с
 # gigaam: стенд для того и есть, чтобы гонять их на одном материале.
-parakeet = ["dep:stt", "stt/parakeet"]
+parakeet = ["dep:stt", "stt/parakeet", "biasing"]
 # Потоковый русский T-one. Оси нарезки у него нет — только `stream`.
 tone = ["dep:stt", "stt/tone"]
+# Смещение под глоссарий есть у transducer'ов; включается ими, отдельно
+# не задаётся. Потоковый CTC его не поддерживает вовсе.
+biasing = ["dep:stt"]
 # Нарезка по речи.
 vad = ["dep:stt", "stt/vad"]
 # Нарезка по голосам.

@@ -31,8 +31,11 @@ pub struct Gigaam(stt::GigaamRecognizer);
 
 #[cfg(feature = "gigaam")]
 impl Gigaam {
-    pub fn open(data_root: &std::path::Path) -> Result<Self, String> {
-        stt::GigaamRecognizer::open(data_root)
+    pub fn open(
+        data_root: &std::path::Path,
+        biasing: Option<&stt::Biasing>,
+    ) -> Result<Self, String> {
+        stt::GigaamRecognizer::open_with(data_root, biasing)
             .map(Self)
             // Подробности про недостающие файлы `ModelMissing` не несёт
             // намеренно — там идентификатор модели для человека.
@@ -67,8 +70,11 @@ pub struct Parakeet(stt::ParakeetRecognizer);
 
 #[cfg(feature = "parakeet")]
 impl Parakeet {
-    pub fn open(data_root: &std::path::Path) -> Result<Self, String> {
-        stt::ParakeetRecognizer::open(data_root)
+    pub fn open(
+        data_root: &std::path::Path,
+        biasing: Option<&stt::Biasing>,
+    ) -> Result<Self, String> {
+        stt::ParakeetRecognizer::open_with(data_root, biasing)
             .map(Self)
             .map_err(|error| match stt::resolve_parakeet_models(data_root) {
                 Err(details) => details,
@@ -167,20 +173,38 @@ pub fn is_streaming(name: &str) -> bool {
     name == "tone"
 }
 
-/// Открыть движок по имени.
-pub fn open(name: &str, data_root: &std::path::Path) -> Result<Box<dyn Recognize>, String> {
+/// Открыть движок по имени, при желании со смещением под глоссарий.
+///
+/// Смещение — не свойство движка, а свойство прогона: один и тот же
+/// движок гоняется с ним и без него, и сравниваются два числа. Поэтому
+/// оно передаётся сюда, а не хранится где-то рядом.
+#[cfg(feature = "biasing")]
+pub type BiasingRef<'a> = Option<&'a stt::Biasing>;
+/// Без единой фичи движка тип смещения неоткуда взять, а сигнатура
+/// должна остаться той же.
+#[cfg(not(feature = "biasing"))]
+pub type BiasingRef<'a> = Option<&'a ()>;
+
+pub fn open(
+    name: &str,
+    data_root: &std::path::Path,
+    biasing: BiasingRef<'_>,
+) -> Result<Box<dyn Recognize>, String> {
+    let _ = biasing;
     // Без единой фичи движка каталог данных никому не нужен, и компилятор
     // об этом говорит. Он прав, но параметр остаётся: сборка с фичей и
     // без неё должна отличаться только тем, что внутри.
     let _ = data_root;
     match name {
         #[cfg(feature = "gigaam")]
-        "gigaam" => Gigaam::open(data_root).map(|engine| Box::new(engine) as Box<dyn Recognize>),
+        "gigaam" => {
+            Gigaam::open(data_root, biasing).map(|engine| Box::new(engine) as Box<dyn Recognize>)
+        }
         #[cfg(not(feature = "gigaam"))]
         "gigaam" => Err("стенд собран без --features gigaam".to_string()),
         #[cfg(feature = "parakeet")]
         "parakeet" => {
-            Parakeet::open(data_root).map(|engine| Box::new(engine) as Box<dyn Recognize>)
+            Parakeet::open(data_root, biasing).map(|engine| Box::new(engine) as Box<dyn Recognize>)
         }
         #[cfg(not(feature = "parakeet"))]
         "parakeet" => Err("стенд собран без --features parakeet".to_string()),

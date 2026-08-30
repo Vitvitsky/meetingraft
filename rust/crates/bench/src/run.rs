@@ -51,6 +51,9 @@ pub struct Run {
     pub wer: Option<f32>,
     pub cer: Option<f32>,
     pub reference_kind: String,
+    /// Что дало смещение и чего оно стоило. `None` — смещения не было
+    /// или сравнивать не с чем.
+    pub biasing_report: Option<crate::hotwords::BiasingReport>,
     pub split_ms: f32,
     pub model_ms_per_audio_second: f32,
     pub audio_ms: u64,
@@ -135,6 +138,7 @@ pub fn execute(case: &Case, plan: Plan<'_>, biasing: &str) -> Run {
         wer: wer_rate,
         cer: cer_rate,
         reference_kind: format!("{:?}", case.meta.reference_kind),
+        biasing_report: None,
         split_ms: plan.split_ms,
         model_ms_per_audio_second: if spoken_ms == 0 {
             0.0
@@ -178,6 +182,7 @@ pub fn execute_stream(
                 wer: None,
                 cer: None,
                 reference_kind: format!("{:?}", case.meta.reference_kind),
+                biasing_report: None,
                 split_ms: 0.0,
                 model_ms_per_audio_second: 0.0,
                 audio_ms: case.duration_ms(),
@@ -217,6 +222,7 @@ pub fn execute_stream(
         wer: wer_rate,
         cer: cer_rate,
         reference_kind: format!("{:?}", case.meta.reference_kind),
+        biasing_report: None,
         // Нарезка не стоила ничего отдельно: она внутри модели, и её цена
         // сидит в `model_ms_per_audio_second`.
         split_ms: 0.0,
@@ -282,10 +288,36 @@ fn refused(case: &Case, plan: &Plan<'_>, biasing: &str, reason: String) -> Run {
         wer: None,
         cer: None,
         reference_kind: format!("{:?}", case.meta.reference_kind),
+        biasing_report: None,
         split_ms: plan.split_ms,
         model_ms_per_audio_second: 0.0,
         audio_ms: case.duration_ms(),
     }
+}
+
+/// Досчитать, что дало смещение под глоссарий.
+///
+/// Отдельным шагом, а не внутри прогона, по одной причине: считать это
+/// можно только имея эталон, а прогон бывает и без него. Смешав, мы
+/// получили бы `caught = 0` там, где сравнивать было не с чем, — то есть
+/// «смещение не сработало» вместо «не мерялось».
+pub fn add_biasing_report(run: &mut Run, case: &Case, terms: &[String]) {
+    if terms.is_empty() {
+        return;
+    }
+    let (Some(reference), Some([from, to])) =
+        (case.reference.as_ref(), case.meta.reference_covers_ms)
+    else {
+        return;
+    };
+    let heard: String = run
+        .segments
+        .iter()
+        .filter(|segment| segment.start_ms < to && segment.end_ms > from)
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    run.biasing_report = Some(crate::hotwords::measure(terms, reference, &heard));
 }
 
 /// Записать результат прогона на диск.

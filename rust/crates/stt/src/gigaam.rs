@@ -110,6 +110,19 @@ impl GigaamRecognizer {
     /// нужны подробности — зовёт [`resolve_gigaam_models`] сам; так и
     /// делает `stt-probe`.
     pub fn open(data_root: impl AsRef<Path>) -> Result<Self, BatchTranscribeError> {
+        Self::open_with(data_root, None)
+    }
+
+    /// То же, но с контекстным смещением под глоссарий.
+    ///
+    /// Токены у GigaAM посимвольные, поэтому `modeling_unit` — `cjkchar`:
+    /// так sherpa режет фразу термина на буквы, а не ищет её в словаре
+    /// целиком (целиком её там нет). Имя единицы «китайский символ»
+    /// здесь сбивает с толку и означает ровно «по одному символу».
+    pub fn open_with(
+        data_root: impl AsRef<Path>,
+        biasing: Option<&crate::hypothesis::Biasing>,
+    ) -> Result<Self, BatchTranscribeError> {
         let models =
             resolve_gigaam_models(data_root).map_err(|_| BatchTranscribeError::ModelMissing {
                 model_id: MODEL_ID.to_string(),
@@ -129,6 +142,15 @@ impl GigaamRecognizer {
         // у него другой порядок входов декодера.
         config.model_config.model_type = Some("nemo_transducer".to_string());
         config.model_config.num_threads = num_threads();
+
+        if let Some(biasing) = biasing {
+            // Без этого смещение принимается и не делает **ничего**:
+            // жадный поиск лучей не держит.
+            config.decoding_method = Some("modified_beam_search".to_string());
+            config.hotwords_file = Some(biasing.hotwords.to_string_lossy().into_owned());
+            config.hotwords_score = biasing.score;
+            config.model_config.modeling_unit = Some("cjkchar".to_string());
+        }
 
         let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
             BatchTranscribeError::ModelLoad(
@@ -215,8 +237,21 @@ pub struct GigaamBatchTranscriber {
 
 impl GigaamBatchTranscriber {
     pub fn open(data_root: impl AsRef<Path>) -> Result<Self, BatchTranscribeError> {
+        Self::open_with(data_root, None)
+    }
+
+    /// То же, но с контекстным смещением под глоссарий.
+    ///
+    /// Токены у GigaAM посимвольные, поэтому `modeling_unit` — `cjkchar`:
+    /// так sherpa режет фразу термина на буквы, а не ищет её в словаре
+    /// целиком (целиком её там нет). Имя единицы «китайский символ»
+    /// здесь сбивает с толку и означает ровно «по одному символу».
+    pub fn open_with(
+        data_root: impl AsRef<Path>,
+        biasing: Option<&crate::hypothesis::Biasing>,
+    ) -> Result<Self, BatchTranscribeError> {
         Ok(Self {
-            recognizer: GigaamRecognizer::open(data_root)?,
+            recognizer: GigaamRecognizer::open_with(data_root, biasing)?,
         })
     }
 }

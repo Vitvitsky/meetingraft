@@ -46,7 +46,7 @@ pub use gigaam_path::{
     TOKENS_FILE, gigaam_models_dir, resolve_gigaam_models,
 };
 pub use hallucination::{is_hallucination_prefix, is_whisper_hallucination};
-pub use hypothesis::TransducerHypothesis;
+pub use hypothesis::{Biasing, DEFAULT_HOTWORDS_SCORE, TransducerHypothesis};
 pub use local_agreement::{
     HypothesisWord, LocalAgreement, Stabilized, backfill_end_ms, words_from_char_tokens,
     words_from_tokens,

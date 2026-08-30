@@ -81,6 +81,19 @@ impl ParakeetRecognizer {
     /// Модель качается руками, поэтому её отсутствие — ожидаемое
     /// состояние, а не сбой.
     pub fn open(data_root: impl AsRef<Path>) -> Result<Self, BatchTranscribeError> {
+        Self::open_with(data_root, None)
+    }
+
+    /// То же, но с контекстным смещением под глоссарий.
+    ///
+    /// Здесь словарь BPE, и `modeling_unit` — `bpe`. Это требует **файла
+    /// словаря BPE** рядом с моделью; в экспорте, который качает наш
+    /// скрипт, его нет (только `tokens.txt`). Работает ли смещение без
+    /// него — вопрос замера, а не документации.
+    pub fn open_with(
+        data_root: impl AsRef<Path>,
+        biasing: Option<&crate::hypothesis::Biasing>,
+    ) -> Result<Self, BatchTranscribeError> {
         let models =
             resolve_parakeet_models(data_root).map_err(|_| BatchTranscribeError::ModelMissing {
                 model_id: PARAKEET_MODEL_ID.to_string(),
@@ -97,6 +110,33 @@ impl ParakeetRecognizer {
         // у него другой порядок входов декодера.
         config.model_config.model_type = Some("nemo_transducer".to_string());
         config.model_config.num_threads = num_threads();
+
+        if let Some(biasing) = biasing {
+            // Словарь BPE — не украшение: без него sherpa отказывается
+            // открывать распознаватель вовсе. Экспорт, который качает наш
+            // скрипт, его не кладёт (только `tokens.txt`), и это
+            // проверено прогоном.
+            //
+            // Отказ здесь **называет причину**. Первая версия пропускала
+            // пустой путь дальше, sherpa падал на проверке конфига, а
+            // наше сообщение говорило «проверь, что файлы докачались
+            // целиком» — то есть винило закачку в том, чего она не
+            // делала.
+            let vocab = models.tokens.with_file_name("bpe.vocab");
+            if !vocab.exists() {
+                return Err(BatchTranscribeError::ModelLoad(format!(
+                    "смещение под глоссарий требует словаря BPE, а {} нет: \
+                     экспорт {PARAKEET_MODEL_ID} его не кладёт. \
+                     Без глоссария движок работает",
+                    vocab.display()
+                )));
+            }
+            config.decoding_method = Some("modified_beam_search".to_string());
+            config.hotwords_file = Some(biasing.hotwords.to_string_lossy().into_owned());
+            config.hotwords_score = biasing.score;
+            config.model_config.modeling_unit = Some("bpe".to_string());
+            config.model_config.bpe_vocab = Some(vocab.to_string_lossy().into_owned());
+        }
 
         let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
             BatchTranscribeError::ModelLoad(
@@ -179,8 +219,21 @@ pub struct ParakeetBatchTranscriber {
 
 impl ParakeetBatchTranscriber {
     pub fn open(data_root: impl AsRef<Path>) -> Result<Self, BatchTranscribeError> {
+        Self::open_with(data_root, None)
+    }
+
+    /// То же, но с контекстным смещением под глоссарий.
+    ///
+    /// Здесь словарь BPE, и `modeling_unit` — `bpe`. Это требует **файла
+    /// словаря BPE** рядом с моделью; в экспорте, который качает наш
+    /// скрипт, его нет (только `tokens.txt`). Работает ли смещение без
+    /// него — вопрос замера, а не документации.
+    pub fn open_with(
+        data_root: impl AsRef<Path>,
+        biasing: Option<&crate::hypothesis::Biasing>,
+    ) -> Result<Self, BatchTranscribeError> {
         Ok(Self {
-            recognizer: ParakeetRecognizer::open(data_root)?,
+            recognizer: ParakeetRecognizer::open_with(data_root, biasing)?,
         })
     }
 }
