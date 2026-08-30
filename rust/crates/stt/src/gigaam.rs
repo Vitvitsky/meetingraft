@@ -63,7 +63,8 @@ use sherpa_onnx::{
 
 use crate::batch::{BatchTranscribeError, BatchTranscriber, normalize_segments};
 use crate::gigaam_path::{MODEL_ID, resolve_gigaam_models};
-use crate::local_agreement::{HypothesisWord, words_from_char_tokens};
+use crate::hypothesis::TransducerHypothesis;
+use crate::local_agreement::words_from_char_tokens;
 
 /// Ширина окна пакетного прохода.
 ///
@@ -91,27 +92,6 @@ fn num_threads() -> i32 {
         .unwrap_or(2)
 }
 
-/// Что движок услышал в куске аудио.
-#[derive(Debug, Clone, Default)]
-pub struct GigaamHypothesis {
-    /// Текст целиком, как его собрал sherpa-onnx.
-    pub text: String,
-    /// Слова с временем окончания от начала поданного куска.
-    ///
-    /// Пусто, если модель не отдала тайм-кодов: поле `timestamps` у
-    /// результата — `Option`, и притворяться, что время известно, хуже,
-    /// чем сказать, что его нет.
-    pub words: Vec<HypothesisWord>,
-    /// Границы речи внутри куска: первый и последний символ.
-    ///
-    /// Отдельно от `words`, потому что у слова здесь известен только
-    /// конец, а начало куска — это начало **первого символа первого
-    /// слова**. Считать началом конец первого слова значит выкинуть его
-    /// из собственного сегмента, а на однословном окне — получить
-    /// сегмент нулевой длины.
-    pub speech_ms: Option<(u64, u64)>,
-}
-
 /// Открытый распознаватель. Держит модель в памяти; открывать на каждый
 /// проход — 225 МБ чтения с диска.
 pub struct GigaamRecognizer {
@@ -130,6 +110,19 @@ impl GigaamRecognizer {
     /// нужны подробности — зовёт [`resolve_gigaam_models`] сам; так и
     /// делает `stt-probe`.
     pub fn open(data_root: impl AsRef<Path>) -> Result<Self, BatchTranscribeError> {
+        Self::open_with(data_root, None)
+    }
+
+    /// То же, но с контекстным смещением под глоссарий.
+    ///
+    /// Токены у GigaAM посимвольные, поэтому `modeling_unit` — `cjkchar`:
+    /// так sherpa режет фразу термина на буквы, а не ищет её в словаре
+    /// целиком (целиком её там нет). Имя единицы «китайский символ»
+    /// здесь сбивает с толку и означает ровно «по одному символу».
+    pub fn open_with(
+        data_root: impl AsRef<Path>,
+        biasing: Option<&crate::hypothesis::Biasing>,
+    ) -> Result<Self, BatchTranscribeError> {
         let models =
             resolve_gigaam_models(data_root).map_err(|_| BatchTranscribeError::ModelMissing {
                 model_id: MODEL_ID.to_string(),
@@ -149,6 +142,15 @@ impl GigaamRecognizer {
         // у него другой порядок входов декодера.
         config.model_config.model_type = Some("nemo_transducer".to_string());
         config.model_config.num_threads = num_threads();
+
+        if let Some(biasing) = biasing {
+            // Без этого смещение принимается и не делает **ничего**:
+            // жадный поиск лучей не держит.
+            config.decoding_method = Some("modified_beam_search".to_string());
+            config.hotwords_file = Some(biasing.hotwords.to_string_lossy().into_owned());
+            config.hotwords_score = biasing.score;
+            config.model_config.modeling_unit = Some("cjkchar".to_string());
+        }
 
         let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
             BatchTranscribeError::ModelLoad(
@@ -172,9 +174,9 @@ impl GigaamRecognizer {
         &self,
         pcm: &[i16],
         sample_rate: u32,
-    ) -> Result<GigaamHypothesis, BatchTranscribeError> {
+    ) -> Result<TransducerHypothesis, BatchTranscribeError> {
         if pcm.is_empty() || sample_rate == 0 {
-            return Ok(GigaamHypothesis::default());
+            return Ok(TransducerHypothesis::default());
         }
         let audio: Vec<f32> = pcm.iter().map(|sample| *sample as f32 / 32768.0).collect();
 
@@ -220,7 +222,7 @@ impl GigaamRecognizer {
             None => (Vec::new(), None),
         };
 
-        Ok(GigaamHypothesis {
+        Ok(TransducerHypothesis {
             text: result.text.trim().to_string(),
             words,
             speech_ms,
@@ -235,8 +237,21 @@ pub struct GigaamBatchTranscriber {
 
 impl GigaamBatchTranscriber {
     pub fn open(data_root: impl AsRef<Path>) -> Result<Self, BatchTranscribeError> {
+        Self::open_with(data_root, None)
+    }
+
+    /// То же, но с контекстным смещением под глоссарий.
+    ///
+    /// Токены у GigaAM посимвольные, поэтому `modeling_unit` — `cjkchar`:
+    /// так sherpa режет фразу термина на буквы, а не ищет её в словаре
+    /// целиком (целиком её там нет). Имя единицы «китайский символ»
+    /// здесь сбивает с толку и означает ровно «по одному символу».
+    pub fn open_with(
+        data_root: impl AsRef<Path>,
+        biasing: Option<&crate::hypothesis::Biasing>,
+    ) -> Result<Self, BatchTranscribeError> {
         Ok(Self {
-            recognizer: GigaamRecognizer::open(data_root)?,
+            recognizer: GigaamRecognizer::open_with(data_root, biasing)?,
         })
     }
 }

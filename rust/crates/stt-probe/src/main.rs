@@ -30,6 +30,15 @@
 //! собой. На своём звуке прибор печатает текст и время; читает и решает
 //! человек.
 
+// Метрика живёт у стенда и подключается **тем же файлом**, как ниже
+// подключён разбор WAV. Причина та же: две реализации WER разойдутся, и
+// разойдутся молча — прибор и стенд начнут называть разными числами одно
+// и то же качество.
+#[path = "../../bench/src/wer.rs"]
+// Файл включается целиком, а нужен здесь не весь: `cer` зовёт только
+// стенд. Общий файл с одной лишней функцией лучше, чем две расходящиеся
+// реализации WER.
+#[allow(dead_code)]
 mod wer;
 
 // Разбор WAV берётся у соседнего прибора **тем же файлом**, а не копией.
@@ -92,6 +101,37 @@ impl Recognize for stt::GigaamRecognizer {
     }
 }
 
+#[cfg(feature = "parakeet")]
+impl Recognize for stt::ParakeetRecognizer {
+    fn transcribe(&self, pcm: &[i16], sample_rate: u32) -> Result<Heard, String> {
+        let hypothesis = stt::ParakeetRecognizer::transcribe(self, pcm, sample_rate)
+            .map_err(|error| error.to_string())?;
+        Ok(Heard {
+            text: hypothesis.text,
+            word_end_ms: hypothesis.words.iter().map(|word| word.end_ms).collect(),
+        })
+    }
+}
+
+// Две фичи движка разом — отказ на сборке, а не выбор наугад. Прибор
+// печатает одно число на прогон, и «чьё оно» должно решаться до
+// компиляции, а не подразумеваться.
+#[cfg(all(feature = "gigaam", feature = "parakeet"))]
+compile_error!(
+    "включены обе фичи движка: прибор судит один движок за прогон. \
+     Собирай с --features gigaam либо --features parakeet"
+);
+
+#[cfg(feature = "parakeet")]
+fn open_engine(root: &Path) -> Result<Box<dyn Recognize>, String> {
+    stt::ParakeetRecognizer::open(root)
+        .map(|engine| Box::new(engine) as Box<dyn Recognize>)
+        .map_err(|error| match stt::resolve_parakeet_models(root) {
+            Err(details) => details,
+            Ok(_) => error.to_string(),
+        })
+}
+
 #[cfg(feature = "gigaam")]
 fn open_engine(root: &Path) -> Result<Box<dyn Recognize>, String> {
     stt::GigaamRecognizer::open(root)
@@ -105,9 +145,9 @@ fn open_engine(root: &Path) -> Result<Box<dyn Recognize>, String> {
         })
 }
 
-#[cfg(not(feature = "gigaam"))]
+#[cfg(not(any(feature = "gigaam", feature = "parakeet")))]
 fn open_engine(_root: &Path) -> Result<Box<dyn Recognize>, String> {
-    Err("собрано без --features gigaam: распознавать нечем".to_string())
+    Err("собрано без --features gigaam и без --features parakeet: распознавать нечем".to_string())
 }
 
 /// Шум той же длины и той же громкости, что и запись.

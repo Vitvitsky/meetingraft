@@ -1,0 +1,60 @@
+[package]
+name = "meetingraft-bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Движки прячутся за фичами по образцу `stt/gigaam` и `diarize/model`:
+# `build.rs` крейта sherpa-onnx ходит в сеть, и обычная сборка не должна
+# качать ничего.
+[features]
+default = []
+# Экспорт встречи из данных приложения. Тянет `storage` и гоняется на
+# Маке — там лежат встречи; на Linux он не нужен и не собирается.
+export = ["dep:storage"]
+# Русский распознаватель. Тянет sherpa-onnx через `stt`.
+gigaam = ["dep:stt", "stt/gigaam", "biasing"]
+# Многоязычный parakeet. В отличие от прибора, здесь он живёт **рядом** с
+# gigaam: стенд для того и есть, чтобы гонять их на одном материале.
+parakeet = ["dep:stt", "stt/parakeet", "biasing"]
+# Потоковый русский T-one. Оси нарезки у него нет — только `stream`.
+tone = ["dep:stt", "stt/tone"]
+# Смещение под глоссарий есть у transducer'ов; включается ими, отдельно
+# не задаётся. Потоковый CTC его не поддерживает вовсе.
+biasing = ["dep:stt"]
+# Whisper: единственный движок, покрывающий ru/en/es в живом пути, и
+# единственный, который умеет и нашу нарезку, и свою. На Linux собирается
+# на CPU (нужен cmake), на Маке — с Metal, поэтому числа времени между
+# машинами несравнимы, а WER сравним.
+whisper = ["dep:stt", "stt/whisper"]
+# Судья на локальной LLM. Тянет клиент из postcall, а не заводит свой:
+# второй HTTP-клиент к той же Ollama разошёлся бы с первым.
+judge = ["dep:postcall"]
+# Нарезка по речи.
+vad = ["dep:stt", "stt/vad"]
+# Нарезка по голосам.
+diarize = ["dep:diarize", "diarize/model"]
+
+[dependencies]
+domain = { package = "meetingraft-domain", path = "../domain" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+storage = { package = "meetingraft-storage", path = "../storage", optional = true }
+stt = { package = "meetingraft-stt", path = "../stt", optional = true }
+postcall = { package = "meetingraft-postcall", path = "../postcall", optional = true }
+diarize = { package = "meetingraft-diarize", path = "../diarize", optional = true }
+
+# Только для тестов: CSV пар сверяется **тем самым** разбором, который
+# читает его в приложении. Своя сборка CSV, разошедшаяся с чужим
+# разбором, — файл, который импортируется в ноль строк без единой жалобы.
+[dev-dependencies]
+glossary = { package = "meetingraft-glossary", path = "../glossary" }
+
+[lib]
+name = "meetingraft_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "meetingraft-bench"
+path = "src/main.rs"
