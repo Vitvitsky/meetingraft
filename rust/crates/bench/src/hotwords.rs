@@ -8,12 +8,12 @@
 //! Поэтому рядом с «сколько терминов доехало» стоит «сколько слов
 //! эталона заменилось на термин, которым они не были».
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::wer::normalize;
 
 /// Что смещение дало и чего оно стоило.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BiasingReport {
     /// Термины, встретившиеся в эталоне и попавшие в расшифровку.
     pub caught: usize,

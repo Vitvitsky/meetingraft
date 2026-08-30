@@ -1,6 +1,8 @@
 //! Командная строка стенда. Всё содержательное — в библиотеке рядом
 //! (`lib.rs`), здесь только разбор аргументов и печать.
 
+#[cfg(feature = "judge")]
+use meetingraft_bench::judge;
 use meetingraft_bench::run as bench_run;
 use meetingraft_bench::segmentation::{self, Strategy};
 use meetingraft_bench::{case, engines, hotwords, wav};
@@ -26,6 +28,10 @@ meetingraft-bench <подкоманда>
       движок:  gigaam | parakeet | tone | whisper
       нарезка: windows30 | vad | diarize | native (свои границы: tone, whisper)
       смещение: none | hotwords (нужен <каталог-случая>/glossary.txt)
+
+  judge <прогон-A> <прогон-B> [адрес-llm] [модель] [зерно]
+      слепое парное сравнение двух прогонов
+      адрес по умолчанию http://localhost:11434, модель llama3.1
 ";
 
 fn main() -> ExitCode {
@@ -46,11 +52,150 @@ fn main() -> ExitCode {
         "cut" => cut(&args[1..]),
         "export" => export(&args[1..]),
         "run" => run(&args[1..]),
+        "judge" => judge_runs(&args[1..]),
         other => {
             eprintln!("неизвестная подкоманда {other}\n{USAGE}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Слепое парное сравнение двух прогонов.
+///
+/// Результаты сравнения печатаются **только** если судья прошёл свои
+/// контроли. Показать их с оговоркой хуже: оговорку прочтут один раз, а
+/// число запомнят.
+#[cfg(feature = "judge")]
+fn judge_runs(args: &[String]) -> ExitCode {
+    let (Some(first_dir), Some(second_dir)) = (args.first(), args.get(1)) else {
+        eprintln!("нужно: judge <прогон-A> <прогон-B>\n{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let endpoint = args
+        .get(2)
+        .map(String::as_str)
+        .unwrap_or("http://localhost:11434");
+    let model = args.get(3).map(String::as_str).unwrap_or("llama3.1");
+    let seed: u64 = args
+        .get(4)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+
+    let (first, second) = match (
+        bench_run::load(Path::new(first_dir)),
+        bench_run::load(Path::new(second_dir)),
+    ) {
+        (Ok(first), Ok(second)) => (first, second),
+        (Err(error), _) | (_, Err(error)) => {
+            eprintln!("прогон не прочитан: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if first.case != second.case {
+        // Сравнивать прогоны по разным записям бессмысленно, и молча
+        // сравнить — значит выдать бессмыслицу за результат.
+        eprintln!(
+            "это разные случаи: {} и {}. Сравнивать можно только прогоны по одной записи",
+            first.case, second.case
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let to_chunks = |run: &bench_run::Run| -> Vec<(u64, String)> {
+        run.segments
+            .iter()
+            .map(|segment| (segment.start_ms, segment.text.clone()))
+            .collect()
+    };
+    let pairs = judge::build_pairs(
+        &to_chunks(&first),
+        &to_chunks(&second),
+        first.audio_ms.max(second.audio_ms),
+        seed,
+    );
+    if pairs.is_empty() {
+        eprintln!("сравнивать нечего: оба прогона пусты");
+        return ExitCode::FAILURE;
+    }
+
+    let client = postcall::OllamaNativeClient::new(endpoint, model);
+    let llm_judge = judge::LlmJudge { client: &client };
+    let report = judge::evaluate(&llm_judge, &pairs);
+
+    println!("случай         {}", first.case);
+    println!(
+        "A              {} + {} + {}",
+        first.engine, first.segmentation, first.biasing
+    );
+    println!(
+        "B              {} + {} + {}",
+        second.engine, second.segmentation, second.biasing
+    );
+    println!(
+        "контроль A/A   {:.2} «ничья» на {} парах (порог {:.2})",
+        report.same_text_tie_share,
+        report.same_text_pairs,
+        judge::SAME_TEXT_MIN_TIE
+    );
+    println!(
+        "контроль слов  {:.2} верных на {} парах (порог {:.2})",
+        report.shuffled_correct_share,
+        report.shuffled_pairs,
+        judge::SHUFFLED_MIN_CORRECT
+    );
+    if report.errors > 0 {
+        println!(
+            "ошибок судьи   {} (не ответил или ответ не разобран)",
+            report.errors
+        );
+    }
+
+    if let Some(reason) = &report.refused {
+        println!();
+        println!("СУДЬЯ ОТВЕРГНУТ: {reason}");
+        println!("Результаты сравнения не показываются: доверять им нечего.");
+        return ExitCode::FAILURE;
+    }
+
+    println!();
+    println!("A выиграл      {}", report.first_wins);
+    println!("B выиграл      {}", report.second_wins);
+    println!(
+        "ничьих         {} ({:.2} от настоящих пар)",
+        report.ties,
+        report.real_tie_share()
+    );
+
+    // Где есть эталон, решает WER. Судья мерит связность и не слышал
+    // звук: гладкая выдумка выигрывает у корявой правды.
+    match (first.wer, second.wer) {
+        (Some(a), Some(b)) => {
+            println!();
+            println!("WER            A {a:.3} против B {b:.3}");
+            if let Some(found) =
+                judge::divergence(report.first_wins, report.second_wins, first.wer, second.wer)
+            {
+                println!(
+                    "РАСХОЖДЕНИЕ    судья выбрал {}, а WER лучше у {}. \
+                     Решает эталон; судья говорит лишь о связности",
+                    if found.judge_prefers_first { "A" } else { "B" },
+                    if found.reference_prefers_first {
+                        "A"
+                    } else {
+                        "B"
+                    }
+                );
+            }
+        }
+        _ => println!("\nЭталона нет: судья — единственное, что здесь сказано, и он о связности"),
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(not(feature = "judge"))]
+fn judge_runs(_args: &[String]) -> ExitCode {
+    eprintln!("стенд собран без --features judge: судить нечем");
+    ExitCode::FAILURE
 }
 
 /// Один прогон: случай × движок × нарезка.

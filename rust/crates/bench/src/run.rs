@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use domain::TranscriptSegment;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::case::Case;
 use crate::engines::Recognize;
@@ -18,7 +18,7 @@ use crate::segmentation::{self, Piece, Strategy};
 use crate::wer::{cer, wer};
 
 /// Результат одного прогона.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
     pub case: String,
     pub engine: String,
@@ -59,7 +59,7 @@ pub struct Run {
     pub audio_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Segment {
     pub start_ms: u64,
     pub end_ms: u64,
@@ -318,6 +318,14 @@ pub fn add_biasing_report(run: &mut Run, case: &Case, terms: &[String]) {
         .collect::<Vec<_>>()
         .join(" ");
     run.biasing_report = Some(crate::hotwords::measure(terms, reference, &heard));
+}
+
+/// Прочитать прогон обратно — им живёт подкоманда `judge`.
+pub fn load(dir: &Path) -> Result<Run, String> {
+    let path = dir.join("run.json");
+    let text =
+        std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Записать результат прогона на диск.

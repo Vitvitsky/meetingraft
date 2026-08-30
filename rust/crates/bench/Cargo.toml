@@ -27,6 +27,9 @@ biasing = ["dep:stt"]
 # на CPU (нужен cmake), на Маке — с Metal, поэтому числа времени между
 # машинами несравнимы, а WER сравним.
 whisper = ["dep:stt", "stt/whisper"]
+# Судья на локальной LLM. Тянет клиент из postcall, а не заводит свой:
+# второй HTTP-клиент к той же Ollama разошёлся бы с первым.
+judge = ["dep:postcall"]
 # Нарезка по речи.
 vad = ["dep:stt", "stt/vad"]
 # Нарезка по голосам.
@@ -39,6 +42,7 @@ serde_json = "1"
 toml = "1"
 storage = { package = "meetingraft-storage", path = "../storage", optional = true }
 stt = { package = "meetingraft-stt", path = "../stt", optional = true }
+postcall = { package = "meetingraft-postcall", path = "../postcall", optional = true }
 diarize = { package = "meetingraft-diarize", path = "../diarize", optional = true }
 
 [lib]
