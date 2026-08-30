@@ -5,7 +5,7 @@
 use meetingraft_bench::judge;
 use meetingraft_bench::run as bench_run;
 use meetingraft_bench::segmentation::{self, Strategy};
-use meetingraft_bench::{case, engines, hotwords, wav};
+use meetingraft_bench::{case, engines, hotwords, labels, wav};
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -28,6 +28,10 @@ meetingraft-bench <подкоманда>
       движок:  gigaam | parakeet | tone | whisper
       нарезка: windows30 | vad | diarize | native (свои границы: tone, whisper)
       смещение: none | hotwords (нужен <каталог-случая>/glossary.txt)
+
+  label <каталог-случая> <каталог-данных> [движки через запятую]
+      нарезать по речи и прогнать каждую фразу через все движки;
+      кладёт labels.json и label.html рядом со случаем
 
   judge <прогон-A> <прогон-B> [адрес-llm] [модель] [зерно]
       слепое парное сравнение двух прогонов
@@ -53,11 +57,164 @@ fn main() -> ExitCode {
         "export" => export(&args[1..]),
         "run" => run(&args[1..]),
         "judge" => judge_runs(&args[1..]),
+        "label" => label(&args[1..]),
         other => {
             eprintln!("неизвестная подкоманда {other}\n{USAGE}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Разметка: фразы по речи, гипотезы всех движков.
+///
+/// Тяжёлая часть — прогон движков — делается **один раз**, а потом
+/// разметка правится сколько угодно: файл уезжает туда, где удобно
+/// слушать, и возвращается обратно.
+fn label(args: &[String]) -> ExitCode {
+    let (Some(case_dir), Some(data_root)) = (args.first(), args.get(1)) else {
+        eprintln!("нужно: label <каталог-случая> <каталог-данных> [движки]\n{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let names: Vec<String> = args
+        .get(2)
+        .map(|list| list.split(',').map(str::trim).map(str::to_string).collect())
+        .unwrap_or_else(|| {
+            vec![
+                "gigaam".to_string(),
+                "parakeet".to_string(),
+                "whisper".to_string(),
+            ]
+        });
+
+    let case = match case::load(Path::new(case_dir)) {
+        Ok(case) => case,
+        Err(error) => {
+            eprintln!("случай не прочитан: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Границы даёт VAD и только он: нарезка по репликам движка сделала бы
+    // датасет пристрастным к тому движку, чей черновик размечали.
+    let speech = match speech_marks(Path::new(data_root), &case) {
+        Ok(speech) if !speech.is_empty() => speech,
+        Ok(_) => {
+            eprintln!("речи не найдено ни одного отрезка: размечать нечего");
+            return ExitCode::FAILURE;
+        }
+        Err(error) => {
+            eprintln!("речь не размечена: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let pieces = segmentation::from_speech(&speech, case.duration_ms());
+    println!("фраз по речи   {}", pieces.len());
+
+    // Движок, которого нет в сборке или без модели, — пропускается с
+    // объяснением, а не роняет разметку: гипотез станет меньше, и это
+    // видно в отчёте.
+    let mut engines: Vec<(String, Box<dyn engines::Recognize>)> = Vec::new();
+    for name in &names {
+        match engines::open(name, Path::new(data_root), None, None) {
+            Ok(engine) => {
+                println!("движок         {name}");
+                engines.push((name.clone(), engine));
+            }
+            Err(error) => println!("движок         {name} — пропущен: {error}"),
+        }
+    }
+    if engines.is_empty() {
+        eprintln!("ни одного движка не открылось: размечать нечем");
+        return ExitCode::FAILURE;
+    }
+
+    let mut phrases = Vec::with_capacity(pieces.len());
+    for (index, piece) in pieces.iter().enumerate() {
+        let samples = segmentation::samples(&case.mic, case.sample_rate, piece);
+        if samples.is_empty() {
+            continue;
+        }
+        let mut hypotheses = std::collections::BTreeMap::new();
+        for (name, engine) in &engines {
+            match engine.transcribe(samples, case.sample_rate) {
+                Ok(heard) if !heard.text.trim().is_empty() => {
+                    hypotheses.insert(name.clone(), heard.text.trim().to_string());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("фраза {index}, движок {name}: {error}");
+                }
+            }
+        }
+        // Первая гипотеза становится текстом только как черновик:
+        // состояние остаётся `unchecked`, и в эталон это не попадёт.
+        let draft = hypotheses.values().next().cloned().unwrap_or_default();
+        phrases.push(labels::Phrase {
+            id: format!("{:04}", index + 1),
+            start_ms: piece.start_ms,
+            end_ms: piece.end_ms,
+            hypotheses,
+            text: draft,
+            state: labels::State::Unchecked,
+            kinds: Vec::new(),
+            speaker: None,
+            note: String::new(),
+        });
+        if (index + 1) % 20 == 0 {
+            println!("  размечено {} из {}", index + 1, pieces.len());
+        }
+    }
+
+    let mut fresh = labels::Labels {
+        case: case.meta.case.clone(),
+        version: 0,
+        boundaries: "vad".to_string(),
+        engines: engines.iter().map(|(name, _)| name.clone()).collect(),
+        updated_ms: now_ms(),
+        phrases,
+    };
+
+    let path = Path::new(case_dir).join("labels.json");
+    if path.exists() {
+        match labels::load(&path) {
+            Ok(previous) => match fresh.merge_from(&previous) {
+                Ok(carried) => println!("перенесено     {carried} размеченных фраз"),
+                Err(error) => {
+                    eprintln!("разметка не перенесена: {error}");
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(error) => {
+                eprintln!("старая разметка не прочитана: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    if let Err(error) = labels::save(&fresh, &path) {
+        eprintln!("разметка не записана: {error}");
+        return ExitCode::FAILURE;
+    }
+    let page = Path::new(case_dir).join("label.html");
+    if let Err(error) = labels::write_page(&fresh, &page) {
+        eprintln!("страница не записана: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    let agreed = fresh.phrases.iter().filter(|p| p.engines_agree()).count();
+    println!();
+    println!("фраз           {}", fresh.phrases.len());
+    println!("сошлись все    {agreed} — смотреть их быстрее, но проверить надо тоже");
+    println!("разметка       {}", path.display());
+    println!("страница       {}", page.display());
+    ExitCode::SUCCESS
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Слепое парное сравнение двух прогонов.

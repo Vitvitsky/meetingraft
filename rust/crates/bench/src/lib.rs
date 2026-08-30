@@ -60,6 +60,7 @@ pub mod engines;
 pub mod export;
 pub mod hotwords;
 pub mod judge;
+pub mod labels;
 pub mod metrics;
 pub mod run;
 pub mod segmentation;
