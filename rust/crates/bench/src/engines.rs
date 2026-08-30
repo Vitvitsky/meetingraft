@@ -62,6 +62,39 @@ impl Recognize for Gigaam {
     }
 }
 
+#[cfg(feature = "parakeet")]
+pub struct Parakeet(stt::ParakeetRecognizer);
+
+#[cfg(feature = "parakeet")]
+impl Parakeet {
+    pub fn open(data_root: &std::path::Path) -> Result<Self, String> {
+        stt::ParakeetRecognizer::open(data_root)
+            .map(Self)
+            .map_err(|error| match stt::resolve_parakeet_models(data_root) {
+                Err(details) => details,
+                Ok(_) => error.to_string(),
+            })
+    }
+}
+
+#[cfg(feature = "parakeet")]
+impl Recognize for Parakeet {
+    fn transcribe(&self, pcm: &[i16], sample_rate: u32) -> Result<Heard, String> {
+        let hypothesis = self
+            .0
+            .transcribe(pcm, sample_rate)
+            .map_err(|error| error.to_string())?;
+        Ok(Heard {
+            text: hypothesis.text,
+            word_end_ms: hypothesis.words.iter().map(|word| word.end_ms).collect(),
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "parakeet"
+    }
+}
+
 /// Открыть движок по имени.
 pub fn open(name: &str, data_root: &std::path::Path) -> Result<Box<dyn Recognize>, String> {
     // Без единой фичи движка каталог данных никому не нужен, и компилятор
@@ -73,6 +106,12 @@ pub fn open(name: &str, data_root: &std::path::Path) -> Result<Box<dyn Recognize
         "gigaam" => Gigaam::open(data_root).map(|engine| Box::new(engine) as Box<dyn Recognize>),
         #[cfg(not(feature = "gigaam"))]
         "gigaam" => Err("стенд собран без --features gigaam".to_string()),
+        #[cfg(feature = "parakeet")]
+        "parakeet" => {
+            Parakeet::open(data_root).map(|engine| Box::new(engine) as Box<dyn Recognize>)
+        }
+        #[cfg(not(feature = "parakeet"))]
+        "parakeet" => Err("стенд собран без --features parakeet".to_string()),
         other => Err(format!("движка {other} стенд не знает")),
     }
 }

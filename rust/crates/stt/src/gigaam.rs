@@ -63,7 +63,8 @@ use sherpa_onnx::{
 
 use crate::batch::{BatchTranscribeError, BatchTranscriber, normalize_segments};
 use crate::gigaam_path::{MODEL_ID, resolve_gigaam_models};
-use crate::local_agreement::{HypothesisWord, words_from_char_tokens};
+use crate::hypothesis::TransducerHypothesis;
+use crate::local_agreement::words_from_char_tokens;
 
 /// Ширина окна пакетного прохода.
 ///
@@ -89,27 +90,6 @@ fn num_threads() -> i32 {
     std::thread::available_parallelism()
         .map(|count| (count.get() as i32).min(4))
         .unwrap_or(2)
-}
-
-/// Что движок услышал в куске аудио.
-#[derive(Debug, Clone, Default)]
-pub struct GigaamHypothesis {
-    /// Текст целиком, как его собрал sherpa-onnx.
-    pub text: String,
-    /// Слова с временем окончания от начала поданного куска.
-    ///
-    /// Пусто, если модель не отдала тайм-кодов: поле `timestamps` у
-    /// результата — `Option`, и притворяться, что время известно, хуже,
-    /// чем сказать, что его нет.
-    pub words: Vec<HypothesisWord>,
-    /// Границы речи внутри куска: первый и последний символ.
-    ///
-    /// Отдельно от `words`, потому что у слова здесь известен только
-    /// конец, а начало куска — это начало **первого символа первого
-    /// слова**. Считать началом конец первого слова значит выкинуть его
-    /// из собственного сегмента, а на однословном окне — получить
-    /// сегмент нулевой длины.
-    pub speech_ms: Option<(u64, u64)>,
 }
 
 /// Открытый распознаватель. Держит модель в памяти; открывать на каждый
@@ -172,9 +152,9 @@ impl GigaamRecognizer {
         &self,
         pcm: &[i16],
         sample_rate: u32,
-    ) -> Result<GigaamHypothesis, BatchTranscribeError> {
+    ) -> Result<TransducerHypothesis, BatchTranscribeError> {
         if pcm.is_empty() || sample_rate == 0 {
-            return Ok(GigaamHypothesis::default());
+            return Ok(TransducerHypothesis::default());
         }
         let audio: Vec<f32> = pcm.iter().map(|sample| *sample as f32 / 32768.0).collect();
 
@@ -220,7 +200,7 @@ impl GigaamRecognizer {
             None => (Vec::new(), None),
         };
 
-        Ok(GigaamHypothesis {
+        Ok(TransducerHypothesis {
             text: result.text.trim().to_string(),
             words,
             speech_ms,

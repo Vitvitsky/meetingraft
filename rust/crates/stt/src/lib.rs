@@ -6,17 +6,22 @@ mod engine;
 mod engine_choice;
 mod gigaam_path;
 mod hallucination;
+mod hypothesis;
 mod local_agreement;
 mod mock;
 mod model_path;
 mod noise_gate;
 mod pacing;
+mod parakeet_path;
 mod speech_decider;
 mod vad_path;
 mod window;
 
 #[cfg(feature = "gigaam")]
 mod gigaam;
+
+#[cfg(feature = "parakeet")]
+mod parakeet;
 
 #[cfg(feature = "vad")]
 mod vad;
@@ -37,6 +42,7 @@ pub use gigaam_path::{
     TOKENS_FILE, gigaam_models_dir, resolve_gigaam_models,
 };
 pub use hallucination::{is_hallucination_prefix, is_whisper_hallucination};
+pub use hypothesis::TransducerHypothesis;
 pub use local_agreement::{
     HypothesisWord, LocalAgreement, Stabilized, backfill_end_ms, words_from_char_tokens,
     words_from_tokens,
@@ -50,7 +56,16 @@ pub use vad_path::{SILERO_FILE, resolve_vad_model, vad_models_dir, vad_ready};
 pub use window::{LiveCaptionPipeline, SttBackendKind, pcm_bytes_to_i16};
 
 #[cfg(feature = "gigaam")]
-pub use gigaam::{GigaamBatchTranscriber, GigaamHypothesis, GigaamRecognizer};
+pub use gigaam::{GigaamBatchTranscriber, GigaamRecognizer};
+
+pub use parakeet_path::{
+    PARAKEET_DECODER_FILE, PARAKEET_ENCODER_FILE, PARAKEET_JOINER_FILE, PARAKEET_MODEL_ID,
+    PARAKEET_TOKENS_FILE, ParakeetModels, parakeet_models_dir, parakeet_ready,
+    resolve_parakeet_models,
+};
+
+#[cfg(feature = "parakeet")]
+pub use parakeet::{ParakeetBatchTranscriber, ParakeetRecognizer};
 
 #[cfg(feature = "vad")]
 pub use vad::SileroGate;

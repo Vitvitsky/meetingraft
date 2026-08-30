@@ -23,7 +23,7 @@ meetingraft-bench <подкоманда>
       (только сборка с --features export, то есть на Маке)
 
   run <каталог-случая> <каталог-данных> <движок> <нарезка> [каталог-выхода]
-      движок:  gigaam
+      движок:  gigaam | parakeet
       нарезка: windows30 | vad | diarize
 ";
 

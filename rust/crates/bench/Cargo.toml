@@ -14,6 +14,9 @@ default = []
 export = ["dep:storage"]
 # Русский распознаватель. Тянет sherpa-onnx через `stt`.
 gigaam = ["dep:stt", "stt/gigaam"]
+# Многоязычный parakeet. В отличие от прибора, здесь он живёт **рядом** с
+# gigaam: стенд для того и есть, чтобы гонять их на одном материале.
+parakeet = ["dep:stt", "stt/parakeet"]
 # Нарезка по речи.
 vad = ["dep:stt", "stt/vad"]
 # Нарезка по голосам.
