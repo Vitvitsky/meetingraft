@@ -956,6 +956,7 @@ version = "0.1.0"
 dependencies = [
  "meetingraft-diarize",
  "meetingraft-domain",
+ "meetingraft-glossary",
  "meetingraft-postcall",
  "meetingraft-storage",
  "meetingraft-stt",

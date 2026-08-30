@@ -5,7 +5,7 @@
 use meetingraft_bench::judge;
 use meetingraft_bench::run as bench_run;
 use meetingraft_bench::segmentation::{self, Strategy};
-use meetingraft_bench::{case, engines, history, hotwords, labels, wav};
+use meetingraft_bench::{case, dataset, engines, history, hotwords, labels, wav};
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -32,6 +32,11 @@ meetingraft-bench <подкоманда>
   label <каталог-случая> <каталог-данных> [движки через запятую]
       нарезать по речи и прогнать каждую фразу через все движки;
       кладёт labels.json и label.html рядом со случаем
+
+  dataset <каталог-случая> [каталог-выхода]
+      из разметки — манифест для дообучения (NeMo JSONL), нарезка по
+      фразам и пары для глоссария; непроверенное не берётся, и если
+      проверенного нет — отказ, а не пустой манифест
 
   history <каталог-случая> [имя-случая]
       журнал замеров: что, когда, с какой разметкой и с какими числами
@@ -62,6 +67,7 @@ fn main() -> ExitCode {
         "run" => run(&args[1..]),
         "judge" => judge_runs(&args[1..]),
         "label" => label(&args[1..]),
+        "dataset" => dataset(&args[1..]),
         "history" => history(&args[1..]),
         other => {
             eprintln!("неизвестная подкоманда {other}\n{USAGE}");
@@ -152,6 +158,81 @@ fn truncate(text: &str, width: usize) -> String {
     } else {
         text.chars().take(width - 1).collect::<String>() + "…"
     }
+}
+
+/// Разметка — в материал для дообучения и в пары для глоссария.
+///
+/// Отказ здесь громкий намеренно: экспорт, тихо выложивший манифест из
+/// трёх фраз вместо трёхсот, выглядит на диске как сделанная работа.
+fn dataset(args: &[String]) -> ExitCode {
+    let Some(case_dir) = args.first() else {
+        eprintln!("нужно: dataset <каталог-случая> [каталог-выхода]\n{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let out = args
+        .get(1)
+        .map(|dir| Path::new(dir).to_path_buf())
+        .unwrap_or_else(|| Path::new(case_dir).join("dataset"));
+
+    let case = match case::load(Path::new(case_dir)) {
+        Ok(case) => case,
+        Err(error) => {
+            eprintln!("случай не прочитан: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let marks = Path::new(case_dir).join("labels.json");
+    let set = match labels::load(&marks) {
+        Ok(set) => set,
+        Err(error) => {
+            eprintln!("разметка не прочитана ({}): {error}", marks.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let report = match dataset::write(&set, &case.mic, case.sample_rate, &out) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("датасет не собран: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Пары для глоссария — из правок вида `term`. Их отсутствие законно
+    // и говорится вслух: молча не записанный файл читается как «пар не
+    // бывает», а не как «их здесь не нашлось».
+    let pairs = dataset::glossary_pairs(&set);
+    let pairs_path = out.join("glossary-pairs.csv");
+    if pairs.is_empty() {
+        println!("пар для глоссария нет: правок вида term в разметке не нашлось");
+    } else if let Err(error) =
+        std::fs::write(&pairs_path, dataset::pairs_csv(&pairs, &case.meta.language))
+    {
+        eprintln!("пары не записаны: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    println!();
+    println!(
+        "разметка       версия {}, фраз {}",
+        set.version,
+        set.phrases.len()
+    );
+    println!(
+        "в датасет      {} фраз, {:.1} с звука — это {:.0}% разметки",
+        report.clips.len(),
+        report.total_ms as f32 / 1000.0,
+        report.share() * 100.0
+    );
+    println!(
+        "не взято       {} непроверенных, {} отброшенных",
+        report.left_unchecked, report.left_skipped
+    );
+    println!("манифест       {}", out.join(dataset::MANIFEST).display());
+    if !pairs.is_empty() {
+        println!("пары           {} в {}", pairs.len(), pairs_path.display());
+    }
+    ExitCode::SUCCESS
 }
 
 /// Разметка: фразы по речи, гипотезы всех движков.

@@ -45,6 +45,12 @@ stt = { package = "meetingraft-stt", path = "../stt", optional = true }
 postcall = { package = "meetingraft-postcall", path = "../postcall", optional = true }
 diarize = { package = "meetingraft-diarize", path = "../diarize", optional = true }
 
+# Только для тестов: CSV пар сверяется **тем самым** разбором, который
+# читает его в приложении. Своя сборка CSV, разошедшаяся с чужим
+# разбором, — файл, который импортируется в ноль строк без единой жалобы.
+[dev-dependencies]
+glossary = { package = "meetingraft-glossary", path = "../glossary" }
+
 [lib]
 name = "meetingraft_bench"
 path = "src/lib.rs"

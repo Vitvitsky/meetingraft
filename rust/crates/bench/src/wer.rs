@@ -90,6 +90,100 @@ fn edit_counts<T: PartialEq>(reference: &[T], hypothesis: &[T]) -> Counts {
     previous[hypothesis.len()]
 }
 
+/// Одна правка выравнивания: что случилось с этим местом.
+///
+/// Индексы — в эталоне и в расшифровке соответственно; именно они
+/// нужны тому, кто хочет не число, а **какие слова** разошлись.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Op {
+    /// Слова совпали.
+    Match(usize, usize),
+    /// На месте эталонного слова стоит другое.
+    Substitute(usize, usize),
+    /// Лишнее слово расшифровки: в эталоне ему ничего не отвечает.
+    Insert(usize),
+    /// Слово эталона, которого в расшифровке нет.
+    Delete(usize),
+}
+
+/// Выравнивание — то же расстояние, но с сохранённым путём.
+///
+/// **Отдельная реализация, и это осознанно.** `edit_counts` держит две
+/// строки таблицы и потому считает CER по расшифровке целой встречи;
+/// путь требует всей таблицы, а она на таком входе — сотни мегабайт.
+/// Поэтому здесь второй проход, и применяется он только к коротким
+/// отрезкам: одна фраза разметки против одной гипотезы.
+///
+/// Две реализации одного расстояния расходятся молча — от этого
+/// сторожит `alignment_agrees_with_the_counting_it_does_not_share`
+/// ниже: он сверяет счёт по пути с `edit_counts` на подобранных парах.
+pub fn align<T: PartialEq>(reference: &[T], hypothesis: &[T]) -> Vec<Op> {
+    let rows = reference.len() + 1;
+    let columns = hypothesis.len() + 1;
+    // Стоимость и направление, откуда пришли. Направление хранится
+    // числом, а не ссылкой: таблица и так самая тяжёлая часть.
+    let mut cost = vec![0_u32; rows * columns];
+    let mut from = vec![0_u8; rows * columns];
+    const DIAGONAL: u8 = 1;
+    const FROM_HYPOTHESIS: u8 = 2;
+    const FROM_REFERENCE: u8 = 3;
+
+    for column in 1..columns {
+        cost[column] = column as u32;
+        from[column] = FROM_HYPOTHESIS;
+    }
+    for row in 1..rows {
+        cost[row * columns] = row as u32;
+        from[row * columns] = FROM_REFERENCE;
+    }
+    for row in 1..rows {
+        for column in 1..columns {
+            let matched = reference[row - 1] == hypothesis[column - 1];
+            let diagonal = cost[(row - 1) * columns + column - 1] + u32::from(!matched);
+            let insert = cost[row * columns + column - 1] + 1;
+            let delete = cost[(row - 1) * columns + column] + 1;
+            // Порядок предпочтений тот же, что в `edit_counts`: замена,
+            // затем вставка, затем пропуск. Разный порядок дал бы то же
+            // число при другом пути, а путь здесь и есть ответ.
+            let (best, direction) = if diagonal <= insert && diagonal <= delete {
+                (diagonal, DIAGONAL)
+            } else if insert <= delete {
+                (insert, FROM_HYPOTHESIS)
+            } else {
+                (delete, FROM_REFERENCE)
+            };
+            cost[row * columns + column] = best;
+            from[row * columns + column] = direction;
+        }
+    }
+
+    let mut ops = Vec::new();
+    let (mut row, mut column) = (reference.len(), hypothesis.len());
+    while row > 0 || column > 0 {
+        match from[row * columns + column] {
+            DIAGONAL => {
+                row -= 1;
+                column -= 1;
+                if reference[row] == hypothesis[column] {
+                    ops.push(Op::Match(row, column));
+                } else {
+                    ops.push(Op::Substitute(row, column));
+                }
+            }
+            FROM_HYPOTHESIS => {
+                column -= 1;
+                ops.push(Op::Insert(column));
+            }
+            _ => {
+                row -= 1;
+                ops.push(Op::Delete(row));
+            }
+        }
+    }
+    ops.reverse();
+    ops
+}
+
 /// Сравнить расшифровку с эталоном по словам.
 pub fn wer(reference: &str, hypothesis: &str) -> WerReport {
     let reference = normalize(reference);
@@ -203,6 +297,77 @@ mod tests {
 
         assert_eq!(wer(REFERENCE, hypothesis).rate(), 1.0 / words);
         assert_eq!(cer(REFERENCE, hypothesis), 1.0 / characters);
+    }
+
+    /// Выравнивание и подсчёт — два прохода по одному определению, и
+    /// разойтись они могут только молча. Здесь они сверяются: счёт по
+    /// пути обязан совпасть с `edit_counts` на каждой паре.
+    ///
+    /// Пары подобраны так, чтобы задеть все три вида правки и оба
+    /// вырожденных края (пустой эталон, пустая расшифровка). Проверка
+    /// заведомо небезразлична: подмена любого `+1` в одной из двух
+    /// реализаций валит её.
+    #[test]
+    fn alignment_agrees_with_the_counting_it_does_not_share() {
+        let pairs = [
+            (REFERENCE, REFERENCE),
+            (REFERENCE, "у лукоморья дуб железный"),
+            (REFERENCE, "у лукоморья зелёный"),
+            (REFERENCE, "у самого лукоморья дуб зелёный"),
+            (REFERENCE, "совершенно другие слова про другое"),
+            (REFERENCE, ""),
+            ("", "хоть что-нибудь"),
+            ("вынесли это в униффи", "вынесли это в юни фай"),
+            ("раз два три четыре пять", "два раз четыре три пять"),
+            // Две пары ниже подобраны не на глаз, а перебором: они
+            // единственные из проверенных, кто ловит удешевление
+            // вставки. Длинные перестановки его пропускают — путь у них
+            // не меняется, меняется только стоимость.
+            ("да нет", "нет да"),
+            ("да", "нет нет да"),
+        ];
+        for (reference, hypothesis) in pairs {
+            let left = normalize(reference);
+            let right = normalize(hypothesis);
+            let ops = align(&left, &right);
+            let counted = ops.iter().fold((0, 0, 0), |(s, i, d), op| match op {
+                Op::Match(..) => (s, i, d),
+                Op::Substitute(..) => (s + 1, i, d),
+                Op::Insert(_) => (s, i + 1, d),
+                Op::Delete(_) => (s, i, d + 1),
+            });
+            assert_eq!(
+                counted,
+                edit_counts(&left, &right),
+                "путь и счёт разошлись на «{reference}» против «{hypothesis}»: {ops:?}"
+            );
+        }
+    }
+
+    /// И отдельно: путь обязан быть путём, а не набором правок. Каждое
+    /// слово эталона упомянуто ровно один раз, каждое слово расшифровки —
+    /// тоже. Иначе выбранные по нему пары для глоссария брали бы слова
+    /// дважды или теряли их, а число ошибок при этом сходилось бы.
+    #[test]
+    fn every_word_of_both_sides_is_touched_exactly_once() {
+        let reference = normalize(REFERENCE);
+        let hypothesis = normalize("у лукоморья зелёный дуб очень");
+        let ops = align(&reference, &hypothesis);
+
+        let mut left: Vec<usize> = Vec::new();
+        let mut right: Vec<usize> = Vec::new();
+        for op in &ops {
+            match *op {
+                Op::Match(r, h) | Op::Substitute(r, h) => {
+                    left.push(r);
+                    right.push(h);
+                }
+                Op::Insert(h) => right.push(h),
+                Op::Delete(r) => left.push(r),
+            }
+        }
+        assert_eq!(left, (0..reference.len()).collect::<Vec<_>>(), "{ops:?}");
+        assert_eq!(right, (0..hypothesis.len()).collect::<Vec<_>>(), "{ops:?}");
     }
 
     /// Заведомо отрицательный случай для CER: считалка, всегда

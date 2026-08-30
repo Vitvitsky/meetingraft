@@ -55,6 +55,7 @@ compile_error!(
 
 pub mod case;
 pub mod cpwer;
+pub mod dataset;
 pub mod engines;
 #[cfg(feature = "export")]
 pub mod export;
