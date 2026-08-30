@@ -23,8 +23,8 @@ meetingraft-bench <подкоманда>
       (только сборка с --features export, то есть на Маке)
 
   run <каталог-случая> <каталог-данных> <движок> <нарезка> [смещение] [каталог-выхода]
-      движок:  gigaam | parakeet | tone
-      нарезка: windows30 | vad | diarize | stream (только tone)
+      движок:  gigaam | parakeet | tone | whisper
+      нарезка: windows30 | vad | diarize | native (свои границы: tone, whisper)
       смещение: none | hotwords (нужен <каталог-случая>/glossary.txt)
 ";
 
@@ -84,18 +84,18 @@ fn run(args: &[String]) -> ExitCode {
     };
     // Сочетание движка и нарезки проверяется **до** открытия модели:
     // ждать 622 МБ ради отказа по несочетаемым аргументам незачем.
-    let streaming = engines::is_streaming(engine_name);
-    if streaming && strategy != Strategy::Stream {
+    let native = strategy == Strategy::Native;
+    if native && !engines::supports_native(engine_name) {
         eprintln!(
-            "{engine_name} потоковый: границы реплик ставит его эндпойнтинг, \
-             и нарезка ему не задаётся. Нужно: ... {engine_name} stream"
+            "{engine_name} своих границ не ставит: нарезку ему надо задать. \
+             Нужно: ... {engine_name} windows30|vad|diarize"
         );
         return ExitCode::FAILURE;
     }
-    if !streaming && strategy == Strategy::Stream {
+    if !native && engines::requires_native(engine_name) {
         eprintln!(
-            "{engine_name} офлайновый: он не ставит границ сам, и нарезку ему \
-             задать надо. Нужно: ... {engine_name} windows30|vad|diarize"
+            "{engine_name} работает только своими границами: он принимает звук \
+             чанками и сам говорит, где кончилась реплика. Нужно: ... {engine_name} native"
         );
         return ExitCode::FAILURE;
     }
@@ -132,11 +132,11 @@ fn run(args: &[String]) -> ExitCode {
         Vec::new()
     };
 
-    let result = if streaming {
-        let engine = match engines::open_streaming(engine_name, Path::new(data_root)) {
+    let result = if native {
+        let engine = match engines::open_native(engine_name, Path::new(data_root), &terms) {
             Ok(Some(engine)) => engine,
             Ok(None) => {
-                eprintln!("движок {engine_name} назвался потоковым, но открыть его нечем");
+                eprintln!("движок {engine_name} заявил свои границы, но открыть его нечем");
                 return ExitCode::FAILURE;
             }
             Err(error) => {
@@ -153,7 +153,12 @@ fn run(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        let engine = match engines::open(engine_name, Path::new(data_root), biasing.as_ref()) {
+        let engine = match engines::open(
+            engine_name,
+            Path::new(data_root),
+            biasing.as_ref(),
+            Some(&terms),
+        ) {
             Ok(engine) => engine,
             Err(error) => {
                 eprintln!("движок не открыт: {error}");
@@ -262,7 +267,7 @@ fn build_pieces(
         // ветка настоящая, а не `unreachable!`: правило живёт в одном
         // месте, и упасть паникой оно не должно даже если то место
         // однажды перепишут.
-        Strategy::Stream => Err("потоковому движку нарезка не задаётся".to_string()),
+        Strategy::Native => Err("потоковому движку нарезка не задаётся".to_string()),
     }
 }
 

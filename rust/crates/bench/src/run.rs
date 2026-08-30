@@ -171,7 +171,7 @@ pub fn execute_stream(
             return Run {
                 case: case.meta.case.clone(),
                 engine: engine.name().to_string(),
-                segmentation: Strategy::Stream.name().to_string(),
+                segmentation: Strategy::Native.name().to_string(),
                 biasing: biasing.to_string(),
                 refused: Some(error),
                 segments: Vec::new(),
@@ -208,7 +208,7 @@ pub fn execute_stream(
     Run {
         case: case.meta.case.clone(),
         engine: engine.name().to_string(),
-        segmentation: Strategy::Stream.name().to_string(),
+        segmentation: Strategy::Native.name().to_string(),
         biasing: biasing.to_string(),
         refused: None,
         // Кусков не было: движку подали запись целиком, и он сам решил,

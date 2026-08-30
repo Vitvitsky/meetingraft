@@ -22,13 +22,18 @@ pub enum Strategy {
     Vad,
     /// Границы от разделения голосов: метка едет вместе с куском.
     Diarize,
-    /// Границы ставит сам движок — его эндпойнтинг.
+    /// Границы ставит сам движок.
     ///
     /// Не «ещё один способ резать», а признак того, что резать не наше
-    /// дело. Единственное законное значение для потокового движка, и
-    /// незаконное для офлайновых: подставив им `stream`, мы получили бы
-    /// прогон без нарезки вовсе.
-    Stream,
+    /// дело. Так умеют двое, и по разным причинам: T-one — потому что
+    /// потоковый и говорит, где кончилась реплика; Whisper — потому что
+    /// его декодер сегментирует сам.
+    ///
+    /// Разница между ними в том, что **можно отобрать**. T-one без своих
+    /// границ не работает вовсе, а Whisper прекрасно принимает нашу
+    /// нарезку — просто теряет при этом собственную. Поэтому у одного
+    /// это единственное законное значение, у другого — одно из четырёх.
+    Native,
 }
 
 impl Strategy {
@@ -37,7 +42,7 @@ impl Strategy {
             Self::Windows30 => "windows30",
             Self::Vad => "vad",
             Self::Diarize => "diarize",
-            Self::Stream => "stream",
+            Self::Native => "native",
         }
     }
 
@@ -46,9 +51,9 @@ impl Strategy {
             "windows30" => Ok(Self::Windows30),
             "vad" => Ok(Self::Vad),
             "diarize" => Ok(Self::Diarize),
-            "stream" => Ok(Self::Stream),
+            "native" => Ok(Self::Native),
             other => Err(format!(
-                "нарезка бывает windows30, vad, diarize или stream, а не {other}"
+                "нарезка бывает windows30, vad, diarize или native, а не {other}"
             )),
         }
     }
@@ -200,14 +205,14 @@ pub fn samples<'a>(pcm: &'a [i16], sample_rate: u32, piece: &Piece) -> &'a [i16]
 mod tests {
     use super::*;
 
-    /// Потоковая «нарезка» разбирается по имени, как остальные.
+    /// Своя нарезка движка разбирается по имени, как остальные.
     #[test]
-    fn the_streaming_strategy_has_a_name_like_the_others() {
+    fn the_native_strategy_has_a_name_like_the_others() {
         assert_eq!(
-            Strategy::parse("stream").expect("разобралось"),
-            Strategy::Stream
+            Strategy::parse("native").expect("разобралось"),
+            Strategy::Native
         );
-        assert_eq!(Strategy::Stream.name(), "stream");
+        assert_eq!(Strategy::Native.name(), "native");
     }
 
     /// Окна не смотрят на речь вовсе — это их определение, и потому они

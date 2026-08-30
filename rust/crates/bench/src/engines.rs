@@ -148,12 +148,94 @@ impl StreamTranscribe for Tone {
     }
 }
 
-/// Открыть потоковый движок по имени. `Ok(None)` — движок не потоковый.
-pub fn open_streaming(
+#[cfg(feature = "whisper")]
+pub struct Whisper {
+    // `transcribe_all` требует `&mut self`, а `Recognize::transcribe`
+    // берёт `&self`: движок в стенде общий для всех кусков, и открывать
+    // его заново на каждый — это 1.6 ГБ чтения с диска. Ячейка дешевле
+    // смены контракта у трёх соседних движков.
+    inner: std::cell::RefCell<stt::WhisperBatchTranscriber>,
+}
+
+#[cfg(feature = "whisper")]
+impl Whisper {
+    /// Модель берётся та, которую предпочитает приложение (`auto`), —
+    /// иначе стенд мерил бы не то, что у человека работает.
+    pub fn open(data_root: &std::path::Path, terms: &[String]) -> Result<Self, String> {
+        let mut inner = stt::WhisperBatchTranscriber::open(
+            data_root,
+            "auto",
+            domain::LanguagePolicy::default_v1(),
+        )
+        .map_err(|error| error.to_string())?;
+        // Смещение у Whisper — **другой механизм**: не автомат по лучам,
+        // а текст в декодер. Сравнивать «с глоссарием» у него и у
+        // transducer'а можно по результату, но не по устройству.
+        if !terms.is_empty() {
+            inner.set_initial_prompt(&terms.join(", "));
+        }
+        Ok(Self {
+            inner: std::cell::RefCell::new(inner),
+        })
+    }
+
+    fn run(&self, pcm: &[i16], sample_rate: u32) -> Result<Vec<domain::TranscriptSegment>, String> {
+        use stt::BatchTranscriber;
+        let mut progress = |_: f32| true;
+        self.inner
+            .borrow_mut()
+            .transcribe_all(pcm, sample_rate, &mut progress)
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(feature = "whisper")]
+impl Recognize for Whisper {
+    /// Кусок отдаётся модели целиком, а её собственные сегменты
+    /// склеиваются в один текст.
+    ///
+    /// Тут теряются **и** её сегментация, **и** тайм-коды слов: этот путь
+    /// нужен, чтобы Whisper стоял в одной таблице с transducer'ами при
+    /// нашей нарезке. Своя его нарезка меряется значением `native`.
+    fn transcribe(&self, pcm: &[i16], sample_rate: u32) -> Result<Heard, String> {
+        let segments = self.run(pcm, sample_rate)?;
+        Ok(Heard {
+            text: segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            word_end_ms: Vec::new(),
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "whisper"
+    }
+}
+
+#[cfg(feature = "whisper")]
+impl StreamTranscribe for Whisper {
+    fn transcribe_stream(
+        &self,
+        pcm: &[i16],
+        sample_rate: u32,
+    ) -> Result<Vec<domain::TranscriptSegment>, String> {
+        self.run(pcm, sample_rate)
+    }
+
+    fn name(&self) -> &'static str {
+        "whisper"
+    }
+}
+
+/// Открыть движок, ставящий границы сам. `Ok(None)` — движок не потоковый.
+pub fn open_native(
     name: &str,
     data_root: &std::path::Path,
+    terms: &[String],
 ) -> Result<Option<Box<dyn StreamTranscribe>>, String> {
-    let _ = data_root;
+    let _ = (data_root, terms);
     match name {
         #[cfg(feature = "tone")]
         "tone" => {
@@ -161,15 +243,30 @@ pub fn open_streaming(
         }
         #[cfg(not(feature = "tone"))]
         "tone" => Err("стенд собран без --features tone".to_string()),
+        #[cfg(feature = "whisper")]
+        "whisper" => Whisper::open(data_root, terms)
+            .map(|engine| Some(Box::new(engine) as Box<dyn StreamTranscribe>)),
+        #[cfg(not(feature = "whisper"))]
+        "whisper" => Err("стенд собран без --features whisper".to_string()),
         _ => Ok(None),
     }
 }
 
-/// Потоковый ли это движок — вопрос к имени, а не к сборке.
+/// Умеет ли движок ставить границы сам.
 ///
-/// Отвечает одинаково с фичей и без неё: иначе отказ «нарезка потоковому
-/// не задаётся» появлялся бы и исчезал от флагов сборки.
-pub fn is_streaming(name: &str) -> bool {
+/// Отвечает одинаково с фичей и без неё: иначе правило сочетаемости
+/// появлялось бы и исчезало от флагов сборки, то есть зависело бы от
+/// того, что скачано на машине.
+pub fn supports_native(name: &str) -> bool {
+    matches!(name, "tone" | "whisper")
+}
+
+/// Работает ли движок **только** своими границами.
+///
+/// Разница с [`supports_native`] существенная и в одну сторону: T-one
+/// принимает звук чанками и без собственного эндпойнтинга не работает
+/// вовсе, а Whisper нашу нарезку принимает — просто теряет при ней свою.
+pub fn requires_native(name: &str) -> bool {
     name == "tone"
 }
 
@@ -189,8 +286,9 @@ pub fn open(
     name: &str,
     data_root: &std::path::Path,
     biasing: BiasingRef<'_>,
+    whisper_terms: Option<&[String]>,
 ) -> Result<Box<dyn Recognize>, String> {
-    let _ = biasing;
+    let _ = (biasing, whisper_terms);
     // Без единой фичи движка каталог данных никому не нужен, и компилятор
     // об этом говорит. Он прав, но параметр остаётся: сборка с фичей и
     // без неё должна отличаться только тем, что внутри.
@@ -208,6 +306,15 @@ pub fn open(
         }
         #[cfg(not(feature = "parakeet"))]
         "parakeet" => Err("стенд собран без --features parakeet".to_string()),
+        #[cfg(feature = "whisper")]
+        "whisper" => {
+            // Смещение Whisper приезжает при открытии, а не отдельным
+            // файлом: у него это initial_prompt, а не hotwords.
+            let terms = whisper_terms.unwrap_or(&[]);
+            Whisper::open(data_root, terms).map(|engine| Box::new(engine) as Box<dyn Recognize>)
+        }
+        #[cfg(not(feature = "whisper"))]
+        "whisper" => Err("стенд собран без --features whisper".to_string()),
         other => Err(format!("движка {other} стенд не знает")),
     }
 }
@@ -216,22 +323,28 @@ pub fn open(
 mod tests {
     use super::*;
 
-    /// Признак «потоковый» отвечает одинаково с фичей и без неё.
-    ///
-    /// Иначе отказ «нарезка потоковому не задаётся» появлялся бы и
-    /// исчезал от флагов сборки — то есть правило продукта зависело бы от
-    /// того, что скачано на машине.
+    /// Признаки сочетаемости не зависят от фич сборки.
     #[test]
-    fn the_streaming_flag_does_not_depend_on_features() {
-        assert!(is_streaming("tone"));
-        assert!(!is_streaming("gigaam"));
-        assert!(!is_streaming("parakeet"));
+    fn the_boundary_rules_do_not_depend_on_features() {
+        assert!(supports_native("tone"));
+        assert!(supports_native("whisper"));
+        assert!(!supports_native("gigaam"));
+        assert!(!supports_native("parakeet"));
     }
 
-    /// Незнакомое имя потоковым не считается — иначе опечатка в имени
-    /// движка молча меняла бы правила прогона.
+    /// «Умеет сам» и «умеет только сам» — разные вещи, и Whisper стоит
+    /// ровно между ними: своя нарезка у него есть, но нашу он принимает.
     #[test]
-    fn an_unknown_engine_is_not_streaming() {
-        assert!(!is_streaming("нет-такого"));
+    fn whisper_can_take_our_cut_while_tone_cannot() {
+        assert!(requires_native("tone"));
+        assert!(!requires_native("whisper"));
+    }
+
+    /// Незнакомое имя своих границ не заявляет — иначе опечатка молча
+    /// меняла бы правила прогона.
+    #[test]
+    fn an_unknown_engine_claims_nothing() {
+        assert!(!supports_native("нет-такого"));
+        assert!(!requires_native("нет-такого"));
     }
 }
