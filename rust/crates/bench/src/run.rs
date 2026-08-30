@@ -51,6 +51,18 @@ pub struct Run {
     pub wer: Option<f32>,
     pub cer: Option<f32>,
     pub reference_kind: String,
+    /// Откуда взят эталон. Два источника дают **разные числа** на одной
+    /// записи, и молча выбранный из них — это два значения под одним
+    /// именем.
+    #[serde(default = "reference_source_none")]
+    pub reference_source: crate::history::ReferenceSource,
+    /// Версия разметки, если эталон пришёл из неё.
+    #[serde(default)]
+    pub labels_version: Option<u32>,
+    /// Оценка по фразам — она же источник `wer`/`cer`, когда есть
+    /// разметка.
+    #[serde(default)]
+    pub phrase_score: Option<PhraseScore>,
     /// Что дало смещение и чего оно стоило. `None` — смещения не было
     /// или сравнивать не с чем.
     pub biasing_report: Option<crate::hotwords::BiasingReport>,
@@ -138,6 +150,13 @@ pub fn execute(case: &Case, plan: Plan<'_>, biasing: &str) -> Run {
         wer: wer_rate,
         cer: cer_rate,
         reference_kind: format!("{:?}", case.meta.reference_kind),
+        reference_source: if wer_rate.is_some() {
+            crate::history::ReferenceSource::ReferenceText
+        } else {
+            crate::history::ReferenceSource::None
+        },
+        labels_version: None,
+        phrase_score: None,
         biasing_report: None,
         split_ms: plan.split_ms,
         model_ms_per_audio_second: if spoken_ms == 0 {
@@ -182,6 +201,9 @@ pub fn execute_stream(
                 wer: None,
                 cer: None,
                 reference_kind: format!("{:?}", case.meta.reference_kind),
+                reference_source: crate::history::ReferenceSource::None,
+                labels_version: None,
+                phrase_score: None,
                 biasing_report: None,
                 split_ms: 0.0,
                 model_ms_per_audio_second: 0.0,
@@ -222,6 +244,13 @@ pub fn execute_stream(
         wer: wer_rate,
         cer: cer_rate,
         reference_kind: format!("{:?}", case.meta.reference_kind),
+        reference_source: if wer_rate.is_some() {
+            crate::history::ReferenceSource::ReferenceText
+        } else {
+            crate::history::ReferenceSource::None
+        },
+        labels_version: None,
+        phrase_score: None,
         biasing_report: None,
         // Нарезка не стоила ничего отдельно: она внутри модели, и её цена
         // сидит в `model_ms_per_audio_second`.
@@ -244,6 +273,93 @@ fn speakers_in(pieces: &[Piece]) -> Option<usize> {
     labels.sort_unstable();
     labels.dedup();
     Some(labels.len())
+}
+
+/// Оценка по размеченным фразам.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhraseScore {
+    pub wer: f32,
+    pub cer: f32,
+    /// Сколько проверенных фраз участвовало.
+    pub phrases: usize,
+    pub reference_words: usize,
+    /// Худшие фразы: id и их WER. По ним видно **какие** места движок
+    /// валит, а не только сколько.
+    pub worst: Vec<(String, f32)>,
+}
+
+/// Сколько худших фраз попадает в отчёт.
+const WORST_SHOWN: usize = 5;
+
+/// Посчитать WER по разметке: пофразно, а не по одному отрезку.
+///
+/// Идут **только проверенные** фразы. Непроверенная содержит текст
+/// движка, и сравнить движок с ней значит сравнить его с самим собой.
+///
+/// Гипотеза для фразы — текст сегментов, пересекающих её время. Границы
+/// у движка и у разметки свои, и требовать совпадения нельзя: это
+/// наказывало бы за нарезку в метрике, которая про слова.
+pub fn score_by_phrases(
+    labels: &crate::labels::Labels,
+    segments: &[Segment],
+) -> Option<PhraseScore> {
+    let verified: Vec<&crate::labels::Phrase> = labels.verified().collect();
+    if verified.is_empty() {
+        // Ноль проверенных фраз — не «идеальный WER», а «мерить нечем».
+        return None;
+    }
+
+    let mut errors = 0.0f32;
+    let mut words = 0.0f32;
+    let mut characters = 0.0f32;
+    let mut character_errors = 0.0f32;
+    let mut worst: Vec<(String, f32)> = Vec::new();
+    let mut scored = 0usize;
+
+    for phrase in verified {
+        let heard: String = segments
+            .iter()
+            .filter(|segment| segment.start_ms < phrase.end_ms && segment.end_ms > phrase.start_ms)
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let report = wer(&phrase.text, &heard);
+        let phrase_words = crate::wer::normalize(&phrase.text).len() as f32;
+        if phrase_words == 0.0 {
+            continue;
+        }
+        let rate = report.rate();
+        errors += rate * phrase_words;
+        words += phrase_words;
+
+        let phrase_characters = crate::wer::normalize(&phrase.text)
+            .join(" ")
+            .chars()
+            .count() as f32;
+        character_errors += cer(&phrase.text, &heard) * phrase_characters;
+        characters += phrase_characters;
+
+        worst.push((phrase.id.clone(), rate));
+        scored += 1;
+    }
+
+    if words == 0.0 {
+        return None;
+    }
+    worst.sort_by(|left, right| right.1.total_cmp(&left.1));
+    worst.truncate(WORST_SHOWN);
+
+    Some(PhraseScore {
+        wer: errors / words,
+        cer: if characters == 0.0 {
+            0.0
+        } else {
+            character_errors / characters
+        },
+        phrases: scored,
+        reference_words: words as usize,
+        worst,
+    })
 }
 
 /// Сравнить с эталоном — если он есть и если сказано, какой отрезок он
@@ -288,6 +404,9 @@ fn refused(case: &Case, plan: &Plan<'_>, biasing: &str, reason: String) -> Run {
         wer: None,
         cer: None,
         reference_kind: format!("{:?}", case.meta.reference_kind),
+        reference_source: crate::history::ReferenceSource::None,
+        labels_version: None,
+        phrase_score: None,
         biasing_report: None,
         split_ms: plan.split_ms,
         model_ms_per_audio_second: 0.0,
@@ -326,6 +445,40 @@ pub fn load(dir: &Path) -> Result<Run, String> {
     let text =
         std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn reference_source_none() -> crate::history::ReferenceSource {
+    crate::history::ReferenceSource::None
+}
+
+/// Пересчитать оценку по разметке, если она есть.
+///
+/// Отдельным шагом после прогона: разметка живёт рядом со случаем, а не
+/// внутри него, и читать её при каждом прогоне движка незачем.
+///
+/// Приоритет у разметки: она точнее — проверенные фразы разбросаны по
+/// встрече, а `reference_covers_ms` покрывает один отрезок. Замена
+/// источника **печатается**, а не происходит молча.
+pub fn apply_labels(run: &mut Run, labels: &crate::labels::Labels) {
+    match score_by_phrases(labels, &run.segments) {
+        Some(score) => {
+            run.wer = Some(score.wer);
+            run.cer = Some(score.cer);
+            run.reference_source = crate::history::ReferenceSource::Labels;
+            run.labels_version = Some(labels.version);
+            run.phrase_score = Some(score);
+        }
+        None => {
+            // Разметка есть, но проверенных фраз в ней нет. Это не повод
+            // молча вернуться к `reference.txt`: человек думает, что
+            // мерит по разметке.
+            run.reference_source = crate::history::ReferenceSource::None;
+            run.labels_version = Some(labels.version);
+            run.wer = None;
+            run.cer = None;
+            run.phrase_score = None;
+        }
+    }
 }
 
 /// Записать результат прогона на диск.
@@ -372,6 +525,10 @@ mod tests {
         fn name(&self) -> &'static str {
             "parrot"
         }
+
+        fn model_id(&self) -> String {
+            "тестовый".to_string()
+        }
     }
 
     struct Broken;
@@ -387,6 +544,10 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "broken"
+        }
+
+        fn model_id(&self) -> String {
+            "тестовый".to_string()
         }
     }
 
@@ -444,6 +605,10 @@ mod tests {
             fn name(&self) -> &'static str {
                 "mute"
             }
+
+            fn model_id(&self) -> String {
+                "тестовый".to_string()
+            }
         }
 
         let case = case(None, None);
@@ -478,6 +643,10 @@ mod tests {
             fn name(&self) -> &'static str {
                 "mute"
             }
+
+            fn model_id(&self) -> String {
+                "тестовый".to_string()
+            }
         }
 
         let case = case(None, None);
@@ -494,6 +663,171 @@ mod tests {
         let pieces = segmentation::split_windows(4000, 30_000);
         let run = execute(&case, plan(&Parrot, pieces), "none");
         assert_eq!(run.speakers_found, None);
+    }
+
+    /// Непроверенные фразы в счёт не идут.
+    ///
+    /// Тот случай, ради которого заведено состояние: в непроверенной
+    /// фразе лежит текст движка, и сравнить движок с ней значит сравнить
+    /// его с самим собой — WER вышел бы нулевым у кого угодно.
+    #[test]
+    fn unchecked_phrases_are_not_scored() {
+        use crate::labels::{Labels, Phrase, State};
+
+        let phrase = |id: &str, start, end, text: &str, state| Phrase {
+            id: id.to_string(),
+            start_ms: start,
+            end_ms: end,
+            hypotheses: Default::default(),
+            text: text.to_string(),
+            state,
+            kinds: Vec::new(),
+            speaker: None,
+            note: String::new(),
+        };
+        let labels = Labels {
+            case: "test".to_string(),
+            version: 2,
+            boundaries: "vad".to_string(),
+            engines: vec!["a".to_string()],
+            updated_ms: 0,
+            phrases: vec![
+                phrase("1", 0, 1000, "привет всем", State::Correct),
+                // Эта не проверена, и текст в ней движковый: попади она в
+                // счёт, WER бы упал.
+                phrase("2", 1000, 2000, "совершенно другое", State::Unchecked),
+            ],
+        };
+        let segments = vec![
+            Segment {
+                start_ms: 0,
+                end_ms: 1000,
+                speaker: None,
+                text: "привет всем".to_string(),
+            },
+            Segment {
+                start_ms: 1000,
+                end_ms: 2000,
+                speaker: None,
+                text: "совершенно другое".to_string(),
+            },
+        ];
+
+        let score = score_by_phrases(&labels, &segments).expect("есть что мерить");
+        assert_eq!(score.phrases, 1, "считается только проверенная");
+        assert_eq!(score.wer, 0.0);
+        assert_eq!(score.reference_words, 2);
+    }
+
+    /// Ноль проверенных фраз — отказ, а не идеальный ноль.
+    #[test]
+    fn nothing_verified_means_nothing_measured() {
+        use crate::labels::{Labels, Phrase, State};
+        let labels = Labels {
+            case: "test".to_string(),
+            version: 1,
+            boundaries: "vad".to_string(),
+            engines: Vec::new(),
+            updated_ms: 0,
+            phrases: vec![Phrase {
+                id: "1".to_string(),
+                start_ms: 0,
+                end_ms: 1000,
+                hypotheses: Default::default(),
+                text: "что-то".to_string(),
+                state: State::Unchecked,
+                kinds: Vec::new(),
+                speaker: None,
+                note: String::new(),
+            }],
+        };
+        assert!(score_by_phrases(&labels, &[]).is_none());
+    }
+
+    /// Ошибка в одной фразе видна в общем числе и в списке худших.
+    ///
+    /// Заведомо отрицательный случай к первому тесту: считалка, всегда
+    /// отдающая ноль, проходит его и валится здесь.
+    #[test]
+    fn a_wrong_phrase_shows_up_in_the_total_and_by_name() {
+        use crate::labels::{Labels, Phrase, State};
+        let phrase = |id: &str, start, end, text: &str| Phrase {
+            id: id.to_string(),
+            start_ms: start,
+            end_ms: end,
+            hypotheses: Default::default(),
+            text: text.to_string(),
+            state: State::Correct,
+            kinds: Vec::new(),
+            speaker: None,
+            note: String::new(),
+        };
+        let labels = Labels {
+            case: "test".to_string(),
+            version: 1,
+            boundaries: "vad".to_string(),
+            engines: Vec::new(),
+            updated_ms: 0,
+            phrases: vec![
+                phrase("1", 0, 1000, "привет всем"),
+                phrase("2", 1000, 2000, "добрый день"),
+            ],
+        };
+        let segments = vec![
+            Segment {
+                start_ms: 0,
+                end_ms: 1000,
+                speaker: None,
+                text: "привет всем".to_string(),
+            },
+            Segment {
+                start_ms: 1000,
+                end_ms: 2000,
+                speaker: None,
+                text: "совсем другое".to_string(),
+            },
+        ];
+
+        let score = score_by_phrases(&labels, &segments).expect("есть что мерить");
+        assert_eq!(score.phrases, 2);
+        // Половина слов эталона не угадана.
+        assert!((score.wer - 0.5).abs() < 1e-6, "{score:?}");
+        assert_eq!(score.worst.first().map(|(id, _)| id.as_str()), Some("2"));
+    }
+
+    /// Гипотеза берётся по пересечению времени, а не по совпадению
+    /// границ: у движка нарезка своя, и требовать совпадения значило бы
+    /// наказывать за неё в метрике про слова.
+    #[test]
+    fn a_hypothesis_is_gathered_by_overlap_not_by_exact_bounds() {
+        use crate::labels::{Labels, Phrase, State};
+        let labels = Labels {
+            case: "test".to_string(),
+            version: 1,
+            boundaries: "vad".to_string(),
+            engines: Vec::new(),
+            updated_ms: 0,
+            phrases: vec![Phrase {
+                id: "1".to_string(),
+                start_ms: 1000,
+                end_ms: 2000,
+                hypotheses: Default::default(),
+                text: "привет всем".to_string(),
+                state: State::Correct,
+                kinds: Vec::new(),
+                speaker: None,
+                note: String::new(),
+            }],
+        };
+        // Сегмент движка шире фразы и начинается раньше.
+        let segments = vec![Segment {
+            start_ms: 500,
+            end_ms: 2500,
+            speaker: None,
+            text: "привет всем".to_string(),
+        }];
+        let score = score_by_phrases(&labels, &segments).expect("есть что мерить");
+        assert_eq!(score.wer, 0.0, "перекрывающий сегмент обязан найтись");
     }
 
     /// Отказ движка — отказ прогона, а не пустая расшифровка.

@@ -24,6 +24,13 @@ pub struct Heard {
 pub trait Recognize {
     fn transcribe(&self, pcm: &[i16], sample_rate: u32) -> Result<Heard, String>;
     fn name(&self) -> &'static str;
+
+    /// Какая модель стоит за движком.
+    ///
+    /// Отдельно от имени движка, потому что меняется отдельно: у whisper
+    /// это конкретный файл, и `large-v3-turbo` с `small` — разные числа
+    /// под одним словом «whisper». В журнал замеров едет это, а не имя.
+    fn model_id(&self) -> String;
 }
 
 #[cfg(feature = "gigaam")]
@@ -63,6 +70,10 @@ impl Recognize for Gigaam {
     fn name(&self) -> &'static str {
         "gigaam"
     }
+
+    fn model_id(&self) -> String {
+        stt::GIGAAM_MODEL_ID.to_string()
+    }
 }
 
 #[cfg(feature = "parakeet")]
@@ -99,6 +110,10 @@ impl Recognize for Parakeet {
     fn name(&self) -> &'static str {
         "parakeet"
     }
+
+    fn model_id(&self) -> String {
+        stt::PARAKEET_MODEL_ID.to_string()
+    }
 }
 
 /// Распознаватель, который сам ставит границы реплик.
@@ -114,6 +129,7 @@ pub trait StreamTranscribe {
         sample_rate: u32,
     ) -> Result<Vec<domain::TranscriptSegment>, String>;
     fn name(&self) -> &'static str;
+    fn model_id(&self) -> String;
 }
 
 #[cfg(feature = "tone")]
@@ -146,10 +162,17 @@ impl StreamTranscribe for Tone {
     fn name(&self) -> &'static str {
         "tone"
     }
+
+    fn model_id(&self) -> String {
+        stt::TONE_MODEL_ID.to_string()
+    }
 }
 
 #[cfg(feature = "whisper")]
 pub struct Whisper {
+    /// Имя файла модели: у whisper их несколько, и число зависит от
+    /// того, какой скачан.
+    model: String,
     // `transcribe_all` требует `&mut self`, а `Recognize::transcribe`
     // берёт `&self`: движок в стенде общий для всех кусков, и открывать
     // его заново на каждый — это 1.6 ГБ чтения с диска. Ячейка дешевле
@@ -174,7 +197,17 @@ impl Whisper {
         if !terms.is_empty() {
             inner.set_initial_prompt(&terms.join(", "));
         }
+        // Какой файл выбрался — спрашивается у резолвера, а не
+        // угадывается: `auto` берёт первый найденный, и записать в
+        // журнал слово «auto» значило бы не записать ничего.
+        let model = stt::resolve_whisper_model(data_root, Some("auto"))
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "неизвестно".to_string());
         Ok(Self {
+            model,
             inner: std::cell::RefCell::new(inner),
         })
     }
@@ -212,6 +245,10 @@ impl Recognize for Whisper {
     fn name(&self) -> &'static str {
         "whisper"
     }
+
+    fn model_id(&self) -> String {
+        self.model.clone()
+    }
 }
 
 #[cfg(feature = "whisper")]
@@ -226,6 +263,10 @@ impl StreamTranscribe for Whisper {
 
     fn name(&self) -> &'static str {
         "whisper"
+    }
+
+    fn model_id(&self) -> String {
+        self.model.clone()
     }
 }
 

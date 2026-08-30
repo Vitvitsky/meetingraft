@@ -58,6 +58,7 @@ pub mod cpwer;
 pub mod engines;
 #[cfg(feature = "export")]
 pub mod export;
+pub mod history;
 pub mod hotwords;
 pub mod judge;
 pub mod labels;

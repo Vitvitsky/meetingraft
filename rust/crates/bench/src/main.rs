@@ -5,7 +5,7 @@
 use meetingraft_bench::judge;
 use meetingraft_bench::run as bench_run;
 use meetingraft_bench::segmentation::{self, Strategy};
-use meetingraft_bench::{case, engines, hotwords, labels, wav};
+use meetingraft_bench::{case, engines, history, hotwords, labels, wav};
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -33,6 +33,10 @@ meetingraft-bench <подкоманда>
       нарезать по речи и прогнать каждую фразу через все движки;
       кладёт labels.json и label.html рядом со случаем
 
+  history <каталог-случая> [имя-случая]
+      журнал замеров: что, когда, с какой разметкой и с какими числами
+      (журнал лежит рядом со случаем и переезжает вместе с ним)
+
   judge <прогон-A> <прогон-B> [адрес-llm] [модель] [зерно]
       слепое парное сравнение двух прогонов
       адрес по умолчанию http://localhost:11434, модель llama3.1
@@ -58,10 +62,95 @@ fn main() -> ExitCode {
         "run" => run(&args[1..]),
         "judge" => judge_runs(&args[1..]),
         "label" => label(&args[1..]),
+        "history" => history(&args[1..]),
         other => {
             eprintln!("неизвестная подкоманда {other}\n{USAGE}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Журнал замеров.
+///
+/// Записи, у которых разный случай, источник эталона или версия
+/// разметки, **не сравниваются между собой** — и это помечается прямо в
+/// таблице. Иначе падение WER от правки эталона выглядело бы как
+/// улучшение движка.
+fn history(args: &[String]) -> ExitCode {
+    let root = args.first().map(String::as_str).unwrap_or(".");
+    let only = args.get(1).map(String::as_str);
+
+    let path = Path::new(root).join(history::FILE);
+    let (entries, broken) = match history::load(&path) {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!("журнал не прочитан: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !broken.is_empty() {
+        // Битые строки называются вслух: журнал, молча теряющий записи,
+        // показывает историю без провалов.
+        eprintln!("битых строк: {} (номера: {broken:?})", broken.len());
+    }
+    let entries: Vec<&history::Entry> = entries
+        .iter()
+        .filter(|entry| only.is_none_or(|case| entry.case == case))
+        .collect();
+    if entries.is_empty() {
+        println!("записей нет: {}", path.display());
+        return ExitCode::SUCCESS;
+    }
+
+    println!(
+        "{:<20} {:<10} {:<10} {:<8} {:>7} {:>7} {:>7} {:<12} версия",
+        "случай", "движок", "нарезка", "смещ.", "WER", "CER", "мс/с", "эталон",
+    );
+    // Группа сравнимости — то, что можно ставить рядом. Ключ печатается
+    // не как строка, а как разделитель: увидев смену, человек знает, что
+    // числа выше и ниже про разное.
+    let mut previous: Option<&history::Entry> = None;
+    for entry in &entries {
+        if let Some(before) = previous
+            && !history::comparable(before, entry)
+        {
+            println!("{}", "—".repeat(96));
+        }
+        let show = |value: Option<f32>| match value {
+            Some(number) => format!("{number:.3}"),
+            None => "—".to_string(),
+        };
+        println!(
+            "{:<20} {:<10} {:<10} {:<8} {:>7} {:>7} {:>7.0} {:<12} {}",
+            truncate(&entry.case, 20),
+            truncate(&entry.engine, 10),
+            truncate(&entry.segmentation, 10),
+            truncate(&entry.biasing, 8),
+            show(entry.wer),
+            show(entry.cer),
+            entry.ms_per_second,
+            entry.reference_source.name(),
+            entry
+                .labels_version
+                .map(|version| version.to_string())
+                .unwrap_or_else(|| "—".to_string()),
+        );
+        previous = Some(entry);
+    }
+    println!();
+    println!("записей        {}", entries.len());
+    println!(
+        "черта          между записями, которые сравнивать нельзя: другой случай, \
+         другой эталон либо другая версия разметки"
+    );
+    ExitCode::SUCCESS
+}
+
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        text.to_string()
+    } else {
+        text.chars().take(width - 1).collect::<String>() + "…"
     }
 }
 
@@ -434,6 +523,7 @@ fn run(args: &[String]) -> ExitCode {
         Vec::new()
     };
 
+    let engine_model_id;
     let result = if native {
         let engine = match engines::open_native(engine_name, Path::new(data_root), &terms) {
             Ok(Some(engine)) => engine,
@@ -446,6 +536,7 @@ fn run(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+        engine_model_id = engine.model_id();
         bench_run::execute_stream(&case, engine.as_ref(), speech, biasing_name)
     } else {
         let biasing = match make_biasing(&terms, case_dir) {
@@ -477,6 +568,7 @@ fn run(args: &[String]) -> ExitCode {
         };
         let split_ms = split_started.elapsed().as_secs_f32() * 1000.0;
 
+        engine_model_id = engine.model_id();
         let plan = bench_run::Plan {
             pieces,
             speech,
@@ -490,6 +582,20 @@ fn run(args: &[String]) -> ExitCode {
     let mut result = result;
     bench_run::add_biasing_report(&mut result, &case, &terms);
 
+    // Разметка, если она есть, — эталон точнее: проверенные фразы
+    // разбросаны по встрече, а `reference_covers_ms` покрывает один
+    // отрезок. Подмена источника печатается, а не происходит молча.
+    let labels_path = Path::new(case_dir).join("labels.json");
+    if labels_path.exists() {
+        match labels::load(&labels_path) {
+            Ok(labels) => bench_run::apply_labels(&mut result, &labels),
+            Err(error) => {
+                eprintln!("разметка не прочитана: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     let out = args
         .get(5)
         .cloned()
@@ -497,6 +603,31 @@ fn run(args: &[String]) -> ExitCode {
     if let Err(error) = bench_run::save(&result, Path::new(&out)) {
         eprintln!("результат не записан: {error}");
         return ExitCode::FAILURE;
+    }
+
+    // Журнал ведётся у каталога случая: он переезжает вместе со случаем,
+    // и история не отрывается от записи, к которой относится.
+    let journal = Path::new(case_dir).join(history::FILE);
+    if let Err(error) = history::append(
+        &journal,
+        &history::Entry {
+            at_ms: now_ms(),
+            case: result.case.clone(),
+            engine: result.engine.clone(),
+            segmentation: result.segmentation.clone(),
+            biasing: result.biasing.clone(),
+            model_id: engine_model_id.clone(),
+            reference_source: result.reference_source,
+            labels_version: result.labels_version,
+            phrases: result.phrase_score.as_ref().map(|score| score.phrases),
+            wer: result.wer,
+            cer: result.cer,
+            segments: result.segments.len(),
+            ms_per_second: result.model_ms_per_audio_second,
+            commit: history::current_commit(),
+        },
+    ) {
+        eprintln!("журнал не дописан: {error}");
     }
 
     print_run(&result, &out);
@@ -631,6 +762,16 @@ fn print_run(result: &bench_run::Run, out: &str) {
             report.caught, report.missed, report.pulled_in
         );
     }
+    println!("эталон         {}", result.reference_source.name());
+    if let Some(version) = result.labels_version {
+        println!("версия         разметка {version}");
+    }
+    if let Some(score) = &result.phrase_score {
+        println!(
+            "фраз в счёте   {} ({} слов)",
+            score.phrases, score.reference_words
+        );
+    }
     match (result.wer, result.cer) {
         (Some(wer), Some(cer)) => {
             let caveat = if result.reference_kind == "EditedDraft" {
@@ -642,6 +783,16 @@ fn print_run(result: &bench_run::Run, out: &str) {
             println!("CER            {cer:.3}");
         }
         _ => println!("WER            — (эталона или его границ нет)"),
+    }
+    if let Some(score) = &result.phrase_score
+        && !score.worst.is_empty()
+    {
+        let worst: Vec<String> = score
+            .worst
+            .iter()
+            .map(|(id, rate)| format!("{id}:{rate:.2}"))
+            .collect();
+        println!("хуже всего     {}", worst.join(", "));
     }
     println!("нарезка        {:.0} мс", result.split_ms);
     println!(
