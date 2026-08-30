@@ -23,8 +23,8 @@ meetingraft-bench <подкоманда>
       (только сборка с --features export, то есть на Маке)
 
   run <каталог-случая> <каталог-данных> <движок> <нарезка> [каталог-выхода]
-      движок:  gigaam | parakeet
-      нарезка: windows30 | vad | diarize
+      движок:  gigaam | parakeet | tone
+      нарезка: windows30 | vad | diarize | stream (только tone)
 ";
 
 fn main() -> ExitCode {
@@ -75,13 +75,23 @@ fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let engine = match engines::open(engine_name, Path::new(data_root)) {
-        Ok(engine) => engine,
-        Err(error) => {
-            eprintln!("движок не открыт: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    // Сочетание движка и нарезки проверяется **до** открытия модели:
+    // ждать 622 МБ ради отказа по несочетаемым аргументам незачем.
+    let streaming = engines::is_streaming(engine_name);
+    if streaming && strategy != Strategy::Stream {
+        eprintln!(
+            "{engine_name} потоковый: границы реплик ставит его эндпойнтинг, \
+             и нарезка ему не задаётся. Нужно: ... {engine_name} stream"
+        );
+        return ExitCode::FAILURE;
+    }
+    if !streaming && strategy == Strategy::Stream {
+        eprintln!(
+            "{engine_name} офлайновый: он не ставит границ сам, и нарезку ему \
+             задать надо. Нужно: ... {engine_name} windows30|vad|diarize"
+        );
+        return ExitCode::FAILURE;
+    }
 
     // Разметка речи нужна не только нарезке по VAD: по ней считается доля
     // границ, не разрезающих речь, — то есть по ней судят **все три**
@@ -95,24 +105,46 @@ fn run(args: &[String]) -> ExitCode {
         }
     };
 
-    let split_started = std::time::Instant::now();
-    let pieces = match build_pieces(strategy, Path::new(data_root), &case, &speech) {
-        Ok(pieces) => pieces,
-        Err(error) => {
-            eprintln!("нарезка не вышла: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let split_ms = split_started.elapsed().as_secs_f32() * 1000.0;
+    let result = if streaming {
+        let engine = match engines::open_streaming(engine_name, Path::new(data_root)) {
+            Ok(Some(engine)) => engine,
+            Ok(None) => {
+                eprintln!("движок {engine_name} назвался потоковым, но открыть его нечем");
+                return ExitCode::FAILURE;
+            }
+            Err(error) => {
+                eprintln!("движок не открыт: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        bench_run::execute_stream(&case, engine.as_ref(), speech, "none")
+    } else {
+        let engine = match engines::open(engine_name, Path::new(data_root)) {
+            Ok(engine) => engine,
+            Err(error) => {
+                eprintln!("движок не открыт: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let split_started = std::time::Instant::now();
+        let pieces = match build_pieces(strategy, Path::new(data_root), &case, &speech) {
+            Ok(pieces) => pieces,
+            Err(error) => {
+                eprintln!("нарезка не вышла: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let split_ms = split_started.elapsed().as_secs_f32() * 1000.0;
 
-    let plan = bench_run::Plan {
-        pieces,
-        speech,
-        strategy,
-        split_ms,
-        engine: engine.as_ref(),
+        let plan = bench_run::Plan {
+            pieces,
+            speech,
+            strategy,
+            split_ms,
+            engine: engine.as_ref(),
+        };
+        bench_run::execute(&case, plan, "none")
     };
-    let result = bench_run::execute(&case, plan, "none");
 
     let out = args
         .get(4)
@@ -164,6 +196,11 @@ fn build_pieces(
             Ok(segmentation::from_speech(speech, case.duration_ms()))
         }
         Strategy::Diarize => diarize_pieces(data_root, case),
+        // Сюда не попадают: сочетание проверено до открытия модели. Но
+        // ветка настоящая, а не `unreachable!`: правило живёт в одном
+        // месте, и упасть паникой оно не должно даже если то место
+        // однажды перепишут.
+        Strategy::Stream => Err("потоковому движку нарезка не задаётся".to_string()),
     }
 }
 

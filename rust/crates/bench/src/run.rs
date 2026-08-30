@@ -145,6 +145,90 @@ pub fn execute(case: &Case, plan: Plan<'_>, biasing: &str) -> Run {
     }
 }
 
+/// Прогон потокового движка: границы реплик ставит он сам.
+///
+/// Отдельная функция, а не ветка в [`execute`], потому что и вход другой
+/// — запись целиком вместо списка кусков, — и мерить у неё нечего из
+/// того, что меряет нарезку: числа `pieces_fed` здесь не бывает, а
+/// «сколько кусков вернулось пустыми» не имеет смысла вовсе.
+pub fn execute_stream(
+    case: &Case,
+    engine: &dyn crate::engines::StreamTranscribe,
+    speech: Vec<(u64, u64)>,
+    biasing: &str,
+) -> Run {
+    let started = Instant::now();
+    let heard = engine.transcribe_stream(&case.mic, case.sample_rate);
+    let model_ms = started.elapsed().as_secs_f32() * 1000.0;
+
+    let transcript = match heard {
+        Ok(transcript) => transcript,
+        Err(error) => {
+            return Run {
+                case: case.meta.case.clone(),
+                engine: engine.name().to_string(),
+                segmentation: Strategy::Stream.name().to_string(),
+                biasing: biasing.to_string(),
+                refused: Some(error),
+                segments: Vec::new(),
+                pieces_fed: 0,
+                pieces_empty: 0,
+                speakers_found: None,
+                stats: None,
+                wer: None,
+                cer: None,
+                reference_kind: format!("{:?}", case.meta.reference_kind),
+                split_ms: 0.0,
+                model_ms_per_audio_second: 0.0,
+                audio_ms: case.duration_ms(),
+            };
+        }
+    };
+
+    let segments: Vec<Segment> = transcript
+        .iter()
+        .map(|segment| Segment {
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            // Голосов потоковый движок не различает: он слышит звук, а не
+            // людей. `None` честнее нуля.
+            speaker: None,
+            text: segment.text.clone(),
+        })
+        .collect();
+
+    let (wer_rate, cer_rate) = score(case, &segments);
+    let audio_ms = case.duration_ms();
+
+    Run {
+        case: case.meta.case.clone(),
+        engine: engine.name().to_string(),
+        segmentation: Strategy::Stream.name().to_string(),
+        biasing: biasing.to_string(),
+        refused: None,
+        // Кусков не было: движку подали запись целиком, и он сам решил,
+        // где реплики. Ноль здесь означает «не применимо», и читать его
+        // надо вместе с `segmentation = stream`.
+        pieces_fed: 0,
+        pieces_empty: 0,
+        speakers_found: None,
+        stats: Some(segment_stats(&transcript, &speech, audio_ms)),
+        segments,
+        wer: wer_rate,
+        cer: cer_rate,
+        reference_kind: format!("{:?}", case.meta.reference_kind),
+        // Нарезка не стоила ничего отдельно: она внутри модели, и её цена
+        // сидит в `model_ms_per_audio_second`.
+        split_ms: 0.0,
+        model_ms_per_audio_second: if audio_ms == 0 {
+            0.0
+        } else {
+            model_ms / (audio_ms as f32 / 1000.0)
+        },
+        audio_ms,
+    }
+}
+
 /// Сколько разных голосов в кусках. `None`, если меток нет вовсе.
 fn speakers_in(pieces: &[Piece]) -> Option<usize> {
     let mut labels: Vec<u32> = pieces.iter().filter_map(|piece| piece.speaker).collect();

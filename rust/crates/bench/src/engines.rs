@@ -95,6 +95,78 @@ impl Recognize for Parakeet {
     }
 }
 
+/// Распознаватель, который сам ставит границы реплик.
+///
+/// Отдельный тип, а не флаг у [`Recognize`], и это не педантизм: у
+/// потокового движка **другой контракт**. Ему подают запись целиком, а он
+/// отдаёт готовые реплики; спросить у него «что в этом куске» можно, но
+/// тогда мерился бы не он.
+pub trait StreamTranscribe {
+    fn transcribe_stream(
+        &self,
+        pcm: &[i16],
+        sample_rate: u32,
+    ) -> Result<Vec<domain::TranscriptSegment>, String>;
+    fn name(&self) -> &'static str;
+}
+
+#[cfg(feature = "tone")]
+pub struct Tone(stt::ToneStreamer);
+
+#[cfg(feature = "tone")]
+impl Tone {
+    pub fn open(data_root: &std::path::Path) -> Result<Self, String> {
+        stt::ToneStreamer::open(data_root)
+            .map(Self)
+            .map_err(|error| match stt::resolve_tone_model(data_root) {
+                Err(details) => details,
+                Ok(_) => error.to_string(),
+            })
+    }
+}
+
+#[cfg(feature = "tone")]
+impl StreamTranscribe for Tone {
+    fn transcribe_stream(
+        &self,
+        pcm: &[i16],
+        sample_rate: u32,
+    ) -> Result<Vec<domain::TranscriptSegment>, String> {
+        self.0
+            .transcribe_stream(pcm, sample_rate)
+            .map_err(|error| error.to_string())
+    }
+
+    fn name(&self) -> &'static str {
+        "tone"
+    }
+}
+
+/// Открыть потоковый движок по имени. `Ok(None)` — движок не потоковый.
+pub fn open_streaming(
+    name: &str,
+    data_root: &std::path::Path,
+) -> Result<Option<Box<dyn StreamTranscribe>>, String> {
+    let _ = data_root;
+    match name {
+        #[cfg(feature = "tone")]
+        "tone" => {
+            Tone::open(data_root).map(|engine| Some(Box::new(engine) as Box<dyn StreamTranscribe>))
+        }
+        #[cfg(not(feature = "tone"))]
+        "tone" => Err("стенд собран без --features tone".to_string()),
+        _ => Ok(None),
+    }
+}
+
+/// Потоковый ли это движок — вопрос к имени, а не к сборке.
+///
+/// Отвечает одинаково с фичей и без неё: иначе отказ «нарезка потоковому
+/// не задаётся» появлялся бы и исчезал от флагов сборки.
+pub fn is_streaming(name: &str) -> bool {
+    name == "tone"
+}
+
 /// Открыть движок по имени.
 pub fn open(name: &str, data_root: &std::path::Path) -> Result<Box<dyn Recognize>, String> {
     // Без единой фичи движка каталог данных никому не нужен, и компилятор
@@ -113,5 +185,29 @@ pub fn open(name: &str, data_root: &std::path::Path) -> Result<Box<dyn Recognize
         #[cfg(not(feature = "parakeet"))]
         "parakeet" => Err("стенд собран без --features parakeet".to_string()),
         other => Err(format!("движка {other} стенд не знает")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Признак «потоковый» отвечает одинаково с фичей и без неё.
+    ///
+    /// Иначе отказ «нарезка потоковому не задаётся» появлялся бы и
+    /// исчезал от флагов сборки — то есть правило продукта зависело бы от
+    /// того, что скачано на машине.
+    #[test]
+    fn the_streaming_flag_does_not_depend_on_features() {
+        assert!(is_streaming("tone"));
+        assert!(!is_streaming("gigaam"));
+        assert!(!is_streaming("parakeet"));
+    }
+
+    /// Незнакомое имя потоковым не считается — иначе опечатка в имени
+    /// движка молча меняла бы правила прогона.
+    #[test]
+    fn an_unknown_engine_is_not_streaming() {
+        assert!(!is_streaming("нет-такого"));
     }
 }

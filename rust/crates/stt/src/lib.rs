@@ -14,6 +14,7 @@ mod noise_gate;
 mod pacing;
 mod parakeet_path;
 mod speech_decider;
+mod tone_path;
 mod vad_path;
 mod window;
 
@@ -22,6 +23,9 @@ mod gigaam;
 
 #[cfg(feature = "parakeet")]
 mod parakeet;
+
+#[cfg(feature = "tone")]
+mod tone;
 
 #[cfg(feature = "vad")]
 mod vad;
@@ -66,6 +70,14 @@ pub use parakeet_path::{
 
 #[cfg(feature = "parakeet")]
 pub use parakeet::{ParakeetBatchTranscriber, ParakeetRecognizer};
+
+pub use tone_path::{
+    TONE_MODEL_FILE, TONE_MODEL_ID, TONE_TOKENS_FILE, ToneModel, resolve_tone_model,
+    tone_models_dir, tone_ready,
+};
+
+#[cfg(feature = "tone")]
+pub use tone::{CHUNK_MS as TONE_CHUNK_MS, ToneStreamer};
 
 #[cfg(feature = "vad")]
 pub use vad::SileroGate;

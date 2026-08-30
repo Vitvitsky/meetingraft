@@ -22,6 +22,13 @@ pub enum Strategy {
     Vad,
     /// Границы от разделения голосов: метка едет вместе с куском.
     Diarize,
+    /// Границы ставит сам движок — его эндпойнтинг.
+    ///
+    /// Не «ещё один способ резать», а признак того, что резать не наше
+    /// дело. Единственное законное значение для потокового движка, и
+    /// незаконное для офлайновых: подставив им `stream`, мы получили бы
+    /// прогон без нарезки вовсе.
+    Stream,
 }
 
 impl Strategy {
@@ -30,6 +37,7 @@ impl Strategy {
             Self::Windows30 => "windows30",
             Self::Vad => "vad",
             Self::Diarize => "diarize",
+            Self::Stream => "stream",
         }
     }
 
@@ -38,8 +46,9 @@ impl Strategy {
             "windows30" => Ok(Self::Windows30),
             "vad" => Ok(Self::Vad),
             "diarize" => Ok(Self::Diarize),
+            "stream" => Ok(Self::Stream),
             other => Err(format!(
-                "нарезка бывает windows30, vad или diarize, а не {other}"
+                "нарезка бывает windows30, vad, diarize или stream, а не {other}"
             )),
         }
     }
@@ -190,6 +199,16 @@ pub fn samples<'a>(pcm: &'a [i16], sample_rate: u32, piece: &Piece) -> &'a [i16]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Потоковая «нарезка» разбирается по имени, как остальные.
+    #[test]
+    fn the_streaming_strategy_has_a_name_like_the_others() {
+        assert_eq!(
+            Strategy::parse("stream").expect("разобралось"),
+            Strategy::Stream
+        );
+        assert_eq!(Strategy::Stream.name(), "stream");
+    }
 
     /// Окна не смотрят на речь вовсе — это их определение, и потому они
     /// база сравнения, а не кандидат.
