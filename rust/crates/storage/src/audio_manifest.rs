@@ -157,8 +157,10 @@ fn channel_index(channel: AudioChannel) -> usize {
 fn decode_chunk(bytes: &[u8], codec: &str, path: &str) -> Result<Vec<i16>, AudioManifestError> {
     match codec {
         CODEC_PCM => Ok(bytes
-            .chunks_exact(2)
-            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| i16::from_le_bytes(*pair))
             .collect()),
         CODEC_FLAC => decode_flac(bytes, path),
         other => Err(AudioManifestError::Flac {
@@ -183,8 +185,10 @@ fn decode_chunk(bytes: &[u8], codec: &str, path: &str) -> Result<Vec<i16>, Audio
 /// а сперва спасает звук откатом на сырой PCM.
 fn encode_flac(pcm: &[u8], sample_rate: u32) -> Result<Vec<u8>, String> {
     let samples: Vec<i32> = pcm
-        .chunks_exact(2)
-        .map(|pair| i32::from(i16::from_le_bytes([pair[0], pair[1]])))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i32::from(i16::from_le_bytes(*pair)))
         .collect();
 
     let mut buffer = std::io::Cursor::new(Vec::new());
@@ -1108,8 +1112,10 @@ impl AudioManifestStore {
                 speaker_id,
                 model_id,
                 vector: blob
-                    .chunks_exact(4)
-                    .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|bytes| f32::from_le_bytes(*bytes))
                     .collect(),
                 samples: samples.max(0) as u32,
                 seconds: seconds as f32,
@@ -1264,8 +1270,10 @@ impl AudioManifestStore {
                 display_name,
                 model_id,
                 vector: blob
-                    .chunks_exact(4)
-                    .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|bytes| f32::from_le_bytes(*bytes))
                     .collect(),
                 samples: samples.max(0) as u32,
                 seconds: seconds as f32,

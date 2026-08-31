@@ -66,8 +66,10 @@ pub fn read(path: &Path) -> Result<Wav, String> {
                 return Err(format!("{name}: {bits} бит на отсчёт, нужно 16"));
             }
             let pcm = bytes[body..end]
-                .chunks_exact(2)
-                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| i16::from_le_bytes(*pair))
                 .collect::<Vec<i16>>();
             if pcm.is_empty() {
                 return Err(format!("{name}: в data нет отсчётов"));
