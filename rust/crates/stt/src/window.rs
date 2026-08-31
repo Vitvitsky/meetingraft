@@ -165,8 +165,10 @@ fn try_whisper(
 
 /// Декодирование PCM-байтов из Swift: i16 little-endian.
 pub fn pcm_bytes_to_i16(pcm: &[u8]) -> Vec<i16> {
-    pcm.chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+    pcm.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes(*c))
         .collect()
 }
 
