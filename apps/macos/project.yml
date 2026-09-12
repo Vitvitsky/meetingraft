@@ -15,6 +15,11 @@ targets:
       - path: Sources
         excludes:
           - Info.plist
+          # Правила для агентов лежат рядом с кодом, но в бандл не едут:
+          # xcodegen копирует всё не-исходное как ресурс, и вложенные
+          # AGENTS.md схлопывались в один Resources/AGENTS.md.
+          - "*.md"
+          - "**/*.md"
       - path: Generated
         excludes:
           - "*.h"
