@@ -12,6 +12,9 @@ struct MeetingRaftApp: App {
     /// Общее состояние записи для строки меню: сама запись живёт в
     /// координаторе внутри окна, сюда попадает только флаг.
     @State private var recordingBridge = RecordingBridge()
+    /// Общий для окна и Settings: состояние перевода нужно обоим, а ядро
+    /// живёт в главном окне и привязывается к мосту на его появлении.
+    @State private var translationBridge = HostTranslationBridge()
 
     var body: some Scene {
         WindowGroup {
@@ -22,6 +25,7 @@ struct MeetingRaftApp: App {
                 .environment(presenceStore)
                 .environment(appearanceStore)
                 .environment(recordingBridge)
+                .environment(translationBridge)
                 .task {
                     detector.start()
                 }
@@ -53,6 +57,7 @@ struct MeetingRaftApp: App {
                 .environment(providerStore)
                 .environment(presenceStore)
                 .environment(appearanceStore)
+                .environment(translationBridge)
         }
     }
 }

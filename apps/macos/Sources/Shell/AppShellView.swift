@@ -18,6 +18,7 @@ struct AppShellView: View {
     @Environment(PresenceSettingsStore.self) private var presenceStore
     @Environment(AppearanceSettingsStore.self) private var appearanceStore
     @Environment(RecordingBridge.self) private var recordingBridge
+    @Environment(HostTranslationBridge.self) private var translationBridge
     private let core: MeetingCore
 
     init() {
@@ -58,6 +59,14 @@ struct AppShellView: View {
         // Оболочка окна переведена на токены (ТЗ редизайна, D1, шаг 3).
         // Тема идёт из настроек; `nil` означает системную.
         .background(Theme.surfaceRoot)
+        .background(
+            TranslationHostView(
+                bridge: translationBridge,
+                source: languageStore.primary,
+                target: translationStore.target,
+                isEnabled: translationStore.enabled && translationStore.backend != .off
+            )
+        )
         // Минимум окна: без него его можно сжать так, что управлению
         // внизу экрана просто некуда поместиться.
         .frame(minWidth: 880, minHeight: 560)
@@ -83,6 +92,7 @@ struct AppShellView: View {
             startDemoCaptions()
         }
         .onAppear {
+            translationBridge.bind(queue: core)
             captionsViewModel.applySessionLanguage(languageStore.primary)
             captionsViewModel.applyTranslationSettings(translationStore)
         }
