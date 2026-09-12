@@ -726,13 +726,18 @@ fn maybe_enqueue_translation(inner: &mut MeetingCoreInner, event: &domain::Capti
     match effective {
         EffectiveBackend::Off => {}
         EffectiveBackend::AppleHost => {
-            inner.host_translation_queue.enqueue(
-                &event.text,
-                source,
-                target,
-                event.phase,
-                event.channel,
-            );
+            // Apple-перевод асинхронен и дорог: частичные реплики меняются
+            // каждые ~100–200 мс, их перевод копит очередь и приходит
+            // вразнобой. Host-путь переводит только законченные.
+            if matches!(event.phase, CaptionPhase::Final) {
+                inner.host_translation_queue.enqueue(
+                    &event.text,
+                    source,
+                    target,
+                    event.phase,
+                    event.channel,
+                );
+            }
         }
         other => match translate_now(
             other,
@@ -5587,18 +5592,56 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(core.effective_translation_backend(), "apple");
-        core.start_demo();
-        let _ = core.drain_events();
+        // Demo-скрипт первым отдаёт partial, а host-путь его не ставит:
+        // финальную реплику кладём напрямую, без ожидания такта скрипта.
+        {
+            let mut guard = core.inner.lock().expect("meeting core poisoned");
+            let final_event = domain::CaptionEvent::new(
+                "f1".into(),
+                "Добро пожаловать в MeetingRaft".into(),
+                CaptionPhase::Final,
+            );
+            maybe_enqueue_translation(&mut guard, &final_event);
+        }
         let reqs = core.drain_host_translation_requests();
-        assert!(!reqs.is_empty());
-        assert_eq!(reqs[0].text, "Добро пожаловать");
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].text, "Добро пожаловать в MeetingRaft");
         assert!(
-            core.complete_host_translation(reqs[0].id.clone(), "Welcome".into())
+            core.complete_host_translation(reqs[0].id.clone(), "Welcome to MeetingRaft".into())
                 .is_empty()
         );
         let translations = core.drain_live_translations();
-        assert_eq!(translations[0].text, "Welcome");
+        assert_eq!(translations[0].text, "Welcome to MeetingRaft");
         core.stop();
+    }
+
+    /// Host-путь переводит только законченные реплики: частичные меняются
+    /// чаще, чем Apple успевает, и копят очередь.
+    #[test]
+    fn host_path_enqueues_finals_only() {
+        let core = MeetingCore::new();
+        core.set_host_translation_available(true);
+        assert!(core.set_live_translation(true, "en".into()).is_empty());
+        assert!(
+            core.set_translation_backend("apple".into(), String::new())
+                .is_empty()
+        );
+        let mut guard = core.inner.lock().expect("meeting core poisoned");
+        let partial = domain::CaptionEvent::new(
+            "p1".into(),
+            "Добро пожаловать".into(),
+            CaptionPhase::Partial,
+        );
+        let final_event = domain::CaptionEvent::new(
+            "f1".into(),
+            "Добро пожаловать в MeetingRaft".into(),
+            CaptionPhase::Final,
+        );
+        maybe_enqueue_translation(&mut guard, &partial);
+        maybe_enqueue_translation(&mut guard, &final_event);
+        let reqs = guard.host_translation_queue.drain();
+        assert_eq!(reqs.len(), 1, "в очередь должен попасть только final");
+        assert_eq!(reqs[0].text, "Добро пожаловать в MeetingRaft");
     }
 
     #[test]
