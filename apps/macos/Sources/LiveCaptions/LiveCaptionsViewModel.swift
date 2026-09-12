@@ -16,14 +16,11 @@ final class LiveCaptionsViewModel {
 
     private let core: MeetingCore
     private let stream: RustCaptionStream
-    private let hostBridge: HostTranslationBridge
     private var livePollTask: Task<Void, Never>?
 
     init(core: MeetingCore) {
         self.core = core
         stream = RustCaptionStream(core: core)
-        hostBridge = HostTranslationBridge(core: core)
-        hostBridge.start()
     }
 
     /// Прокинуть primary из Settings / toolbar в Rust STT/demo.
