@@ -13,6 +13,7 @@ struct LiveCaptionsView: View {
     @Bindable var capture: AudioCaptureCoordinator
     @Environment(TranslationSettingsStore.self) private var translationStore
     @Environment(ProviderSettingsStore.self) private var providerStore
+    @Environment(HostTranslationBridge.self) private var translationBridge
     let primaryLanguage: SpeechLanguage
 
     private var isLive: Bool {
@@ -100,10 +101,19 @@ struct LiveCaptionsView: View {
             stage(lines: viewModel.recentLines(), placeholder: placeholderText)
             if translationStore.enabled {
                 Divider().overlay(Theme.borderSubtle)
-                stage(
-                    lines: Array(viewModel.translationLines.suffix(3)),
-                    placeholder: String(localized: "Translation appears here")
-                )
+                VStack(spacing: Theme.Space.sm) {
+                    stage(
+                        lines: Array(viewModel.translationLines.suffix(3)),
+                        placeholder: translationPlaceholder
+                    )
+                    if translationBridge.state.canDownload {
+                        Button(String(localized: "Download language")) {
+                            translationBridge.requestDownload()
+                        }
+                        .buttonStyle(.themedPrimary)
+                        .padding(.bottom, Theme.Space.md)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -160,6 +170,12 @@ struct LiveCaptionsView: View {
         isLive
             ? String(localized: "Listening…")
             : String(localized: "Press Start to capture the meeting")
+    }
+
+    /// Причину пустой колонки показываем вместо нейтральной заглушки.
+    private var translationPlaceholder: String {
+        translationBridge.state.columnMessage
+            ?? String(localized: "Translation appears here")
     }
 
     // MARK: - Управление
@@ -242,15 +258,21 @@ struct LiveCaptionsView: View {
                 .font(Theme.Text.mono(size: 11))
                 .foregroundStyle(Theme.textTertiary)
             Spacer()
-            if translationStore.enabled, !viewModel.translationIssue.isEmpty {
-                Text(viewModel.translationIssue)
-                    .font(Theme.Text.mono(size: 11))
-                    .foregroundStyle(Theme.warning)
-                    .textSelection(.enabled)
-            } else if translationStore.enabled, !viewModel.effectiveTranslationBackend.isEmpty {
-                Text(viewModel.effectiveTranslationBackend)
-                    .font(Theme.Text.mono(size: 11))
-                    .foregroundStyle(Theme.textTertiary)
+            if translationStore.enabled {
+                if !viewModel.translationIssue.isEmpty {
+                    Text(viewModel.translationIssue)
+                        .font(Theme.Text.mono(size: 11))
+                        .foregroundStyle(Theme.warning)
+                        .textSelection(.enabled)
+                } else if let message = translationBridge.state.columnMessage {
+                    Text(message)
+                        .font(Theme.Text.mono(size: 11))
+                        .foregroundStyle(Theme.warning)
+                } else if !viewModel.effectiveTranslationBackend.isEmpty {
+                    Text(viewModel.effectiveTranslationBackend)
+                        .font(Theme.Text.mono(size: 11))
+                        .foregroundStyle(Theme.textTertiary)
+                }
             }
         }
         .padding(.horizontal, Theme.Space.md)

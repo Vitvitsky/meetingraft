@@ -411,6 +411,23 @@
         }
       }
     },
+    "Apple translation needs a language download" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple translation needs a language download"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple-перевод требует загрузки языка"
+          }
+        }
+      }
+    },
     "Application data" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1448,6 +1465,23 @@
         }
       }
     },
+    "Download language" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download language"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скачать язык"
+          }
+        }
+      }
+    },
     "Download the Russian engine" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1461,6 +1495,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Скачать русский движок"
+          }
+        }
+      }
+    },
+    "Downloading language…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Downloading language…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузка языка…"
           }
         }
       }
@@ -3947,6 +3998,23 @@
         }
       }
     },
+    "Status" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Status"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Состояние"
+          }
+        }
+      }
+    },
     "Stop" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4300,6 +4368,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Этот Мак не умеет писать системный звук; пишется только ваш голос."
+          }
+        }
+      }
+    },
+    "This language pair is not supported" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This language pair is not supported"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эта пара языков не поддерживается"
           }
         }
       }

@@ -179,6 +179,7 @@ struct SttSettingsSection: View {
 struct TranslationSettingsSection: View {
     @Environment(TranslationSettingsStore.self) private var translationStore
     @Environment(SessionLanguageStore.self) private var languageStore
+    @Environment(HostTranslationBridge.self) private var translationBridge
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.md) {
@@ -208,6 +209,19 @@ struct TranslationSettingsSection: View {
                     }
                     .labelsHidden()
                     .frame(width: 180)
+                }
+
+                if let message = translationBridge.state.columnMessage {
+                    SettingsRow(title: String(localized: "Status")) {
+                        Text(message)
+                            .font(Theme.Text.bodySmall)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+                if translationBridge.state.canDownload, translationBridge.hasSession {
+                    Button(String(localized: "Download language")) {
+                        translationBridge.requestDownload()
+                    }
                 }
 
                 if translationStore.backend == .backend || translationStore.backend == .auto {
