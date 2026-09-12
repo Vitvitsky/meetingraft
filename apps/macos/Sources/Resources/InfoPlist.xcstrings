@@ -1,40 +1,64 @@
 {
-  "sourceLanguage": "en",
-  "strings": {
-    "NSAudioCaptureUsageDescription": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "MeetingRaft records the system audio of the meeting (the other participants)."
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "MeetingRaft записывает системный звук встречи (других участников)."
+  "sourceLanguage" : "en",
+  "strings" : {
+    "CFBundleDisplayName" : {
+      "comment" : "Bundle display name",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "MeetingRaft"
           }
         }
       }
     },
-    "NSMicrophoneUsageDescription": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "MeetingRaft records the microphone to caption your meeting."
+    "CFBundleName" : {
+      "comment" : "Bundle name",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "MeetingRaft"
+          }
+        }
+      }
+    },
+    "NSAudioCaptureUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MeetingRaft records the system audio of the meeting (the other participants)."
           }
         },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "MeetingRaft записывает микрофон для субтитров встречи."
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MeetingRaft записывает системный звук встречи (других участников)."
+          }
+        }
+      }
+    },
+    "NSMicrophoneUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MeetingRaft records the microphone to caption your meeting."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MeetingRaft записывает микрофон для субтитров встречи."
           }
         }
       }
     }
   },
-  "version": "1.0"
+  "version" : "1.0"
 }
