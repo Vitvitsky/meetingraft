@@ -34,9 +34,12 @@ final class HostTranslationBridge {
     }
 
     /// Главное окно отдаёт свою очередь: мост создан на уровне App, чтобы
-    /// его видела и Settings-сцена, а ядро живёт в окне.
+    /// его видела и Settings-сцена, а ядро живёт в окне. Доступность,
+    /// посчитанная до `bind`, доезжает до новой очереди: `.onAppear` может
+    /// прийти позже, чем цикл `run` начнёт `prepare`.
     func bind(queue: TranslationHostQueue) {
         self.queue = queue
+        queue.setHostTranslationAvailable(available: installed)
     }
 
     /// Кнопка «скачать» только ставит флаг: работу с сессией делает цикл,
@@ -63,7 +66,7 @@ final class HostTranslationBridge {
             hasSession = false
             installed = false
             queue?.setHostTranslationAvailable(available: false)
-            drainAndDropStale()
+            dropPendingRequests()
             state = .off
         }
         while !Task.isCancelled {
@@ -73,6 +76,10 @@ final class HostTranslationBridge {
             }
             if installed {
                 await pumpOnce(session: session)
+            } else {
+                // Пара непригодна, но цикл всё равно живёт: очередь нельзя
+                // копить до teardown — снимаем каждый проход.
+                dropPendingRequests()
             }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
@@ -117,13 +124,17 @@ final class HostTranslationBridge {
         }
     }
 
-    /// Снять с очереди всё, что осталось от прошлой пары.
-    private func drainAndDropStale() {
+    /// Снять с очереди всё, что осталось от непригодной пары.
+    ///
+    /// Отказ ядра здесь проглатывается намеренно: запрос, брошенный, пока
+    /// пара непригодна, стух по определению и действия от человека не
+    /// требует. Показать его ошибкой значило бы затереть видимое
+    /// `.needsDownload` / `.unsupported` сообщением о том, чего человек
+    /// не делал.
+    func dropPendingRequests() {
         guard let queue else { return }
         for request in queue.drainHostTranslationRequests() {
-            // Отказ здесь тут же затёрло бы `.off` в `defer` `run`: снятие
-            // стухшего запроса не требует действия от человека.
-            complete(id: request.id, translatedText: "")
+            _ = queue.completeHostTranslation(id: request.id, translatedText: "")
         }
     }
 

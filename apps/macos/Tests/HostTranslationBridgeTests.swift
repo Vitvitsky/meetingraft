@@ -18,12 +18,14 @@ final class HostTranslationBridgeTests: XCTestCase {
         var completed: [String: String] = [:]
         var availabilityFlags: [Bool] = []
         var completionErrors: [String: String] = [:]
+        private(set) var drainCount = 0
 
         func setHostTranslationAvailable(available: Bool) {
             availabilityFlags.append(available)
         }
 
         func drainHostTranslationRequests() -> [FfiHostTranslationRequest] {
+            drainCount += 1
             defer { requests = [] }
             return requests
         }
@@ -36,6 +38,7 @@ final class HostTranslationBridgeTests: XCTestCase {
 
     private final class FakeSession: TranslationSessioning {
         var failingText: String?
+        var prepareError: Error?
         var prepared = 0
         private(set) var translated: [String] = []
 
@@ -49,6 +52,9 @@ final class HostTranslationBridgeTests: XCTestCase {
 
         func prepareTranslation() async throws {
             prepared += 1
+            if let prepareError {
+                throw prepareError
+            }
         }
     }
 
@@ -222,5 +228,86 @@ final class HostTranslationBridgeTests: XCTestCase {
 
         XCTAssertEqual(session.prepared, 1)
         XCTAssertEqual(bridge.state, .ready)
+    }
+
+    /// Отказ `prepareTranslation` виден в состоянии и не оставляет
+    /// `.downloading`.
+    func testPerformDownloadFailurePublishesFailure() async {
+        let queue = FakeHostQueue()
+        let session = FakeSession()
+        session.prepareError = NSError(domain: "test", code: 2)
+        let bridge = HostTranslationBridge(availability: FakeAvailability(status: .installed))
+        bridge.bind(queue: queue)
+        await bridge.prepare(source: .ru, target: .en)
+
+        await bridge.performDownload(session: session, source: .ru, target: .en)
+
+        guard case .failed = bridge.state else {
+            return XCTFail("ожидалось состояние failed, получено \(bridge.state)")
+        }
+        XCTAssertNotEqual(bridge.state, .downloading)
+    }
+
+    /// `bind` после `prepare` обязан донести уже известную доступность:
+    /// `.onAppear` может прийти позже, чем цикл `run` начнёт `prepare`.
+    func testBindPushesKnownAvailability() async {
+        let queue = FakeHostQueue()
+        let bridge = HostTranslationBridge(availability: FakeAvailability(status: .installed))
+
+        await bridge.prepare(source: .ru, target: .en)
+        bridge.bind(queue: queue)
+
+        XCTAssertEqual(queue.availabilityFlags.last, true)
+    }
+
+    /// Недоступная пара не копит очередь: снятые запросы завершаются
+    /// пустыми молча, и видимое `.needsDownload` не подменяется ошибкой
+    /// ядра, даже если оно её вернуло.
+    func testDropPendingRequestsIsSilent() async {
+        let queue = FakeHostQueue()
+        queue.requests = [
+            request(id: "1", text: "раз"),
+            request(id: "2", text: "два"),
+        ]
+        queue.completionErrors["1"] = "unknown host translation id: 1"
+        queue.completionErrors["2"] = "unknown host translation id: 2"
+        let bridge = HostTranslationBridge(availability: FakeAvailability(status: .needsDownload))
+        bridge.bind(queue: queue)
+        await bridge.prepare(source: .ru, target: .en)
+
+        bridge.dropPendingRequests()
+
+        XCTAssertEqual(queue.completed["1"], "")
+        XCTAssertEqual(queue.completed["2"], "")
+        XCTAssertTrue(queue.requests.isEmpty)
+        XCTAssertEqual(bridge.state, .needsDownload)
+    }
+
+    /// Цикл `run` на непригодной паре дренит очередь каждый проход, а по
+    /// отмене — снимает доступность, дренит остаток и уходит в `.off`.
+    func testRunDrainsQueueWhilePairUnavailableAndResetsOnCancel() async {
+        let queue = FakeHostQueue()
+        queue.requests = [request(id: "1", text: "раз")]
+        let bridge = HostTranslationBridge(availability: FakeAvailability(status: .needsDownload))
+        bridge.bind(queue: queue)
+
+        let task = Task { @MainActor in
+            await bridge.run(session: FakeSession(), source: .ru, target: .en)
+        }
+        let deadline = Date().addingTimeInterval(1)
+        while queue.drainCount == 0, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        // Дренаж обязан случиться до отмены: иначе очередь копится весь
+        // цикл и разом всплывает на teardown.
+        XCTAssertGreaterThanOrEqual(queue.drainCount, 1)
+        XCTAssertTrue(queue.requests.isEmpty)
+
+        task.cancel()
+        await task.value
+
+        XCTAssertEqual(queue.completed["1"], "")
+        XCTAssertEqual(queue.availabilityFlags.last, false)
+        XCTAssertEqual(bridge.state, .off)
     }
 }

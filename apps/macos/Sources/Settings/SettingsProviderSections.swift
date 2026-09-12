@@ -222,6 +222,7 @@ struct TranslationSettingsSection: View {
                     Button(String(localized: "Download language")) {
                         translationBridge.requestDownload()
                     }
+                    .buttonStyle(.themedPrimary)
                 }
 
                 if translationStore.backend == .backend || translationStore.backend == .auto {

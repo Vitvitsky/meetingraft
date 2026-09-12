@@ -5642,6 +5642,8 @@ mod tests {
         let reqs = guard.host_translation_queue.drain();
         assert_eq!(reqs.len(), 1, "в очередь должен попасть только final");
         assert_eq!(reqs[0].text, "Добро пожаловать в MeetingRaft");
+        drop(guard);
+        core.stop();
     }
 
     #[test]
