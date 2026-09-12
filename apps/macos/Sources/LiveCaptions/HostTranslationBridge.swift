@@ -85,17 +85,19 @@ final class HostTranslationBridge {
         for request in queue.drainHostTranslationRequests() {
             guard request.targetCode == targetCode else {
                 // Стухший запрос: сессия настроена на другую пару.
-                _ = queue.completeHostTranslation(id: request.id, translatedText: "")
+                complete(id: request.id, translatedText: "")
                 continue
             }
             do {
                 let translated = try await session.translate(request.text)
-                _ = queue.completeHostTranslation(id: request.id, translatedText: translated)
-                state = .ready
+                if complete(id: request.id, translatedText: translated) {
+                    state = .ready
+                }
             } catch {
                 // Реплика теряется, но очередь не растёт и следующая живёт.
-                _ = queue.completeHostTranslation(id: request.id, translatedText: "")
-                state = .failed(error.localizedDescription)
+                if complete(id: request.id, translatedText: "") {
+                    state = .failed(error.localizedDescription)
+                }
             }
         }
     }
@@ -119,8 +121,24 @@ final class HostTranslationBridge {
     private func drainAndDropStale() {
         guard let queue else { return }
         for request in queue.drainHostTranslationRequests() {
-            _ = queue.completeHostTranslation(id: request.id, translatedText: "")
+            // Отказ здесь тут же затёрло бы `.off` в `defer` `run`: снятие
+            // стухшего запроса не требует действия от человека.
+            complete(id: request.id, translatedText: "")
         }
+    }
+
+    /// Завершить запрос в ядре и не проглотить его отказ: пустая строка —
+    /// успех, непустая — текст ошибки. `false` значит, что ядро отказало и
+    /// `state` уже `.failed`.
+    @discardableResult
+    private func complete(id: String, translatedText: String) -> Bool {
+        guard let queue else { return true }
+        let error = queue.completeHostTranslation(id: id, translatedText: translatedText)
+        guard error.isEmpty else {
+            state = .failed(error)
+            return false
+        }
+        return true
     }
 
     private static func displayState(for status: TranslationAvailabilityStatus) -> TranslationHostState {

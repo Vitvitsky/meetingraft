@@ -17,6 +17,7 @@ final class HostTranslationBridgeTests: XCTestCase {
         var requests: [FfiHostTranslationRequest] = []
         var completed: [String: String] = [:]
         var availabilityFlags: [Bool] = []
+        var completionErrors: [String: String] = [:]
 
         func setHostTranslationAvailable(available: Bool) {
             availabilityFlags.append(available)
@@ -29,7 +30,7 @@ final class HostTranslationBridgeTests: XCTestCase {
 
         func completeHostTranslation(id: String, translatedText: String) -> String {
             completed[id] = translatedText
-            return ""
+            return completionErrors[id] ?? ""
         }
     }
 
@@ -127,6 +128,36 @@ final class HostTranslationBridgeTests: XCTestCase {
         guard case .failed = bridge.state else {
             return XCTFail("ожидалось состояние failed, получено \(bridge.state)")
         }
+    }
+
+    /// Отказ ядра при завершении не глотается: он виден в состоянии, а не
+    /// подменяется `.ready`.
+    func testPumpOnceSurfacesCompletionError() async {
+        let queue = FakeHostQueue()
+        queue.requests = [request(id: "1", text: "Добро пожаловать")]
+        queue.completionErrors["1"] = "unknown host translation id: 1"
+        let bridge = HostTranslationBridge(availability: FakeAvailability(status: .installed))
+        bridge.bind(queue: queue)
+        await bridge.prepare(source: .ru, target: .en)
+
+        await bridge.pumpOnce(session: FakeSession())
+
+        XCTAssertEqual(bridge.state, .failed("unknown host translation id: 1"))
+    }
+
+    /// Отказ ядра на стухшем запросе тоже виден: снятие с очереди — не
+    /// повод проглотить ошибку.
+    func testPumpOnceStaleDropSurfacesCompletionError() async {
+        let queue = FakeHostQueue()
+        queue.requests = [request(id: "1", text: "hola", target: "es")]
+        queue.completionErrors["1"] = "unknown host translation id: 1"
+        let bridge = HostTranslationBridge(availability: FakeAvailability(status: .installed))
+        bridge.bind(queue: queue)
+        await bridge.prepare(source: .ru, target: .en)
+
+        await bridge.pumpOnce(session: FakeSession())
+
+        XCTAssertEqual(bridge.state, .failed("unknown host translation id: 1"))
     }
 
     /// Запрос от другой пары не переводим: сессия настроена не на неё.
