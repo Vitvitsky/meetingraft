@@ -34,12 +34,22 @@ step "5/7 Swift: формат"
 (cd apps/macos && swiftformat Sources Tests --lint)
 
 step "6/7 Swift: сборка и тесты"
+# Вывод пишем в файл: AppKit сообщает туда о петле раскладки окна
+# («another Update Constraints in Window pass»), и такое сообщение не всегда
+# топит прогон. Молчаливая петля недопустима: панель оверлея без
+# `sizingOptions = []` даёт её заведомо (OverlayWindowController).
+SWIFT_LOG="$(mktemp -t meetingraft-swift-tests)"
 (cd apps/macos && xcodebuild \
     -project MeetingRaft.xcodeproj \
     -scheme MeetingRaft \
     -configuration Debug \
     CODE_SIGNING_ALLOWED=NO \
-    test)
+    test) 2>&1 | tee "$SWIFT_LOG"
+if grep -q "another Update Constraints in Window pass" "$SWIFT_LOG"; then
+    echo "Петля раскладки в окне — провал; лог: $SWIFT_LOG"
+    exit 1
+fi
+rm -f "$SWIFT_LOG"
 
 step "7/7 pre-commit"
 if command -v pre-commit >/dev/null 2>&1; then

@@ -33,6 +33,13 @@ final class OverlayWindowController {
     /// свёрнуто, видна только она.
     func show(content: some View, preference: AppearancePreference) {
         let hosting = NSHostingView(rootView: AnyView(content))
+        // Панель задаёт размер сама (720×120), поэтому хостинг-вью не должен
+        // управлять предельными размерами окна. По умолчанию он это делает
+        // (`updateWindowContentSizeExtremaIfNecessary`), и на каждом проходе
+        // ограничений SwiftUI заново просит пересчёт; в панели всего пара
+        // вью, счётчик проходов AppKit переполняется и он бросает
+        // NSGenericException.
+        hosting.sizingOptions = []
         if let panel {
             panel.appearance = Self.appearance(for: preference)
             panel.contentView = hosting
