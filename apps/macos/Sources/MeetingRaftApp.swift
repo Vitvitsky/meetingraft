@@ -17,7 +17,10 @@ struct MeetingRaftApp: App {
     @State private var translationBridge = HostTranslationBridge()
 
     var body: some Scene {
-        WindowGroup {
+        // Мост перевода живёт на уровне App и привязан к одному ядру:
+        // второе окно создало бы второе ядро, и перевод первого окна молча
+        // остался бы пустым. Поэтому главная сцена однооконная.
+        Window("MeetingRaft", id: "main") {
             AppShellView()
                 .environment(languageStore)
                 .environment(translationStore)

@@ -302,10 +302,13 @@ final class HostTranslationBridgeTests: XCTestCase {
         // цикл и разом всплывает на teardown.
         XCTAssertGreaterThanOrEqual(queue.drainCount, 1)
         XCTAssertTrue(queue.requests.isEmpty)
+        // Пока цикл жив, сессия есть: иначе кнопка скачивания нечем работает.
+        XCTAssertTrue(bridge.hasSession)
 
         task.cancel()
         await task.value
 
+        XCTAssertFalse(bridge.hasSession)
         XCTAssertEqual(queue.completed["1"], "")
         XCTAssertEqual(queue.availabilityFlags.last, false)
         XCTAssertEqual(bridge.state, .off)

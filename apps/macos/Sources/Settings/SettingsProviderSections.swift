@@ -211,18 +211,20 @@ struct TranslationSettingsSection: View {
                     .frame(width: 180)
                 }
 
-                if let message = translationBridge.state.columnMessage {
-                    SettingsRow(title: String(localized: "Status")) {
-                        Text(message)
-                            .font(Theme.Text.bodySmall)
-                            .foregroundStyle(Theme.textSecondary)
+                if translationStore.backend == .apple || translationStore.backend == .auto {
+                    if let message = translationBridge.state.columnMessage {
+                        SettingsRow(title: String(localized: "Status")) {
+                            Text(message)
+                                .font(Theme.Text.bodySmall)
+                                .foregroundStyle(Theme.textSecondary)
+                        }
                     }
-                }
-                if translationBridge.state.canDownload, translationBridge.hasSession {
-                    Button(String(localized: "Download language")) {
-                        translationBridge.requestDownload()
+                    if translationBridge.state.canDownload, translationBridge.hasSession {
+                        Button(String(localized: "Download language")) {
+                            translationBridge.requestDownload()
+                        }
+                        .buttonStyle(.themedPrimary)
                     }
-                    .buttonStyle(.themedPrimary)
                 }
 
                 if translationStore.backend == .backend || translationStore.backend == .auto {
