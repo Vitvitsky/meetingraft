@@ -62,6 +62,12 @@ struct MeetingDetailView: View {
         .onDisappear {
             rebuild.stopPolling()
         }
+        // Движок меняют в окне Settings — это другая сцена, но тот же
+        // стор, поэтому изменение видно здесь. Пересбор идёт на этом
+        // ядре, и без повторного применения выбор до него не доедет.
+        .onChange(of: providerStore.postCallRecognizer) { _, _ in
+            applyProviderConfig()
+        }
         .onChange(of: viewModel.selectedFinalVersion) { _, _ in
             reloadAttribution()
         }
@@ -631,7 +637,8 @@ struct MeetingDetailView: View {
             llmEngineCode: providerStore.llmEngine.rawValue,
             llmModelId: providerStore.llmModelId,
             llmBaseUrl: providerStore.llmBaseUrl,
-            llmProviderId: providerStore.llmProviderId
+            llmProviderId: providerStore.llmProviderId,
+            postCallRecognizerCode: providerStore.postCallRecognizer.rawValue
         )
     }
 

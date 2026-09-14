@@ -249,6 +249,10 @@ private final class LibraryCoreSpy: MeetingsCoreProviding, @unchecked Sendable {
 
     func setLlmConfig(engineCode _: String, modelId _: String, baseUrl _: String, providerId _: String) {}
 
+    func setPostCallRecognizer(code _: String) -> String {
+        ""
+    }
+
     func generateArtifact(meetingId _: String, kind _: FfiArtifactKind) -> FfiGenerateArtifactResult {
         FfiGenerateArtifactResult(
             artifact: FfiArtifact(

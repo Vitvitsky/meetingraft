@@ -278,7 +278,8 @@ final class MeetingsViewModelTests: XCTestCase {
             llmEngineCode: "ollama",
             llmModelId: "gemma2",
             llmBaseUrl: "http://127.0.0.1:11434",
-            llmProviderId: "default"
+            llmProviderId: "default",
+            postCallRecognizerCode: PostCallRecognizer.auto.rawValue
         )
         await viewModel.generate(meetingId: "meeting-1", kind: .brief)
 
@@ -289,6 +290,46 @@ final class MeetingsViewModelTests: XCTestCase {
         XCTAssertEqual(core.lastLlmBaseUrl, "http://127.0.0.1:11434")
         XCTAssertEqual(core.lastLlmProviderId, "default")
         XCTAssertEqual(viewModel.selectedArtifact, generated)
+    }
+
+    /// Выбор распознавателя делается в Settings — там своё ядро, а
+    /// пересбор идёт на общем. Без этого вызова общее ядро остаётся с
+    /// `Auto` и распознаёт встречу не тем движком, который выбран.
+    func testApplyProviderConfigPushesPostCallRecognizerToCore() {
+        let core = MeetingsCoreSpy()
+        let viewModel = MeetingsViewModel(core: core)
+
+        viewModel.applyProviderConfig(
+            apiBaseUrl: "http://localhost:8080",
+            apiToken: "test-token",
+            llmEngineCode: "ollama",
+            llmModelId: "gemma2",
+            llmBaseUrl: "http://127.0.0.1:11434",
+            llmProviderId: "default",
+            postCallRecognizerCode: PostCallRecognizer.gigaam.rawValue
+        )
+
+        XCTAssertEqual(core.lastPostCallRecognizerCode, "gigaam")
+    }
+
+    /// Ошибка ядра приезжает строкой; молча проглотить её — показать
+    /// человеку, что выбор применён, когда он не применён.
+    func testApplyProviderConfigSurfacesRecognizerError() {
+        let core = MeetingsCoreSpy()
+        core.postCallRecognizerError = "unknown recognizer"
+        let viewModel = MeetingsViewModel(core: core)
+
+        viewModel.applyProviderConfig(
+            apiBaseUrl: "http://localhost:8080",
+            apiToken: "test-token",
+            llmEngineCode: "ollama",
+            llmModelId: "gemma2",
+            llmBaseUrl: "http://127.0.0.1:11434",
+            llmProviderId: "default",
+            postCallRecognizerCode: "gigaam"
+        )
+
+        XCTAssertEqual(viewModel.errorMessage, "unknown recognizer")
     }
 
     private func makeMeeting(
@@ -363,6 +404,8 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding, @unchecked Sendable 
     private(set) var lastLlmModelId = ""
     private(set) var lastLlmBaseUrl = ""
     private(set) var lastLlmProviderId = ""
+    private(set) var lastPostCallRecognizerCode = ""
+    var postCallRecognizerError = ""
 
     init(
         meetings: [FfiMeetingSummary] = [],
@@ -519,5 +562,10 @@ private final class MeetingsCoreSpy: MeetingsCoreProviding, @unchecked Sendable 
         lastLlmModelId = modelId
         lastLlmBaseUrl = baseUrl
         lastLlmProviderId = providerId
+    }
+
+    func setPostCallRecognizer(code: String) -> String {
+        lastPostCallRecognizerCode = code
+        return postCallRecognizerError
     }
 }

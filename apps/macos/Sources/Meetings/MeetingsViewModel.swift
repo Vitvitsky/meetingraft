@@ -32,6 +32,7 @@ protocol MeetingsCoreProviding: AnyObject, Sendable {
     func listArtifacts(meetingId: String) -> [FfiArtifact]
     func setApiConfig(baseUrl: String, token: String)
     func setLlmConfig(engineCode: String, modelId: String, baseUrl: String, providerId: String)
+    func setPostCallRecognizer(code: String) -> String
     func generateArtifact(meetingId: String, kind: FfiArtifactKind) -> FfiGenerateArtifactResult
 }
 
@@ -220,7 +221,8 @@ final class MeetingsViewModel {
         llmEngineCode: String,
         llmModelId: String,
         llmBaseUrl: String,
-        llmProviderId: String
+        llmProviderId: String,
+        postCallRecognizerCode: String
     ) {
         core.setApiConfig(baseUrl: apiBaseUrl, token: apiToken)
         core.setLlmConfig(
@@ -229,6 +231,13 @@ final class MeetingsViewModel {
             baseUrl: llmBaseUrl,
             providerId: llmProviderId
         )
+        // Пересбор идёт на этом ядре, а выбор движка делается в Settings —
+        // там ядро своё. Без этого вызова здесь остаётся `Auto`, и встреча
+        // распознаётся не тем движком, который выбран.
+        let recognizerError = core.setPostCallRecognizer(code: postCallRecognizerCode)
+        if !recognizerError.isEmpty {
+            errorMessage = recognizerError
+        }
     }
 
     /// LLM отвечает до минуты, поэтому вызов уходит с главного потока.
