@@ -11,9 +11,10 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.llm import LlmError, complete_chat
+from app.perplexity import PerplexityError, answer, load_perplexity_api_key
 from app.registry import Registry, RegistryError, load_registry, provider_settings, public_models
 
 
@@ -49,6 +50,23 @@ class CreateJobRequest(BaseModel):
     primary_language: str = Field(pattern="^(ru|en|es)$")
     allowed_languages: list[str] = Field(min_length=1)
     payload: dict[str, Any] | None = None
+
+
+class AnswerRequest(BaseModel):
+    query: str = Field(min_length=1)
+    preset: str | None = None
+    model: str | None = None
+    instructions: str | None = None
+    language: str | None = Field(default=None, pattern="^(ru|en|es)$")
+    previous_response_id: str | None = None
+
+    @field_validator("query")
+    @classmethod
+    def _reject_blank_query(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("query must not be blank")
+        return stripped
 
 
 class HealthResponse(BaseModel):
@@ -171,3 +189,43 @@ def get_artifact(artifact_id: str) -> dict[str, Any]:
     if artifact is None:
         raise HTTPException(status_code=404, detail="artifact not found")
     return artifact
+
+
+@app.post("/v1/answers", dependencies=[Depends(require_bearer)])
+def create_answer(body: AnswerRequest) -> dict[str, Any]:
+    """Веб-ответ со ссылками на источники (Perplexity Agent API).
+
+    Наружу уходит только сам запрос: аудио и расшифровки сюда не попадают.
+    Ненастроенный ключ — видимая 503, ошибка провайдера — видимая 502;
+    заглушки вместо ответа нет (правило продукта).
+    """
+    if not load_perplexity_api_key():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Perplexity не настроен: не задан PERPLEXITY_API_KEY",
+        )
+
+    try:
+        result = answer(
+            body.query,
+            preset=body.preset or "",
+            model=body.model or "",
+            instructions=body.instructions or "",
+            language=body.language or "",
+            previous_response_id=body.previous_response_id or "",
+        )
+    except PerplexityError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(error),
+        ) from error
+
+    return {
+        "answer_markdown": result.text,
+        "sources": [
+            {"title": source.title, "url": source.url, "date": source.date}
+            for source in result.sources
+        ],
+        "model": result.model,
+        "response_id": result.response_id,
+    }

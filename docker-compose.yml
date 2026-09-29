@@ -15,3 +15,8 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-}
+      # Веб-ответы (Perplexity Agent API). Ключ только пробрасывается, не коммитится.
+      # Без него POST /v1/answers отвечает 503 — заглушки вместо ответа нет.
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
+      PERPLEXITY_PRESET: ${PERPLEXITY_PRESET:-}
+      PERPLEXITY_MODEL: ${PERPLEXITY_MODEL:-}
