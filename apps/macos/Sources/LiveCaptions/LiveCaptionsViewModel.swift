@@ -131,8 +131,29 @@ final class LiveCaptionsViewModel {
 
     /// Последние строки для центрального блока: экран показывает речь,
     /// а не журнал событий. Полный лог живёт в истории встречи.
+    ///
+    /// Предел оверлея задаёт вызывающий (Presence показывает две
+    /// строки); лента экрана берёт `feedLines`.
     func recentLines(limit: Int = 3) -> [CaptionLine] {
         Array(lines.suffix(limit))
+    }
+
+    /// Экранная лента (Epic 17): «последние пару минут», а не три
+    /// строки. Буфер хранит всё; предел — только защита экрана от
+    /// бесконечного списка в очень длинной встрече. Число — это примерно
+    /// две-три минуты плотного разговора.
+    static let screenLineLimit = 50
+
+    /// Хвост ленты до экранного предела; прокрутка к истории живёт
+    /// в ScrollView самого экрана.
+    var feedLines: [CaptionLine] {
+        Array(lines.suffix(Self.screenLineLimit))
+    }
+
+    /// То же для колонки перевода: колонки обязаны быть одинаковой
+    /// длины, иначе перевод отстаёт от речи, которую он переводит.
+    var feedTranslationLines: [CaptionLine] {
+        Array(translationLines.suffix(Self.screenLineLimit))
     }
 
     private func stopLivePoll() {

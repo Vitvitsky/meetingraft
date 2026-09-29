@@ -98,12 +98,12 @@ struct LiveCaptionsView: View {
 
     private var captionStage: some View {
         HStack(spacing: 0) {
-            stage(lines: viewModel.recentLines(), placeholder: placeholderText)
+            stage(lines: viewModel.feedLines, placeholder: placeholderText)
             if translationStore.enabled {
                 Divider().overlay(Theme.borderSubtle)
                 VStack(spacing: Theme.Space.sm) {
                     stage(
-                        lines: Array(viewModel.translationLines.suffix(3)),
+                        lines: viewModel.feedTranslationLines,
                         placeholder: translationPlaceholder
                     )
                     if translationBridge.state.canDownload {
