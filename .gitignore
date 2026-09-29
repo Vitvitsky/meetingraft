@@ -65,3 +65,10 @@ graphify-out/
 .worktrees/
 .superpowers/
 test_result/
+.omo/
+
+# Local dev artifacts: scratch SQLite from manual runs and scraped
+# competitor screenshots used for the product review (not referenced by
+# any doc — the review quotes text, not pixels).
+rust/meetingraft.sqlite3
+images/
