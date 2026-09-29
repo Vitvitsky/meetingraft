@@ -30,6 +30,43 @@ final class LiveCaptionsPresentationTests: XCTestCase {
         XCTAssertTrue(makeViewModel().recentLines().isEmpty)
     }
 
+    /// Лента экрана длиннее трёх строк (Epic 17): буфер хранит всё,
+    /// а показывается хвост с экранного предела — не три строки.
+    func testFeedShowsMoreThanTheLastThreeLines() {
+        let viewModel = makeViewModel()
+        let count = LiveCaptionsViewModel.screenLineLimit + 50
+        for index in 0 ..< count {
+            viewModel.ingestForTesting(text: "строка \(index)", phase: .final)
+        }
+
+        let feed = viewModel.feedLines
+
+        XCTAssertEqual(feed.count, LiveCaptionsViewModel.screenLineLimit)
+        XCTAssertEqual(feed.last?.text, "строка \(count - 1)")
+        XCTAssertEqual(feed.first?.text, "строка \(count - LiveCaptionsViewModel.screenLineLimit)")
+    }
+
+    /// Короткая лента показывается целиком — предел режет только хвост.
+    func testFeedBelowLimitShowsEverything() {
+        let viewModel = makeViewModel()
+        for index in 0 ..< 5 {
+            viewModel.ingestForTesting(text: "строка \(index)", phase: .final)
+        }
+
+        XCTAssertEqual(viewModel.feedLines.count, 5)
+    }
+
+    /// Оверлей остаётся коротким: две строки поверх чужого экрана —
+    /// это решение Presence, а не ленты.
+    func testOverlayTailStaysShort() {
+        let viewModel = makeViewModel()
+        for index in 0 ..< 10 {
+            viewModel.ingestForTesting(text: "строка \(index)", phase: .final)
+        }
+
+        XCTAssertEqual(viewModel.recentLines(limit: 2).count, 2)
+    }
+
     /// Вне сессии таймер не должен показывать ноль: ноль читается как
     /// «идёт, но ничего не пишется».
     func testSessionStartIsNilBeforeRecording() {
