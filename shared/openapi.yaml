@@ -86,6 +86,33 @@ paths:
                 $ref: "#/components/schemas/Artifact"
         "404":
           description: Not found
+  /v1/answers:
+    post:
+      summary: Web-grounded answer with sources
+      description: >
+        Perplexity Agent API. Наружу уходит только сам запрос: аудио и
+        расшифровки сюда не попадают. Без PERPLEXITY_API_KEY — 503, ошибка
+        провайдера — 502; заглушки вместо ответа нет.
+      operationId: createAnswer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAnswerRequest"
+      responses:
+        "200":
+          description: Grounded answer with source links
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Answer"
+        "401":
+          description: Unauthorized
+        "502":
+          description: Perplexity call failed
+        "503":
+          description: Perplexity is not configured (PERPLEXITY_API_KEY missing)
 components:
   securitySchemes:
     bearerAuth:
@@ -189,3 +216,51 @@ components:
         created_at:
           type: string
           format: date-time
+    CreateAnswerRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+        preset:
+          type: string
+          description: >
+            Agent API preset: fast, low, medium, high, xhigh. Default low.
+            Игнорируется, если задан model.
+        model:
+          type: string
+          description: "provider/model id, напр. openai/gpt-5.6-sol."
+        instructions:
+          type: string
+        language:
+          type: string
+          enum: [ru, en, es]
+        previous_response_id:
+          type: string
+          description: Продолжить предыдущий ответ Agent API.
+    WebSource:
+      type: object
+      required: [title, url]
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        date:
+          type: string
+          nullable: true
+    Answer:
+      type: object
+      required: [answer_markdown, sources, model, response_id]
+      properties:
+        answer_markdown:
+          type: string
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebSource"
+        model:
+          type: string
+        response_id:
+          type: string
